@@ -1,0 +1,109 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Environment files
+.env
+.env.*
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.vs/
+.settings/
+.project
+.classpath
+.c9/
+*.launch
+*.sublime-workspace
+*.sublime-project
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Testing and Coverage
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+htmlcov/
+
+# GLUE specific
+research_results.json
+test.txt
+progressFiles/
+*.log
+logs/
+tmp/
+temp/
+
+# Documentation
+docs/_build/
+docs/_static/
+docs/_templates/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# GLUE Additional Ignores
+# Example apps and logs
+examples/*.glue
+examples/output/
+examples/logs/
+
+# Workspace files
+workspace/
+workspace/**/*
+workspaces/
+workspaces/**/*
+
+# Chat files
+chat/
+chat/**/*
+
+# Progress tracking
+progressFiles/
+progressFiles/**/*
+
+# Git
+.git/
+.gitignore~
