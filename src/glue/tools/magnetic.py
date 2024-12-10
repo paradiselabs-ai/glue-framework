@@ -1,5 +1,6 @@
 # src/glue/tools/magnetic.py
 
+import asyncio
 from typing import List, Optional, Any, Dict
 from .base import BaseTool
 from ..magnetic.field import MagneticResource
@@ -31,19 +32,22 @@ class MagneticTool(BaseTool, MagneticResource):
         """Attach tool to a magnetic workspace"""
         if self.magnetic:
             self._workspace = workspace
-            # Load any sticky resources from workspace
-            if self.sticky:
+            # Load any sticky resources from workspace if it supports it
+            if self.sticky and hasattr(workspace, 'load_tool_data'):
                 self._shared_data = await workspace.load_tool_data(self.name)
             
             # Enter the magnetic field if workspace has one
             if hasattr(workspace, 'field'):
                 await self.enter_field(workspace.field)
+            # If workspace is a field, enter it directly
+            elif hasattr(workspace, '_resources'):
+                await self.enter_field(workspace)
 
     async def detach_from_workspace(self) -> None:
         """Detach tool from its workspace"""
         if self._workspace and self.magnetic:
-            # Save sticky resources to workspace
-            if self.sticky:
+            # Save sticky resources to workspace if it supports it
+            if self.sticky and hasattr(self._workspace, 'save_tool_data'):
                 await self._workspace.save_tool_data(self.name, self._shared_data)
             else:
                 # Clear non-sticky resources
@@ -87,8 +91,8 @@ class MagneticTool(BaseTool, MagneticResource):
                     if data is not None:
                         return data
         
-        # Then check workspace
-        if self._workspace:
+        # Then check workspace if it supports tool data
+        if self._workspace and hasattr(self._workspace, 'get_tool_data'):
             workspace_data = self._workspace.get_tool_data(self.name)
             if workspace_data and resource_name in workspace_data:
                 return workspace_data[resource_name]
@@ -108,7 +112,7 @@ class MagneticTool(BaseTool, MagneticResource):
     def clear_resources(self) -> None:
         """Clear all shared resources"""
         self._shared_data.clear()
-        if self._workspace:
+        if self._workspace and hasattr(self._workspace, 'clear_tool_data'):
             self._workspace.clear_tool_data(self.name)
 
     async def cleanup(self) -> None:

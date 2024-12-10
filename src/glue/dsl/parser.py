@@ -36,6 +36,8 @@ class WorkflowConfig:
     """Workflow Configuration"""
     attractions: List[Tuple[str, str]]  # (source, target) pairs
     repulsions: List[Tuple[str, str]]   # (source, target) pairs
+    chat: List[Tuple[str, str]] = field(default_factory=list)  # (model1, model2) pairs
+    pulls: List[Tuple[str, str]] = field(default_factory=list)  # (target, source) pairs
 
 @dataclass
 class GlueApp:
@@ -310,17 +312,20 @@ class GlueParser:
             config=config
         )
     
+
     def _parse_workflow(self, content: str):
         """Parse workflow block"""
         self.logger.debug(f"Parsing workflow block:\n{content}")
         
         attractions = []
         repulsions = []
+        chat_pairs = []
+        pull_pairs = []
         
         # Parse nested blocks
         nested_blocks = self._extract_blocks(content)
         for block_type, block_content in nested_blocks:
-            if block_type == "attract":
+            if block_type == "magnetic attraction":
                 # Parse attraction rules
                 for line in block_content.split('\n'):
                     line = line.strip()
@@ -328,6 +333,23 @@ class GlueParser:
                         parts = [p.strip() for p in line.split("><")]
                         if len(parts) == 2:
                             attractions.append((parts[0], parts[1]))
+            elif block_type == "magnetic pull":
+                # Parse pull rules
+                for line in block_content.split('\n'):
+                    line = line.strip()
+                    if "<-" in line:
+                        parts = [p.strip() for p in line.split("<-")]
+                        if len(parts) == 2:
+                            # Note: parts[0] is target, parts[1] is source
+                            pull_pairs.append((parts[0], parts[1]))
+            elif block_type == "chat":
+                # Parse chat relationships
+                for line in block_content.split('\n'):
+                    line = line.strip()
+                    if "<-->" in line:
+                        parts = [p.strip() for p in line.split("<-->")]
+                        if len(parts) == 2:
+                            chat_pairs.append((parts[0], parts[1]))
             elif block_type == "repel":
                 # Parse repulsion rules
                 for line in block_content.split('\n'):
@@ -339,7 +361,9 @@ class GlueParser:
         
         self.workflow = WorkflowConfig(
             attractions=attractions,
-            repulsions=repulsions
+            repulsions=repulsions,
+            chat=chat_pairs,
+            pulls=pull_pairs
         )
 
 def parse_glue_file(path: str) -> GlueApp:

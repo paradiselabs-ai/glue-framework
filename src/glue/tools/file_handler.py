@@ -76,6 +76,16 @@ class FileHandlerTool(MagneticTool):
         """Validate and resolve file path"""
         self.logger.debug(f"Validating path: {file_path}")
         
+        # Skip URLs - they should be handled by web_search
+        # Common URL patterns
+        url_patterns = [
+            'http://', 'https://',  # Standard protocols
+            'www.', '.com', '.org', '.edu', '.gov', '.net',  # Common domains
+            '.asp', '.php', '.html?', '?'  # Common web extensions and query strings
+        ]
+        if any(pattern in file_path.lower() for pattern in url_patterns):
+            raise ValueError("Cannot handle URLs directly. Use web_search tool instead.")
+        
         # Clean up path (remove quotes, extra spaces, leading slashes)
         file_path = file_path.strip(' "\'/')
         self.logger.debug(f"Cleaned path: {file_path}")
@@ -140,6 +150,16 @@ class FileHandlerTool(MagneticTool):
         if topic_match:
             topic = topic_match.group(1).strip()
             self.logger.debug(f"Found topic: {topic}")
+            return topic
+        
+        # Look for first heading after Research Results
+        heading_match = re.search(r'^# Research Results: (.+?)\n.*?### \d+\.\s*(.+?)\n', content, re.DOTALL)
+        if heading_match:
+            query = heading_match.group(1).strip()
+            first_result = heading_match.group(2).strip()
+            # Use query if it's specific, otherwise use first result title
+            topic = query if len(query.split()) > 2 else first_result
+            self.logger.debug(f"Found heading topic: {topic}")
             return topic
         
         return None
@@ -347,24 +367,39 @@ class FileHandlerTool(MagneticTool):
 
     async def _on_resource_shared(self, source: 'MagneticTool', resource_name: str, data: Any) -> None:
         """Handle shared resources from other tools"""
-        # If we receive search results, save them as markdown
-        if resource_name == "search_results":
-            # Extract topic from markdown content if possible
-            topic = None
-            if isinstance(data, str):
-                # Try to extract topic from markdown title
-                title_match = re.search(r'^# Research Results: (.+?)\n', data)
-                if title_match:
-                    topic = title_match.group(1).strip()
-                    # Convert to snake case
-                    topic = re.sub(r'[^\w\s-]', '', topic)
-                    topic = re.sub(r'[-\s]+', '_', topic)
-                    topic = topic.strip('_').lower()
+        # Only process resources shared by models, not other tools
+        if not hasattr(source, 'role'):  # Models have 'role' attribute, tools don't
+            self.logger.debug(f"Ignoring resource from non-model source: {source.name}")
+            return
             
-            # Use topic or default name
-            filename = f"{topic or 'research_results'}.md"
-            path = self._validate_path(filename)
-            await self._write_file(path, data, "text", mode='w')
+        # Process content from model
+        if resource_name == "file_content":
+            if isinstance(data, str):
+                # Extract topic from content if possible
+                topic = self._extract_topic(data)
+                if topic:
+                    # Convert to snake case
+                    topic = re.sub(r'[^\w\s-]', '', topic)  # Remove special chars
+                    topic = re.sub(r'[-\s]+', '_', topic)   # Replace spaces/hyphens with underscore
+                    topic = topic.strip('_').lower()        # Clean up and lowercase
+                    
+                    # Clean up common words that make bad filenames
+                    topic = re.sub(r'\b(the|a|an|in|on|at|to|for|of|with|by|from)\b', '', topic)
+                    topic = re.sub(r'\s+', '_', topic.strip())
+                    
+                    # If topic is too generic, try to get first result title
+                    if len(topic.split('_')) < 2:
+                        heading_match = re.search(r'### \d+\.\s*(.+?)\n', data)
+                        if heading_match:
+                            first_result = heading_match.group(1).strip()
+                            topic = re.sub(r'[^\w\s-]', '', first_result)
+                            topic = re.sub(r'[-\s]+', '_', topic)
+                            topic = topic.strip('_').lower()
+                
+                # Use topic or default name
+                filename = f"{topic or 'document'}.md"
+                path = self._validate_path(filename)
+                await self._write_file(path, data, "text", mode='w')
 
     async def cleanup(self) -> None:
         """Clean up resources when tool is done"""

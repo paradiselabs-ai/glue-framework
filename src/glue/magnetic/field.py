@@ -1,5 +1,3 @@
-# src/glue/magnetic/field.py
-
 """GLUE Magnetic Field System"""
 
 from typing import Any, Dict, List, Optional, Set, Type, Callable
@@ -17,6 +15,8 @@ class ResourceState(Enum):
     ACTIVE = auto()    # Currently in use
     LOCKED = auto()    # Cannot be used by others
     SHARED = auto()    # Being shared between resources
+    CHATTING = auto()  # In direct model-to-model communication
+    PULLING = auto()   # Receiving data only
 
 # ==================== Event Types ====================
 class FieldEvent:
@@ -49,6 +49,18 @@ class ContextChangeEvent(FieldEvent):
     """Event fired when context changes"""
     def __init__(self, context: ContextState):
         self.context = context
+
+class ChatEvent(FieldEvent):
+    """Event fired when models start chatting"""
+    def __init__(self, model1: 'MagneticResource', model2: 'MagneticResource'):
+        self.model1 = model1
+        self.model2 = model2
+
+class PullEvent(FieldEvent):
+    """Event fired when a resource starts pulling from another"""
+    def __init__(self, target: 'MagneticResource', source: 'MagneticResource'):
+        self.target = target
+        self.source = source
 
 # ==================== Data Classes ====================
 class MagneticResource:
@@ -173,6 +185,26 @@ class MagneticResource:
             status += ", Required"
         status += ")"
         return status
+
+    async def start_chat(self, other: 'MagneticResource') -> bool:
+        """Start direct communication with another resource"""
+        if not self.can_attract(other):
+            return False
+        
+        self._state = ResourceState.CHATTING
+        other._state = ResourceState.CHATTING
+        self._attracted_to.add(other)
+        other._attracted_to.add(self)
+        return True
+
+    async def start_pull(self, source: 'MagneticResource') -> bool:
+        """Start pulling data from another resource"""
+        if not self.can_attract(source):
+            return False
+        
+        self._state = ResourceState.PULLING
+        self._attracted_to.add(source)
+        return True
 
 # ==================== Main Classes ====================
 class MagneticField:
@@ -370,3 +402,23 @@ class MagneticField:
             status += f", mode={self._current_context.interaction_type.name}"
         status += ")"
         return status
+
+    async def enable_chat(self, model1: MagneticResource, model2: MagneticResource) -> bool:
+        """Enable direct communication between models"""
+        if not (model1.name in self._resources and model2.name in self._resources):
+            raise ValueError("Both models must be in the field")
+        
+        success = await model1.start_chat(model2)
+        if success:
+            self._emit_event(ChatEvent(model1, model2))
+        return success
+
+    async def enable_pull(self, target: MagneticResource, source: MagneticResource) -> bool:
+        """Enable one-way data flow"""
+        if not (target.name in self._resources and source.name in self._resources):
+            raise ValueError("Both resources must be in the field")
+        
+        success = await target.start_pull(source)
+        if success:
+            self._emit_event(PullEvent(target, source))
+        return success

@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Any, Type, Union
 from .base import ToolConfig, ToolPermission
 from .magnetic import MagneticTool
 from .search_providers import get_provider, SearchProvider, GenericSearchProvider
+from ..core.logger import get_logger
 
 class WebSearchTool(MagneticTool):
     """Tool for performing web searches with magnetic capabilities"""
@@ -27,7 +28,7 @@ class WebSearchTool(MagneticTool):
             description=description,
             magnetic=magnetic,
             sticky=sticky,
-            shared_resources=["query", "search_results", "last_search"],
+            shared_resources=["query", "search_results"],  # Removed last_search to simplify
             config=ToolConfig(
                 required_permissions=[
                     ToolPermission.NETWORK,
@@ -59,6 +60,7 @@ class WebSearchTool(MagneticTool):
             **provider_config
         )
         self.max_results = max_results
+        self.logger = get_logger()
 
     async def initialize(self) -> None:
         """Initialize search provider"""
@@ -84,10 +86,6 @@ class WebSearchTool(MagneticTool):
         if any(word in query.lower() for word in ['latest', 'recent', 'new', 'current']):
             concepts.append('2023')  # Current year
         
-        # Look for type indicators
-        if any(word in query.lower() for word in ['research', 'paper', 'study', 'development']):
-            concepts.append('research')
-        
         # Extract noun phrases (simple approach)
         words = query.split()
         for i in range(len(words)-1):
@@ -100,18 +98,11 @@ class WebSearchTool(MagneticTool):
         if not base_concepts:
             base_concepts = [query]
         
-        for base in base_concepts:
-            # Academic focus
-            queries.append(f"latest research {base} academic")
-            queries.append(f"recent developments {base} scientific")
-            
-            # Field specific
-            if 'physics' in query.lower():
-                queries.append(f"{base} physics research paper")
-            if 'theory' in query.lower():
-                queries.append(f"{base} theoretical developments")
+        # Use base query and concepts directly
+        queries.append(query)  # Original query first
+        queries.extend(base_concepts)  # Then key concepts
         
-        return queries[:3]  # Limit to top 3 queries
+        return queries[:2]  # Limit to original query + 1 concept
 
     async def prepare_input(self, input_data: Any) -> str:
         """Prepare input for search"""
@@ -140,10 +131,23 @@ class WebSearchTool(MagneticTool):
         ]
         
         for i, result in enumerate(results, 1):
+            # Get URL from either 'url' (SearchResult) or 'link' (raw API result)
+            url = result.get('url') or result.get('link', 'No link available')
+            title = result.get('title', 'Untitled')
+            snippet = result.get('snippet', 'No description available')
+            
+            # Log result details for debugging
+            self.logger.debug(f"Result {i}:")
+            self.logger.debug(f"  Title: {title}")
+            self.logger.debug(f"  URL: {url}")
+            self.logger.debug(f"  Snippet: {snippet}")
+            
+            # Format as markdown with reference-style links
             lines.extend([
-                f"### {i}. {result.get('title', 'Untitled')}\n",
-                f"**Source**: {result.get('link', 'No link available')}\n",
-                f"{result.get('snippet', 'No description available')}\n"
+                f"### {i}. {title}\n",
+                f"{snippet}\n",
+                f"[Source][{i}]\n",  # Reference-style link
+                f"[{i}]: {url}\n"    # Link definition at end
             ])
         
         return "\n".join(lines)
@@ -153,35 +157,46 @@ class WebSearchTool(MagneticTool):
         try:
             # Get base query from input
             base_query = await self.prepare_input(input_data)
+            self.logger.debug(f"Base query: {base_query}")
             
             # Generate optimized queries
             queries = self._optimize_query(base_query)
+            self.logger.debug(f"Optimized queries: {queries}")
             
             # Track all results
             all_results = []
             
             # Try each query until we get good results
             for query in queries:
-                # Share query magnetically
+                # Share query magnetically (only with models)
                 if self.magnetic:
                     await self.share_resource("query", query)
                 
                 # Perform search
-                results = await self.provider.search(
-                    query=query,
-                    max_results=self.max_results,
-                    **kwargs
-                )
-                
-                # Convert to dictionary format
-                results_dict = [result.to_dict() for result in results]
-                
-                # Add results
-                all_results.extend(results_dict)
-                
-                # If we have enough relevant results, stop
-                if len(all_results) >= self.max_results:
-                    break
+                try:
+                    self.logger.debug(f"Searching with query: {query}")
+                    results = await self.provider.search(
+                        query=query,
+                        max_results=self.max_results,
+                        **kwargs
+                    )
+                    
+                    # Convert to dictionary format
+                    results_dict = [result.to_dict() for result in results]
+                    self.logger.debug(f"Got {len(results_dict)} results")
+                    
+                    # Add results
+                    all_results.extend(results_dict)
+                    
+                    # If we have enough relevant results, stop
+                    if len(all_results) >= self.max_results:
+                        break
+                except Exception as e:
+                    self.logger.error(f"Search failed for query '{query}': {str(e)}")
+                    continue
+            
+            if not all_results:
+                raise RuntimeError("No search results found for any query")
             
             # Take top results
             final_results = all_results[:self.max_results]
@@ -189,30 +204,16 @@ class WebSearchTool(MagneticTool):
             # Format results as markdown
             formatted_results = self._format_results_as_markdown(final_results, base_query)
             
-            # Share results magnetically
+            # Share results magnetically (only with models)
             if self.magnetic:
                 await self.share_resource("search_results", formatted_results)
-                await self.share_resource("last_search", {
-                    "original_query": base_query,
-                    "optimized_queries": queries,
-                    "results": final_results
-                })
             
-            # Return formatted results instead of raw results
+            # Return formatted results
             return formatted_results
             
         except Exception as e:
+            self.logger.error(f"Search failed: {str(e)}")
             raise RuntimeError(f"Search failed: {str(e)}")
-
-    async def _on_resource_shared(self, source: 'MagneticTool', resource_name: str, data: Any) -> None:
-        """Handle shared resources from other tools"""
-        # If we receive file content that looks like a search query, use it
-        if resource_name == "file_content" and isinstance(data, str):
-            # Simple heuristic: if it ends with a question mark or has search keywords
-            search_keywords = ["what", "how", "who", "where", "when", "why", "find", "search"]
-            if (data.strip().endswith("?") or 
-                any(keyword in data.lower() for keyword in search_keywords)):
-                await self.share_resource("query", data.strip())
 
     def __str__(self) -> str:
         status = []

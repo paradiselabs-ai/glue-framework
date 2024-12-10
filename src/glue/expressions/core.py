@@ -4,7 +4,6 @@
 
 from functools import wraps
 from typing import Any, List, Dict, Union, Optional
-from ..magnetic.field import AttractionStrength
 from .chain import Chain
 
 def glue_app(name: str):
@@ -18,9 +17,8 @@ def glue_app(name: str):
 
 class field:
     """Magnetic field context with minimal syntax"""
-    def __init__(self, name: str, strength: str = "medium"):
+    def __init__(self, name: str):
         self.name = name
-        self.strength = AttractionStrength[strength.upper()]
     
     async def __aenter__(self):
         return self
@@ -42,11 +40,10 @@ class field:
                 return await func(*args, **kwargs)
         return wrapper
 
-def magnet(name: str, strength: str = "medium", **kwargs) -> Dict[str, Any]:
+def magnet(name: str, **kwargs) -> Dict[str, Any]:
     """Create magnetic component with minimal config"""
     config = {
         "name": name,
-        "strength": AttractionStrength[strength.upper()],
         "__magnet__": True
     }
     config.update(kwargs)

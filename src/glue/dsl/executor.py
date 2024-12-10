@@ -197,6 +197,7 @@ class GlueExecutor:
                 model_settings = {
                     "api_key": api_key,
                     "system_prompt": config.role,
+                    "name": model_name  # Use role name instead of model name
                 }
                 
                 # Add optional configuration
@@ -206,7 +207,16 @@ class GlueExecutor:
                 masked_settings = self._mask_sensitive_data(model_settings)
                 self.logger.debug(f"Creating model with settings: {masked_settings}")
                 
-                self.models[model_name] = OpenRouterProvider(**model_settings)
+                # Create model
+                model = OpenRouterProvider(**model_settings)
+                
+                # Set role and tools
+                model.role = config.role
+                model._tools = {}
+                for tool_name in config.tools:
+                    model.add_tool(tool_name, None)  # Tools will be linked later
+                
+                self.models[model_name] = model
                 self.logger.info(f"Model {model_name} setup complete")
     
     async def _setup_workflow(self, field: MagneticField):
@@ -216,45 +226,93 @@ class GlueExecutor:
         
         self.logger.info("\nSetting up workflow...")
         
-        # Setup attractions
+        # Add models to field first
+        for model_name, model in self.models.items():
+            self.logger.info(f"Adding model to field: {model_name}")
+            await field.add_resource(model)
+        
+        # Setup chat relationships
+        if hasattr(self.app.workflow, 'chat'):
+            for model1, model2 in self.app.workflow.chat:
+                self.logger.info(f"Creating chat relationship: {model1} <--> {model2}")
+                model1_obj = self.models.get(model1)
+                model2_obj = self.models.get(model2)
+                
+                if model1_obj and model2_obj:
+                    await field.enable_chat(model1_obj, model2_obj)
+                else:
+                    self.logger.warning(f"Could not find models for chat: {model1} <--> {model2}")
+        
+        # Setup magnetic attractions between models and tools
         for source, target in self.app.workflow.attractions:
             self.logger.info(f"Creating attraction: {source} >< {target}")
-            source_tool = self.tools.get(source)
-            target_tool = self.tools.get(target)
             
-            if source_tool and target_tool:
-                await field.attract(source_tool, target_tool)
+            # Get source (could be model or tool)
+            source_obj = self.models.get(source) or self.tools.get(source)
+            # Get target (could be model or tool)
+            target_obj = self.models.get(target) or self.tools.get(target)
+            
+            if source_obj and target_obj:
+                # Create attraction between model and tool
+                await field.attract(source_obj, target_obj)
+                
+                # If source is a model, give it access to the tool
+                if source in self.models and target in self.tools:
+                    model = self.models[source]
+                    if hasattr(model, "_tools"):
+                        model._tools[target] = self.tools[target]
+                
+                # If target is a model, give it access to the tool
+                if target in self.models and source in self.tools:
+                    model = self.models[target]
+                    if hasattr(model, "_tools"):
+                        model._tools[source] = self.tools[source]
             else:
-                # Skip if either is a model - models don't need to be magnetic
-                if source not in self.models and target not in self.models:
-                    self.logger.warning(f"Could not find tools for {source} >< {target}")
+                self.logger.warning(f"Could not find objects for attraction: {source} >< {target}")
         
         # Setup repulsions
         for source, target in self.app.workflow.repulsions:
             self.logger.info(f"Creating repulsion: {source} <> {target}")
-            source_tool = self.tools.get(source)
-            target_tool = self.tools.get(target)
             
-            if source_tool and target_tool:
-                await field.repel(source_tool, target_tool)
+            # Get source (could be model or tool)
+            source_obj = self.models.get(source) or self.tools.get(source)
+            # Get target (could be model or tool)
+            target_obj = self.models.get(target) or self.tools.get(target)
+            
+            if source_obj and target_obj:
+                await field.repel(source_obj, target_obj)
+                
+                # If source is a model, remove tool access
+                if source in self.models and target in self.tools:
+                    model = self.models[source]
+                    if hasattr(model, "_tools") and target in model._tools:
+                        del model._tools[target]
+                
+                # If target is a model, remove tool access
+                if target in self.models and source in self.tools:
+                    model = self.models[target]
+                    if hasattr(model, "_tools") and source in model._tools:
+                        del model._tools[source]
             else:
-                # Skip if either is a model - models don't need to be magnetic
-                if source not in self.models and target not in self.models:
-                    self.logger.warning(f"Could not find tools for {source} <> {target}")
-    
-    def _get_binding_patterns(self) -> Dict[str, List[Tuple[str, str]]]:
+                self.logger.warning(f"Could not find objects for repulsion: {source} <> {target}")
+
+    def _get_binding_patterns(self, field: MagneticField) -> Dict[str, Any]:
         """Get binding patterns from workflow"""
         patterns = {
             'glue': [],
             'velcro': [],
             'magnet': [],
-            'tape': []
+            'tape': [],
+            'field': field  # Include the magnetic field
         }
         
         if self.app.workflow:
-            # Convert attractions to tape bindings
+            # Only add model-tool attractions to magnet pattern
             for source, target in self.app.workflow.attractions:
-                patterns['tape'].append((source, target))
+                # Check if this is a model-tool attraction
+                if (source in self.models and target in self.tools) or \
+                   (target in self.models and source in self.tools):
+                    patterns['magnet'].append((source, target))
         
         return patterns
     
@@ -275,6 +333,13 @@ class GlueExecutor:
                 # Setup tools in field
                 await self._setup_tools(field, workspace_path)
                 
+                # Link tools to models
+                for model_name, model in self.models.items():
+                    if hasattr(model, "_tools"):
+                        for tool_name in list(model._tools.keys()):
+                            if tool_name in self.tools:
+                                model._tools[tool_name] = self.tools[tool_name]
+                
                 # Setup workflow
                 await self._setup_workflow(field)
                 
@@ -291,8 +356,8 @@ class GlueExecutor:
                         # Get model's response using conversation manager
                         print("\nthinking...", flush=True)
                         
-                        # Get binding patterns from workflow
-                        binding_patterns = self._get_binding_patterns()
+                        # Get binding patterns from workflow, including field
+                        binding_patterns = self._get_binding_patterns(field)
                         
                         # Process through conversation manager
                         response = await self.conversation.process(
@@ -321,3 +386,4 @@ async def execute_glue_app(app: GlueApp) -> Any:
     """Execute GLUE application"""
     executor = GlueExecutor(app)
     return await executor.execute()
+

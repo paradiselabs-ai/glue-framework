@@ -138,9 +138,9 @@ class ConversationManager:
             for model_name, model in models.items():
                 if model_name not in self.model_roles:
                     self.model_roles[model_name] = DynamicRole(model.role)
-                    if hasattr(model, "tools"):
-                        for tool in model.tools:
-                            self.model_roles[model_name].allow_tool(tool)
+                    if hasattr(model, "_tools"):
+                        for tool_name in model._tools:
+                            self.model_roles[model_name].allow_tool(tool_name)
 
             # Determine conversation flow based on binding patterns and context
             flow = self._determine_flow(binding_patterns, context)
@@ -180,9 +180,7 @@ class ConversationManager:
                         continue
                     
                     # Get model's tools
-                    model_tools = []
-                    if hasattr(model, "tools"):
-                        model_tools = model.tools
+                    model_tools = list(model._tools.keys()) if hasattr(model, "_tools") else []
                     
                     # Enhance model's role with tool capabilities
                     if model_tools and hasattr(model, "role"):
@@ -431,9 +429,11 @@ class ConversationManager:
         """Enhance model role with integrated tool capabilities"""
         import re
         
-        # Start with core capability statement
+        # Start with original role
+        enhanced = role
+        
+        # Add tool capabilities without losing role identity
         if tools:
-            # Make tools feel like natural capabilities
             tool_descriptions = {
                 "web_search": "search and retrieve information",
                 "file_handler": "create and manage documents",
@@ -445,34 +445,12 @@ class ConversationManager:
                 for tool in tools
             ]
             
-            enhanced = (
-                f"You are an advanced system with integrated capabilities to {', '.join(capabilities)}. "
-                f"Your role: {role}"
-            )
-        else:
-            return role
+            # Add capabilities while preserving role
+            enhanced += f"\n\nAs part of this role, you can {', '.join(capabilities)}."
         
-        # Apply all pattern replacements
+        # Apply pattern replacements while preserving role identity
         for pattern, replacement in self.TOOL_PATTERNS.items():
             enhanced = re.sub(pattern, replacement, enhanced)
-        
-        # Add implicit tool use expectations
-        tool_expectations = []
-        if "web_search" in tools:
-            tool_expectations.append(
-                "When information is needed, use web_search rather than stating limitations."
-            )
-        if "file_handler" in tools:
-            tool_expectations.append(
-                "When handling documents, use file_handler rather than discussing limitations."
-            )
-        if "code_interpreter" in tools:
-            tool_expectations.append(
-                "When working with code, use code_interpreter rather than describing limitations."
-            )
-        
-        if tool_expectations:
-            enhanced += f"\n\nExpectations: {' '.join(tool_expectations)}"
         
         return enhanced
 

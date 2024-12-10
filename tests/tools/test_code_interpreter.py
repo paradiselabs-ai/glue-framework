@@ -7,8 +7,8 @@ import os
 import tempfile
 from typing import Dict, List
 from src.glue.tools.code_interpreter import CodeInterpreterTool
-from src.glue.tools.magnetic import ResourceLockedException, ResourceStateException
-from src.glue.magnetic.field import MagneticField, AttractionStrength, ResourceState
+from src.glue.tools.magnetic import MagneticTool
+from src.glue.magnetic.field import MagneticField, ResourceState
 
 # ==================== Test Data ====================
 TEST_PYTHON_CODE = """
@@ -39,9 +39,8 @@ async def field():
 @pytest_asyncio.fixture
 async def tool_in_field(interpreter, field):
     """Create a tool and add it to a field"""
-    field.add_resource(interpreter)
+    await field.add_resource(interpreter)
     await interpreter.initialize()
-    interpreter._current_field = field
     return interpreter
 
 # ==================== Tests ====================
@@ -49,13 +48,11 @@ def test_initialization():
     """Test tool initialization"""
     tool = CodeInterpreterTool(
         name="test_interpreter",
-        description="Test interpreter",
-        strength=AttractionStrength.STRONG
+        description="Test interpreter"
     )
     
     assert tool.name == "test_interpreter"
     assert tool.description == "Test interpreter"
-    assert tool.strength == AttractionStrength.STRONG
     assert tool._state == ResourceState.IDLE
     assert not tool._is_initialized
     assert "python" in tool.supported_languages
@@ -64,8 +61,9 @@ def test_initialization():
 async def test_execution_without_field(interpreter):
     """Test execution fails without field"""
     await interpreter.initialize()
-    with pytest.raises(ResourceStateException):
-        await interpreter.execute(TEST_PYTHON_CODE, "python")
+    result = await interpreter.execute(TEST_PYTHON_CODE, "python")
+    assert not result["success"]
+    assert "Cannot execute without magnetic field" in result["error"]
 
 @pytest.mark.asyncio
 async def test_execution_in_field(tool_in_field):
@@ -77,18 +75,22 @@ async def test_execution_in_field(tool_in_field):
     assert tool_in_field._state == ResourceState.IDLE
 
 @pytest.mark.asyncio
-async def test_locked_execution(tool_in_field):
+async def test_locked_execution(tool_in_field, field):
     """Test execution fails when locked"""
-    # Lock the tool
+    # Create holder tool
     holder = CodeInterpreterTool(
         name="holder",
         description="Holder tool"
     )
-    await tool_in_field.lock(holder)
+    await field.add_resource(holder)
+    
+    # Lock the tool
+    await field.lock_resource(tool_in_field, holder)
     
     # Try to execute
-    with pytest.raises(ResourceLockedException):
-        await tool_in_field.execute(TEST_PYTHON_CODE, "python")
+    result = await tool_in_field.execute(TEST_PYTHON_CODE, "python")
+    assert not result["success"]
+    assert "Resource is locked" in result["error"]
 
 @pytest.mark.asyncio
 async def test_shared_execution(field):
@@ -102,14 +104,10 @@ async def test_shared_execution(field):
         name="interpreter2",
         description="Second interpreter"
     )
-    field.add_resource(tool1)
-    field.add_resource(tool2)
+    await field.add_resource(tool1)
+    await field.add_resource(tool2)
     await tool1.initialize()
     await tool2.initialize()
-    
-    # Ensure field membership
-    tool1._current_field = field
-    tool2._current_field = field
     
     # Create attraction
     await field.attract(tool1, tool2)
@@ -118,6 +116,58 @@ async def test_shared_execution(field):
     result = await tool1.execute(TEST_PYTHON_CODE, "python")
     assert result["success"]
     assert tool1._state == ResourceState.SHARED
+
+@pytest.mark.asyncio
+async def test_chat_execution(field):
+    """Test execution with chat relationship"""
+    # Create and add tools
+    tool1 = CodeInterpreterTool(
+        name="interpreter1",
+        description="First interpreter"
+    )
+    tool2 = CodeInterpreterTool(
+        name="interpreter2",
+        description="Second interpreter"
+    )
+    await field.add_resource(tool1)
+    await field.add_resource(tool2)
+    await tool1.initialize()
+    await tool2.initialize()
+    
+    # Enable chat
+    await field.enable_chat(tool1, tool2)
+    
+    # Execute tool1
+    result = await tool1.execute(TEST_PYTHON_CODE, "python")
+    assert result["success"]
+    assert tool1._state == ResourceState.CHATTING
+    assert tool2._state == ResourceState.CHATTING
+
+@pytest.mark.asyncio
+async def test_pull_execution(field):
+    """Test execution with pull relationship"""
+    # Create and add tools
+    source = CodeInterpreterTool(
+        name="source",
+        description="Source interpreter"
+    )
+    target = CodeInterpreterTool(
+        name="target",
+        description="Target interpreter"
+    )
+    await field.add_resource(source)
+    await field.add_resource(target)
+    await source.initialize()
+    await target.initialize()
+    
+    # Enable pull
+    await field.enable_pull(target, source)
+    
+    # Execute source
+    result = await source.execute(TEST_PYTHON_CODE, "python")
+    assert result["success"]
+    assert target._state == ResourceState.PULLING
+    assert source in target._attracted_to
 
 @pytest.mark.asyncio
 async def test_cleanup(tool_in_field):
@@ -132,9 +182,8 @@ async def test_cleanup(tool_in_field):
         description="Other interpreter"
     )
     field = tool_in_field._current_field
-    field.add_resource(other)
+    await field.add_resource(other)
     await other.initialize()
-    other._current_field = field
     await field.attract(tool_in_field, other)
     
     # Cleanup
@@ -190,12 +239,10 @@ async def test_str_representation():
     tool = CodeInterpreterTool(
         name="test_interpreter",
         description="Test interpreter",
-        strength=AttractionStrength.STRONG,
         supported_languages=["python"]
     )
     expected = (
         "test_interpreter: Test interpreter "
-        "(Magnetic Code Interpreter, Languages: python, "
-        "Strength: STRONG, State: IDLE)"
+        "(Languages: python - Magnetic, Shares: code, output, language, execution_result)"
     )
     assert str(tool) == expected

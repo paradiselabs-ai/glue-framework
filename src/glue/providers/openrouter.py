@@ -9,8 +9,9 @@ from typing import Dict, List, Any, Optional
 from .base import BaseProvider
 from ..core.model import ModelConfig
 from ..core.logger import get_logger
+from ..magnetic.field import MagneticResource
 
-class OpenRouterProvider(BaseProvider):
+class OpenRouterProvider(BaseProvider, MagneticResource):
     """Provider for OpenRouter API"""
     
     def __init__(
@@ -19,7 +20,8 @@ class OpenRouterProvider(BaseProvider):
         model: str = "liquid/lfm-40b:free",
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 1000
+        max_tokens: int = 1000,
+        name: Optional[str] = None  # Add name parameter for MagneticResource
     ):
         # Create model config
         config = ModelConfig(
@@ -28,13 +30,20 @@ class OpenRouterProvider(BaseProvider):
             system_prompt=system_prompt
         )
         
-        # Initialize base provider
-        super().__init__(
-            name=model,
+        # Initialize base provider with model name
+        BaseProvider.__init__(
+            self,
+            name=model,  # Use model ID for API calls
             api_key=api_key or os.getenv("OPENROUTER_API_KEY"),
             config=config,
             base_url="https://openrouter.ai/api/v1"
         )
+        
+        # Initialize magnetic resource with role name
+        MagneticResource.__init__(self, name=name or model)
+        
+        # Store model ID separately from role name
+        self.model_id = model
         
         if not self.api_key:
             raise ValueError("OpenRouter API key not found")
@@ -60,7 +69,7 @@ class OpenRouterProvider(BaseProvider):
         })
         
         request_data = {
-            "model": self.name,
+            "model": self.model_id,  # Use model ID for API calls
             "messages": self.messages,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens

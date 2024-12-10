@@ -6,7 +6,7 @@ import sys
 import asyncio
 from pathlib import Path
 from typing import Optional
-from glue.dsl import parse_glue_file, execute_glue_app, load_env
+from .dsl import parse_glue_file, execute_glue_app, load_env
 
 async def run_glue_app(file_path: str):
     """Run GLUE application"""
