@@ -51,6 +51,8 @@ class ContextState:
     requires_memory: bool
     requires_persistence: bool
     confidence: float  # 0.0 to 1.0
+    target_model: Optional[str] = None  # Model this interaction is directed at
+    chat_mode: bool = False  # Whether this is a model-to-model chat
 
 class ContextAnalyzer:
     """Analyzes user input to determine context and requirements"""
@@ -104,6 +106,33 @@ class ContextAnalyzer:
         r"(?i)how are you": 0.9,
         r"(?i)nice to": 0.8,
         r"(?i)good (?:morning|afternoon|evening)": 0.9
+    }
+    
+    # Model-specific patterns
+    MODEL_PATTERNS = {
+        "researcher": [
+            r"(?i)research(?:er)?",
+            r"(?i)find (?:information|details|data)",
+            r"(?i)search for",
+            r"(?i)look up",
+            r"(?i)investigate"
+        ],
+        "writer": [
+            r"(?i)writ(?:er|e|ing)",
+            r"(?i)document",
+            r"(?i)organize",
+            r"(?i)save",
+            r"(?i)store"
+        ]
+    }
+    
+    # Chat interaction patterns
+    CHAT_INTERACTION_PATTERNS = {
+        r"(?i)tell (?:the )?(?:other|researcher|writer)": 0.9,
+        r"(?i)ask (?:the )?(?:researcher|writer)": 0.9,
+        r"(?i)share with (?:the )?(?:researcher|writer)": 0.9,
+        r"(?i)let (?:the )?(?:researcher|writer) know": 0.9,
+        r"(?i)pass (?:this )?to (?:the )?(?:researcher|writer)": 0.9
     }
     
     # Tool requirement patterns (expanded)
@@ -185,6 +214,10 @@ class ContextAnalyzer:
         requires_memory = self._requires_memory(input_text)
         requires_persistence = self._requires_persistence(input_text)
         
+        # Check for model-specific targeting and chat mode
+        target_model = self._identify_target_model(input_text)
+        chat_mode = self._is_chat_mode(input_text)
+        
         # Adjust for research context
         if requires_research:
             # Ensure research tools are included
@@ -202,13 +235,30 @@ class ContextAnalyzer:
             requires_research=requires_research,
             requires_memory=requires_memory,
             requires_persistence=requires_persistence,
-            confidence=confidence
+            confidence=confidence,
+            target_model=target_model,
+            chat_mode=chat_mode
         )
         
         # Update history
         self.interaction_history.append(state)
         
         return state
+    
+    def _identify_target_model(self, text: str) -> Optional[str]:
+        """Identify if the interaction is targeted at a specific model"""
+        for model_name, patterns in self.MODEL_PATTERNS.items():
+            for pattern in patterns:
+                if re.search(pattern, text):
+                    return model_name
+        return None
+    
+    def _is_chat_mode(self, text: str) -> bool:
+        """Determine if this is a model-to-model chat interaction"""
+        return any(
+            re.search(pattern, text)
+            for pattern, _ in self.CHAT_INTERACTION_PATTERNS.items()
+        )
     
     def _determine_type(self, text: str, requires_research: bool) -> tuple[InteractionType, float]:
         """Determine the type of interaction and confidence level"""
@@ -217,36 +267,42 @@ class ContextAnalyzer:
         research_confidence = 0.0
         task_confidence = 0.0
         
-        # Check research patterns first if research is required
+        # Check research patterns first
+        for pattern, conf in self.RESEARCH_PATTERNS.items():
+            if re.search(pattern, text):
+                research_confidence = max(research_confidence, conf)
+        
+        # Force research mode if research is required
         if requires_research:
-            research_confidence = 0.8  # High confidence for research
-        else:
-            # Check research patterns
-            for pattern, conf in self.RESEARCH_PATTERNS.items():
-                if re.search(pattern, text):
-                    research_confidence = max(research_confidence, conf)
+            research_confidence = max(research_confidence, 0.8)
         
         # Check task patterns
         for pattern, conf in self.TASK_PATTERNS.items():
             if re.search(pattern, text):
                 task_confidence = max(task_confidence, conf)
         
-        # Only check chat patterns if no strong research/task confidence
-        if max(research_confidence, task_confidence) < 0.6:
-            for pattern, conf in self.CHAT_PATTERNS.items():
-                if re.search(pattern, text):
-                    chat_confidence = max(chat_confidence, conf)
+        # Check chat patterns
+        for pattern, conf in self.CHAT_PATTERNS.items():
+            if re.search(pattern, text):
+                chat_confidence = max(chat_confidence, conf)
         
-        # Determine type based on highest confidence
-        if research_confidence >= 0.6:
-            return InteractionType.RESEARCH, research_confidence
+        # Determine type based on highest confidence and context
+        # Research takes priority if there's any indication of research need
+        if research_confidence >= 0.6 or requires_research:
+            return InteractionType.RESEARCH, max(research_confidence, 0.7)
         elif task_confidence >= 0.6:
             return InteractionType.TASK, task_confidence
-        elif chat_confidence >= 0.8:  # Higher threshold for chat
+        elif chat_confidence >= 0.6:
+            # Even in chat mode, check if we need research
+            if any(word in text.lower() for word in [
+                "about", "what", "how", "why", "when", "where", "who",
+                "explain", "tell me", "find", "look up", "search"
+            ]):
+                return InteractionType.RESEARCH, 0.7
             return InteractionType.CHAT, chat_confidence
             
-        # Default to RESEARCH if unclear but research is required
-        if requires_research:
+        # Default to RESEARCH if unclear but has question words
+        if any(word in text.lower() for word in ["what", "how", "why", "when", "where", "who"]):
             return InteractionType.RESEARCH, 0.7
             
         # Default to UNKNOWN if no clear pattern

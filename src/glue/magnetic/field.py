@@ -120,10 +120,8 @@ class MagneticResource:
         self._attracted_to.add(other)
         other._attracted_to.add(self)
         
-        if self._state == ResourceState.IDLE:
-            self._state = ResourceState.SHARED
-        if other._state == ResourceState.IDLE:
-            other._state = ResourceState.SHARED
+        await self.update_state()
+        await other.update_state()
             
         return True
 
@@ -137,10 +135,15 @@ class MagneticResource:
         other._attracted_to.discard(self)
         
         # Update states
+        await self.update_state()
+        await other.update_state()
+
+    async def update_state(self) -> None:
+        """Update the resource state based on its current attractions"""
         if not self._attracted_to:
             self._state = ResourceState.IDLE
-        if not other._attracted_to:
-            other._state = ResourceState.IDLE
+        elif self._state != ResourceState.LOCKED:
+            self._state = ResourceState.SHARED
 
     async def enter_field(self, field: 'MagneticField') -> None:
         """Enter a magnetic field"""
@@ -152,6 +155,8 @@ class MagneticResource:
     async def exit_field(self) -> None:
         """Exit current magnetic field"""
         if self._current_field:
+            for other in list(self._attracted_to):
+                await self.repel_from(other)
             self._current_field = None
             self._attracted_to.clear()
             self._repelled_by.clear()
@@ -159,6 +164,11 @@ class MagneticResource:
             self._lock_holder = None
             self._current_context = None
             self._required_for_context = False
+            await self.cleanup()
+
+    async def cleanup(self) -> None:
+        """Cleanup method to be overridden by subclasses"""
+        pass
 
     async def lock(self, holder: 'MagneticResource') -> bool:
         """Lock the resource for exclusive use"""
@@ -250,8 +260,7 @@ class MagneticField:
         
         # Clean up resources
         for resource in list(self._resources.values()):
-            await resource.exit_field()
-        self._resources.clear()
+            await self.remove_resource(resource)
         
         self._active = False
         self._current_context = None
@@ -273,6 +282,9 @@ class MagneticField:
         if resource.name in self._resources:
             raise ValueError(f"Resource {resource.name} already exists in field")
         
+        if resource._current_field:
+            raise ValueError(f"Resource {resource.name} is already in another field")
+        
         self._resources[resource.name] = resource
         # Ensure field membership is set
         await resource.enter_field(self)
@@ -285,7 +297,17 @@ class MagneticField:
         """Remove a resource from the field"""
         if resource.name in self._resources:
             del self._resources[resource.name]
-            await resource.exit_field()
+            try:
+                # Repel from all attracted resources
+                for attracted in list(resource._attracted_to):
+                    if attracted.name in self._resources:
+                        await self.repel(resource, attracted)
+                
+                await resource.exit_field()
+            except Exception as e:
+                # Propagate the error but ensure the resource is removed
+                self._emit_event(ResourceRemovedEvent(resource))
+                raise e
             self._emit_event(ResourceRemovedEvent(resource))
 
     async def attract(
@@ -309,7 +331,7 @@ class MagneticField:
     ) -> None:
         """Create repulsion between two resources"""
         if not (source.name in self._resources and target.name in self._resources):
-            raise ValueError("Both resources must be in the field")
+            return  # Silently ignore if either resource is not in the field
         
         await source.repel_from(target)
         self._emit_event(RepulsionEvent(source, target))

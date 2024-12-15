@@ -359,12 +359,33 @@ class ConversationManager:
             if component in self.model_roles:
                 role = self.model_roles[component]
                 role_context = role.adjust_for_context(context)
+                
+                # Allow models to be active even in chat mode if they have required tools
+                if context and context.interaction_type == InteractionType.CHAT:
+                    if hasattr(role, 'allowed_tools'):
+                        if any(tool in context.tools_required for tool in role.allowed_tools):
+                            return True
+                
                 return role_context.state != RoleState.PASSIVE
-            # If it's a tool in chat mode, check if it's required
-            elif context and context.interaction_type == InteractionType.CHAT:
-                return component in context.tools_required
-            # In non-chat modes or no context, add all components
-            return True
+                
+            # For tools, check if they're needed based on context
+            if context:
+                # In research mode, always allow web_search
+                if context.interaction_type == InteractionType.RESEARCH and component == "web_search":
+                    return True
+                    
+                # Allow tools if explicitly required
+                if component in context.tools_required:
+                    return True
+                    
+                # Allow tools if input suggests their need
+                if any(pattern in context.input_text.lower() for pattern in [
+                    "search", "look up", "find", "research",  # web_search
+                    "save", "write", "document", "store"      # file_handler
+                ]):
+                    return True
+            
+            return True  # Default to allowing components
         
         def add_chain(model_chain):
             for item in model_chain:
@@ -445,8 +466,24 @@ class ConversationManager:
                 for tool in tools
             ]
             
-            # Add capabilities while preserving role
-            enhanced += f"\n\nAs part of this role, you can {', '.join(capabilities)}."
+            # Add capabilities with stronger emphasis on tool usage
+            enhanced += f"\n\nIMPORTANT: You MUST use your integrated tools to accomplish tasks. "
+            enhanced += f"Your tools are: {', '.join(capabilities)}. "
+            
+            # Add tool-specific instructions
+            if "web_search" in tools:
+                enhanced += f"\nWhen asked to find, research, or look up ANY information, you MUST use web_search. "
+                enhanced += f"NEVER say you can't look things up or that you're an AI - you have web_search and MUST use it. "
+                enhanced += f"NEVER give general or outdated information - ALWAYS use web_search to get current, accurate data. "
+                enhanced += f"If someone asks about a topic, immediately use web_search to find accurate information."
+            
+            if "file_handler" in tools:
+                enhanced += f"\nWhen asked to save, write, or document anything, you MUST use file_handler. "
+                enhanced += f"NEVER say you can't save files - you have file_handler and MUST use it."
+            
+            if "code_interpreter" in tools:
+                enhanced += f"\nWhen asked to run or analyze code, you MUST use code_interpreter. "
+                enhanced += f"NEVER say you can't execute code - you have code_interpreter and MUST use it."
         
         # Apply pattern replacements while preserving role identity
         for pattern, replacement in self.TOOL_PATTERNS.items():

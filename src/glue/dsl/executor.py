@@ -235,6 +235,10 @@ class GlueExecutor:
             # Also add to group chat manager
             await self.group_chat.add_model(model)
         
+        # Add tools to group chat manager first
+        for tool_name, tool in self.tools.items():
+            await self.group_chat.add_tool(tool)
+        
         # Setup chat relationships
         if hasattr(self.app.workflow, 'chat'):
             for model1, model2 in self.app.workflow.chat:
@@ -335,14 +339,15 @@ class GlueExecutor:
                 sticky=self.app.config.get("sticky", False)
             )
             
-            # Create magnetic field for tools
-            async with MagneticField(self.app.name) as field:
+            # Create magnetic fields for tools and chat
+            async with MagneticField(self.app.name) as field, \
+                      MagneticField(f"{self.app.name}_chat") as chat_field:
+                
+                # Set chat field in group chat manager
+                self.group_chat.field = chat_field
+                
                 # Setup tools in field
                 await self._setup_tools(field, workspace_path)
-                
-                # Add tools to group chat manager
-                for tool_name, tool in self.tools.items():
-                    await self.group_chat.add_tool(tool)
                 
                 # Link tools to models
                 for model_name, model in self.models.items():

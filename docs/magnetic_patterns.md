@@ -5,7 +5,6 @@
 ### Flow Operators
 - `><` : Bidirectional attraction (can use and receive)
 - `<-` : Unidirectional flow (can only receive from)
-- `->` : Unidirectional flow (can only send to)
 - `<>` : Repulsion (cannot interact)
 - `<-->` : Double Direct (Exclusively used for Conversational interaction between models)
 
@@ -15,7 +14,7 @@ workflow {
     researcher <--> writer # researcher and the writer can (only) chat between each other, they cannot share tools unless defined in the attract and repel config below
 
     attract {
-        researcher >< web_search  # researcher can recieve and send web_search  queries 
+        researcher >< web_search  # researcher can receive and send web_search queries 
         writer <- web_search # Writer can receive from but not use web_search 
         writer >< file_handler # Writer can use and receive from file_handler
     }
@@ -28,34 +27,47 @@ workflow {
 ## Context-Aware Behaviors
 
 ### Interaction States
-1. Direct Chat (<-->)
+1. Direct Chat (CHATTING, "<-->")
    - No tool usage
    - Direct model responses
    - Conversational context
 
-2. Research Mode
+2. Research Mode (ACTIVE)
    - Researcher uses web_search
    - Results flow to writer
    - Writer creates/updates files
 
-3. File Operations
+3. File Operations (ACTIVE)
    - Writer handles file operations
    - Based on conversation context
    - Maintains file history
 
-4. Collaborative Mode (<-->)
+4. Collaborative Mode (SHARED)
    - Models work together
    - Share context and memory
    - Coordinate responses
 
+5. Pulling Mode (PULLING, "<-")
+   - One-way data flow between resources
+   - Receiving resource in PULLING state
+
+6. Locked Mode (LOCKED)
+   - Resource locked for exclusive use
+   - Other resources cannot interact
+
 ### State Transitions
 ```mermaid
 graph TD
-    A[Chat] -->|Research Request| B[Research]
-    B -->|Results Ready| C[File Operation]
-    C -->|Complete| A
-    A -->|File Request| C
-    B -->|Direct Question| A
+    A[IDLE] -->|Attraction| B[ACTIVE]
+    B -->|Multiple Attractions| C[SHARED]
+    C -->|Repulsion| A
+    B -->|Repulsion| A
+    A -->|Lock| D[LOCKED]
+    D -->|Unlock| A
+    A -->|Start Chat| E[CHATTING]
+    E -->|End Chat| A
+    A -->|Start Pull| F[PULLING]
+    F -->|End Pull| A
 ```
 
 ## Magnetic Resource Sharing
@@ -78,10 +90,10 @@ graph TD
 
 ### Flow Control
 ```glue
-# Example resource flow configuration 1
+# Example resource flow configuration
 resources {
     web_search {
-        researcher -> web_search   # Researcher can only send queries
+        researcher >< web_search   # Researcher can send and receive queries
         writer <- web_search    # Writer can only receive results
     }
     
@@ -108,28 +120,28 @@ resources {
 ## Implementation Guidelines
 
 ### 1. Context Awareness
-- Track conversation state
+- Track conversation state using ContextState
 - Monitor tool usage patterns
 - Maintain interaction history
-- Adapt model behaviors
+- Adapt model behaviors based on context
 
 ### 2. Workflow Management
-- Implicit tool selection
-- Natural state transitions
+- Implicit tool selection based on context
+- Natural state transitions using update_state method
 - Contextual role switching
-- Resource flow control
+- Resource flow control using attract and repel methods
 
 ### 3. Model Collaboration
-- Share relevant context
-- Coordinate responses
-- Maintain conversation flow
-- Handle state transitions
+- Share relevant context through ContextState
+- Coordinate responses using ChatEvent
+- Maintain conversation flow with CHATTING state
+- Handle state transitions with update_state method
 
 ### 4. Memory Management
 - Track file operations
 - Store search history
-- Remember user preferences
-- Share relevant context
+- Remember user preferences in ContextState
+- Share relevant context between resources
 
 ## Example Scenarios
 
@@ -179,3 +191,8 @@ workflow {
 - Cross-model learning
 - Workflow optimization
 - Resource efficiency
+
+### 4. Advanced State Management
+- Implement more granular state transitions
+- Develop strategies for handling complex multi-resource interactions
+- Explore potential for new resource states based on emerging use cases

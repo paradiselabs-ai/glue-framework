@@ -59,6 +59,35 @@ class OpenRouterProvider(BaseProvider, MagneticResource):
                 "role": "system",
                 "content": system_prompt
             })
+
+    @classmethod
+    async def get_available_models(cls, api_key: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fetch available models from OpenRouter API"""
+        api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError("OpenRouter API key not found")
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://github.com/paradiseLabs-ai/glue"
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://openrouter.ai/api/v1/models",
+                    headers=headers
+                ) as response:
+                    if response.status != 200:
+                        result = await response.json()
+                        raise Exception(f"OpenRouter API error: {result}")
+                    
+                    models = await response.json()
+                    return models.get("data", [])
+        except Exception as e:
+            logger = get_logger()
+            logger.error(f"Error fetching models: {str(e)}")
+            raise
     
     async def _prepare_request(self, prompt: str) -> Dict[str, Any]:
         """Prepare request for OpenRouter API"""
