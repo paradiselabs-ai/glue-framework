@@ -18,7 +18,7 @@ var/
 wheels/
 *.egg-info/
 .installed.cfg
-*.egg
+*.egg 
 
 # Environment files
 .env
@@ -107,3 +107,7 @@ progressFiles/**/*
 # Git
 .git/
 .gitignore~
+
+# Cleanup Archive
+cleanup_archive/
+cleanup_archive/**/*

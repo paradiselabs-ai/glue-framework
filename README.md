@@ -1,70 +1,25 @@
 # GLUE Framework
 
-GLUE (GenAI Linking & Unification Engine) is a powerful framework for building AI applications with an intuitive expression language.
+GLUE (GenAI Linking & Unification Engine) is a powerful, innovative framework for building AI applications with an intuitive expression language and advanced resource management.
 
 ## Features
 
+- **Magnetic Field System**: Unique approach to managing AI resources and interactions
 - **Intuitive Expression Language**: Build AI applications using a simple, declarative syntax
 - **Multi-Model Collaboration**: Seamlessly combine different AI models
+- **Context-Aware Processing**: Intelligent context management across models and tools
 - **Built-in Tool System**: Easily integrate and use tools like web search, file operations, etc.
-- **Provider Support**: Currently, GLUE only works with OpenRouter, however we are in active development and other providers will be added ASAP.
-- **Magnetic Field System**: Unique approach to managing AI resources and interactions
-
-## Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/paradiseLabs/glue.git
-cd glue
-
-# Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-## Quick Start
-
-1. Create a `.env` file with your API keys:
-```env
-OPENROUTER_API_KEY=your_key_here
-TAVILY_API_KEY=your_key_here
-```
-
-2. Create a GLUE file (e.g., `app.glue`):
-```glue
-glue app {
-    name = "Research Assistant"
-    tools = web_search
-    model = researcher
-}
-
-researcher {
-    openrouter
-    os.api_key
-    model = "liquid/lfm-40b:free"
-    temperature = 0.7
-    double_side_tape = { web_search }
-}
-
-web_search {
-    tavily
-    os.tavily_api_key
-}
-
-researcher_role = "You are a research assistant..."
-
-apply glue
-```
-
-3. Run your app:
-```bash
-python -m glue.cli app.glue
-```
+- **Provider Support**: Currently supports OpenRouter, with more providers planned
 
 ## Key Concepts
+
+### Magnetic Field System
+
+The core innovation of GLUE is its Magnetic Field System, which provides:
+- Dynamic resource management
+- Context-aware interactions
+- Intelligent tool and model coordination
+- Advanced state tracking and transitions
 
 ### Models
 
@@ -73,6 +28,7 @@ Models are the core AI components that can:
 - Generate responses
 - Use tools
 - Chain operations
+- Adapt to context dynamically
 
 ```glue
 my_model {
@@ -89,7 +45,8 @@ Tools extend model capabilities:
 - Web search
 - File operations
 - Code interpretation
-- Custom tools
+- Custom tool development
+- Intelligent permission management
 
 ```glue
 web_search {
@@ -98,24 +55,19 @@ web_search {
 }
 ```
 
-### Magnetic Fields
+### Expression Language
 
-The magnetic field system manages:
-- Resource allocation
-- Tool interactions
-- State management
-- Error handling
+GLUE's expression language allows for:
+- Declarative workflow definitions
+- Context-based model and tool interactions
+- Dynamic resource binding
+- Intuitive configuration of complex AI systems
 
-### Double-Side Tape
+Apps are written by stacking different blocks of code and then "applying glue". The file is saved as a .glue file. 
 
-Chain operations between models and tools:
+The CLI tool allows running GLUE apps from the terminal similar to python. Where with python you execute a file with "python file.py" you run a GLUE application with "glue file.glue".
 
-```glue
-researcher {
-    openrouter
-    double_side_tape = { web_search >> analyzer }
-}
-```
+The CLI tool also allows users to easily build Agents that can be configured beforehand and then modularly used in different GLUE applications without having to configure the Agent each time, as well as a streamlined process for tool creation and easily setting up a GLUE development environment to begin development in.
 
 ## Examples
 
@@ -158,6 +110,14 @@ coder {
 }
 ```
 
+## Current Development Status
+
+GLUE is currently in active development. We are focusing on:
+- Stabilizing core system integrations
+- Enhancing context-aware processing
+- Developing advanced rule-based optimizations
+- Expanding provider support
+
 ## Contributing
 
 1. Fork the repository
@@ -165,6 +125,14 @@ coder {
 3. Commit your changes (`git commit -m 'Add amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
+
+## Roadmap
+
+- [ ] Complete core framework integration
+- [ ] Expand provider support
+- [ ] Develop comprehensive documentation
+- [ ] Create more advanced example applications
+- [ ] Implement advanced context-aware features
 
 ## License
 
@@ -174,4 +142,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - OpenRouter for providing access to various AI models
 - The AI/ML community for inspiration and support
-# Test commit
