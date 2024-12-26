@@ -107,3 +107,6 @@ progressFiles/**/*
 # Git
 .git/
 .gitignore~
+
+# Requirements
+requirements.txt

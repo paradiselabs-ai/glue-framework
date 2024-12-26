@@ -1,5 +1,3 @@
-# src/glue/providers/openrouter.py
-
 """OpenRouter Provider Implementation"""
 
 import os
@@ -9,10 +7,18 @@ from typing import Dict, List, Any, Optional
 from .base import BaseProvider
 from ..core.model import ModelConfig
 from ..core.logger import get_logger
-from ..magnetic.field import MagneticResource
+from ..core.resource import Resource, ResourceState
 
-class OpenRouterProvider(BaseProvider, MagneticResource):
-    """Provider for OpenRouter API"""
+class OpenRouterProvider(BaseProvider, Resource):
+    """
+    Provider for OpenRouter API.
+    
+    Features:
+    - API integration
+    - State tracking
+    - Conversation history
+    - Resource lifecycle
+    """
     
     def __init__(
         self,
@@ -21,7 +27,7 @@ class OpenRouterProvider(BaseProvider, MagneticResource):
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 1000,
-        name: Optional[str] = None  # Add name parameter for MagneticResource
+        name: Optional[str] = None
     ):
         # Create model config
         config = ModelConfig(
@@ -30,7 +36,7 @@ class OpenRouterProvider(BaseProvider, MagneticResource):
             system_prompt=system_prompt
         )
         
-        # Initialize base provider with model name
+        # Initialize base provider
         BaseProvider.__init__(
             self,
             name=model,  # Use model ID for API calls
@@ -39,10 +45,15 @@ class OpenRouterProvider(BaseProvider, MagneticResource):
             base_url="https://openrouter.ai/api/v1"
         )
         
-        # Initialize magnetic resource with role name
-        MagneticResource.__init__(self, name=name or model)
+        # Initialize resource
+        Resource.__init__(
+            self,
+            name=name or model,
+            category="provider",
+            tags={"provider", "openrouter", model}
+        )
         
-        # Store model ID separately from role name
+        # Store model ID separately
         self.model_id = model
         
         if not self.api_key:
@@ -109,10 +120,14 @@ class OpenRouterProvider(BaseProvider, MagneticResource):
             raise ValueError(f"Unexpected response format: {response}")
     
     async def _make_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Make request to OpenRouter API"""
-        headers = self._get_headers()
+        """Make request to OpenRouter API with state tracking"""
+        if self.state != ResourceState.IDLE:
+            raise RuntimeError(f"Provider {self.name} is busy (state: {self.state.name})")
         
+        self._state = ResourceState.ACTIVE
         try:
+            headers = self._get_headers()
+            
             async with aiohttp.ClientSession() as session:
                 self.logger.debug(f"Making request to: {self.base_url}/chat/completions")
                 async with session.post(
@@ -134,6 +149,8 @@ class OpenRouterProvider(BaseProvider, MagneticResource):
         except json.JSONDecodeError as e:
             self.logger.error(f"Error decoding response: {str(e)}")
             raise
+        finally:
+            self._state = ResourceState.IDLE
     
     async def _handle_error(self, error_response: Dict[str, Any]) -> None:
         """Handle OpenRouter API errors"""
@@ -158,3 +175,13 @@ class OpenRouterProvider(BaseProvider, MagneticResource):
                 "role": "system",
                 "content": self.config.system_prompt
             })
+    
+    async def cleanup(self) -> None:
+        """Cleanup provider resources"""
+        self.clear_history()
+        await super().exit_field()
+    
+    def __str__(self) -> str:
+        """String representation"""
+        status = super().__str__()
+        return f"{status} | Model: {self.model_id}"

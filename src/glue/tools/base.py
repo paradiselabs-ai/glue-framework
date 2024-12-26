@@ -1,10 +1,11 @@
-# src/glue/tools/base.py
+"""GLUE Tool Base System"""
 
-# ==================== Imports ====================
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
+from ..core.resource import Resource, ResourceState
+from ..core.registry import ResourceRegistry
 
 # ==================== Enums ====================
 class ToolPermission(Enum):
@@ -28,35 +29,84 @@ class ToolConfig:
     async_enabled: bool = True
 
 # ==================== Base Tool ====================
-class BaseTool(ABC):
-    """Base class for all tools"""
+class BaseTool(Resource, ABC):
+    """
+    Base class for all GLUE tools.
+    
+    Features:
+    - Resource lifecycle management
+    - Permission system
+    - Error handling
+    - Safe execution
+    - State tracking
+    - Field awareness
+    - Magnetic capabilities
+    """
     def __init__(
         self,
         name: str,
         description: str,
-        config: Optional[ToolConfig] = None
+        config: Optional[ToolConfig] = None,
+        permissions: Optional[Set[str]] = None,
+        magnetic: bool = False,  # Keep magnetic flag for API compatibility
+        sticky: bool = False,    # Keep sticky flag for API compatibility
+        shared_resources: Optional[List[str]] = None  # Resources to share magnetically
     ):
-        self.name = name
+        # Initialize base resource
+        tags = {"tool", name}
+        if magnetic:
+            tags.add("magnetic")
+            if sticky:
+                tags.add("sticky")
+        
+        super().__init__(name, category="tool", tags=tags)
+        
+        # Tool-specific attributes
         self.description = description
         self.config = config or ToolConfig(required_permissions=[])
-        self._is_initialized = False
+        self.permissions = permissions or set()
         self._error_handlers: Dict[type, callable] = {}
+        self._is_initialized = False
+        
+        # Magnetic configuration (for API compatibility)
+        self.magnetic = magnetic
+        self.sticky = sticky
+        self.shared_resources = shared_resources or []
+        
+        # Add magnetic permission if needed
+        if magnetic and ToolPermission.MAGNETIC not in self.config.required_permissions:
+            self.config.required_permissions.append(ToolPermission.MAGNETIC)
 
     @abstractmethod
-    async def execute(self, **kwargs) -> Any:
-        """Execute the tool's main functionality"""
+    async def _execute(self, **kwargs) -> Any:
+        """Tool-specific implementation"""
         pass
 
+    async def execute(self, **kwargs) -> Any:
+        """Execute tool with resource state tracking"""
+        if self.state != ResourceState.IDLE:
+            raise RuntimeError(f"Tool {self.name} is busy (state: {self.state.name})")
+            
+        self._state = ResourceState.ACTIVE
+        try:
+            if not self._is_initialized:
+                await self.initialize()
+            result = await self._execute(**kwargs)
+            return result
+        finally:
+            self._state = ResourceState.IDLE
+
     async def initialize(self) -> None:
-        """Initialize any required resources"""
+        """Initialize tool resources"""
         self._is_initialized = True
 
     async def cleanup(self) -> None:
-        """Cleanup any resources"""
+        """Cleanup tool resources"""
         self._is_initialized = False
+        await super().exit_field()
 
     def add_error_handler(self, error_type: type, handler: callable) -> None:
-        """Add an error handler for specific error types"""
+        """Add error handler for specific error types"""
         self._error_handlers[error_type] = handler
 
     def validate_permissions(self, granted_permissions: List[ToolPermission]) -> bool:
@@ -68,9 +118,6 @@ class BaseTool(ABC):
 
     async def safe_execute(self, **kwargs) -> Any:
         """Execute with error handling and validation"""
-        if not self._is_initialized:
-            await self.initialize()
-
         try:
             return await self.execute(**kwargs)
         except Exception as e:
@@ -79,28 +126,65 @@ class BaseTool(ABC):
                 return await handler(e)
             raise
 
+    # Magnetic API compatibility methods
+    async def share_resource(self, name: str, value: Any) -> None:
+        """Share resource with attracted resources (magnetic API compatibility)"""
+        if not self.magnetic or name not in self.shared_resources:
+            return
+            
+        if self._attracted_to:
+            for resource in self._attracted_to:
+                if hasattr(resource, name):
+                    setattr(resource, name, value)
+
+    def get_shared_resource(self, name: str) -> Optional[Any]:
+        """Get shared resource from attracted resources (magnetic API compatibility)"""
+        if not self.magnetic or name not in self.shared_resources:
+            return None
+            
+        if self._attracted_to:
+            for resource in self._attracted_to:
+                if hasattr(resource, name):
+                    return getattr(resource, name)
+        return None
+
     def __str__(self) -> str:
-        return f"{self.name}: {self.description}"
+        """String representation"""
+        status = super().__str__()
+        if self.magnetic:
+            status += f" | Magnetic"
+            if self.shared_resources:
+                status += f" | Shares: {', '.join(self.shared_resources)}"
+            if self.sticky:
+                status += " | Sticky"
+        return f"{status} | {self.description}"
 
 # ==================== Tool Registry ====================
-class ToolRegistry:
-    """Registry for managing available tools"""
+class ToolRegistry(ResourceRegistry):
+    """
+    Registry specialized for tools.
+    
+    Features:
+    - Tool registration and lookup
+    - Permission management
+    - Safe execution
+    - Resource tracking
+    """
     def __init__(self):
-        self._tools: Dict[str, BaseTool] = {}
+        super().__init__()
         self._granted_permissions: Dict[str, List[ToolPermission]] = {}
 
-    def register(self, tool: BaseTool) -> None:
+    def register_tool(self, tool: BaseTool) -> None:
         """Register a tool"""
-        self._tools[tool.name] = tool
+        self.register(tool, "tool")
 
-    def unregister(self, tool_name: str) -> None:
+    def unregister_tool(self, tool_name: str) -> None:
         """Unregister a tool"""
-        if tool_name in self._tools:
-            del self._tools[tool_name]
+        self.unregister(tool_name)
 
     def get_tool(self, tool_name: str) -> Optional[BaseTool]:
         """Get a tool by name"""
-        return self._tools.get(tool_name)
+        return self.get_resource(tool_name, "tool")
 
     def grant_permissions(
         self,
@@ -130,9 +214,14 @@ class ToolRegistry:
 
     def list_tools(self) -> List[str]:
         """List all registered tools"""
-        return list(self._tools.keys())
+        tools = self.get_resources_by_category("tool")
+        return [t.name for t in tools]
 
     def get_tool_description(self, tool_name: str) -> Optional[str]:
         """Get the description of a tool"""
         tool = self.get_tool(tool_name)
         return str(tool) if tool else None
+
+    def get_tool_permissions(self, tool_name: str) -> List[ToolPermission]:
+        """Get granted permissions for a tool"""
+        return self._granted_permissions.get(tool_name, [])

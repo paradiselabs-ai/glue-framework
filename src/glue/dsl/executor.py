@@ -17,6 +17,7 @@ from ..providers import (
 )
 from ..magnetic.field import MagneticField
 from ..core.conversation import ConversationManager
+from ..core.group_chat_flow import GroupChatManager
 from ..core.workspace import WorkspaceManager
 from ..core.logger import init_logger, get_logger
 
@@ -35,10 +36,11 @@ class GlueExecutor:
         # Initialize workspace manager
         self.workspace_manager = WorkspaceManager()
         
-        # Initialize conversation manager
+        # Initialize managers
         self.conversation = ConversationManager(
             sticky=app.config.get("sticky", False)
         )
+        self.group_chat = GroupChatManager(app.name)
         self._setup_environment()
     
     def _setup_logger(self):
@@ -230,18 +232,15 @@ class GlueExecutor:
         for model_name, model in self.models.items():
             self.logger.info(f"Adding model to field: {model_name}")
             await field.add_resource(model)
+            # Also add to group chat manager
+            await self.group_chat.add_model(model)
         
         # Setup chat relationships
         if hasattr(self.app.workflow, 'chat'):
             for model1, model2 in self.app.workflow.chat:
                 self.logger.info(f"Creating chat relationship: {model1} <--> {model2}")
-                model1_obj = self.models.get(model1)
-                model2_obj = self.models.get(model2)
-                
-                if model1_obj and model2_obj:
-                    await field.enable_chat(model1_obj, model2_obj)
-                else:
-                    self.logger.warning(f"Could not find models for chat: {model1} <--> {model2}")
+                # Use group chat manager for bidirectional chat
+                await self.group_chat.start_chat(model1, model2)
         
         # Setup magnetic attractions between models and tools
         for source, target in self.app.workflow.attractions:
@@ -261,12 +260,16 @@ class GlueExecutor:
                     model = self.models[source]
                     if hasattr(model, "_tools"):
                         model._tools[target] = self.tools[target]
+                    # Set tool relationship in group chat manager
+                    await self.group_chat.set_tool_relationship(source, target, "><")
                 
                 # If target is a model, give it access to the tool
                 if target in self.models and source in self.tools:
                     model = self.models[target]
                     if hasattr(model, "_tools"):
                         model._tools[source] = self.tools[source]
+                    # Set tool relationship in group chat manager
+                    await self.group_chat.set_tool_relationship(target, source, "><")
             else:
                 self.logger.warning(f"Could not find objects for attraction: {source} >< {target}")
         
@@ -287,12 +290,16 @@ class GlueExecutor:
                     model = self.models[source]
                     if hasattr(model, "_tools") and target in model._tools:
                         del model._tools[target]
+                    # Set tool relationship in group chat manager
+                    await self.group_chat.set_tool_relationship(source, target, "<>")
                 
                 # If target is a model, remove tool access
                 if target in self.models and source in self.tools:
                     model = self.models[target]
                     if hasattr(model, "_tools") and source in model._tools:
                         del model._tools[source]
+                    # Set tool relationship in group chat manager
+                    await self.group_chat.set_tool_relationship(target, source, "<>")
             else:
                 self.logger.warning(f"Could not find objects for repulsion: {source} <> {target}")
 
@@ -333,6 +340,10 @@ class GlueExecutor:
                 # Setup tools in field
                 await self._setup_tools(field, workspace_path)
                 
+                # Add tools to group chat manager
+                for tool_name, tool in self.tools.items():
+                    await self.group_chat.add_tool(tool)
+                
                 # Link tools to models
                 for model_name, model in self.models.items():
                     if hasattr(model, "_tools"):
@@ -353,19 +364,27 @@ class GlueExecutor:
                         if user_input.lower() in ['exit', 'quit']:
                             break
                         
-                        # Get model's response using conversation manager
+                        # Get model's response using appropriate manager
                         print("\nthinking...", flush=True)
                         
-                        # Get binding patterns from workflow, including field
-                        binding_patterns = self._get_binding_patterns(field)
-                        
-                        # Process through conversation manager
-                        response = await self.conversation.process(
-                            models=self.models,
-                            binding_patterns=binding_patterns,
-                            user_input=user_input,
-                            tools=self.tools
-                        )
+                        # Check if we have any active chats
+                        active_chats = self.group_chat.get_active_conversations()
+                        if active_chats:
+                            # Use group chat manager for chat interactions
+                            chat_id = next(iter(active_chats))
+                            response = await self.group_chat.process_message(
+                                chat_id,
+                                user_input
+                            )
+                        else:
+                            # Use regular conversation manager for non-chat interactions
+                            binding_patterns = self._get_binding_patterns(field)
+                            response = await self.conversation.process(
+                                models=self.models,
+                                binding_patterns=binding_patterns,
+                                user_input=user_input,
+                                tools=self.tools
+                            )
                         
                         print(f"\nresponse: {response}", flush=True)
         finally:
@@ -378,6 +397,9 @@ class GlueExecutor:
                 if hasattr(tool, 'cleanup'):
                     await tool.cleanup()
             
+            # Cleanup group chat
+            await self.group_chat.cleanup()
+            
             # Cleanup workspace if not sticky
             if not self.app.config.get("sticky", False):
                 self.workspace_manager.cleanup_workspace(workspace_path)
@@ -386,4 +408,3 @@ async def execute_glue_app(app: GlueApp) -> Any:
     """Execute GLUE application"""
     executor = GlueExecutor(app)
     return await executor.execute()
-

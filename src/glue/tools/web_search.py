@@ -1,16 +1,23 @@
-# src/glue/tools/web_search.py
-
 """Web Search Tool Implementation"""
 
 import re
 from typing import Dict, List, Optional, Any, Type, Union
-from .base import ToolConfig, ToolPermission
-from .magnetic import MagneticTool
+from .base import BaseTool, ToolConfig, ToolPermission
 from .search_providers import get_provider, SearchProvider, GenericSearchProvider
 from ..core.logger import get_logger
+from ..core.resource import ResourceState
 
-class WebSearchTool(MagneticTool):
-    """Tool for performing web searches with magnetic capabilities"""
+class WebSearchTool(BaseTool):
+    """
+    Tool for performing web searches with resource capabilities.
+    
+    Features:
+    - Web search integration
+    - Query optimization
+    - Result formatting
+    - Resource state tracking
+    - Field interactions
+    """
     
     def __init__(
         self,
@@ -19,21 +26,15 @@ class WebSearchTool(MagneticTool):
         description: str = "Performs web searches and returns results",
         provider: str = "serp",
         max_results: int = 5,
-        magnetic: bool = True,
-        sticky: bool = False,
         **provider_config
     ):
         super().__init__(
             name=name,
             description=description,
-            magnetic=magnetic,
-            sticky=sticky,
-            shared_resources=["query", "search_results"],  # Removed last_search to simplify
             config=ToolConfig(
                 required_permissions=[
                     ToolPermission.NETWORK,
-                    ToolPermission.READ,
-                    ToolPermission.MAGNETIC
+                    ToolPermission.READ
                 ],
                 timeout=10.0,
                 cache_results=True
@@ -106,11 +107,11 @@ class WebSearchTool(MagneticTool):
 
     async def prepare_input(self, input_data: Any) -> str:
         """Prepare input for search"""
-        # First check if we have a query shared magnetically
-        if self.magnetic:
-            shared_query = self.get_shared_resource("query")
-            if shared_query:
-                return shared_query
+        # Check for shared query from attracted resources
+        if self._attracted_to:
+            for resource in self._attracted_to:
+                if hasattr(resource, "query"):
+                    return resource.query
         
         # If input is a string, use it directly
         if isinstance(input_data, str):
@@ -152,8 +153,8 @@ class WebSearchTool(MagneticTool):
         
         return "\n".join(lines)
 
-    async def execute(self, input_data: Any, **kwargs) -> Union[str, List[Dict[str, str]]]:
-        """Execute web search with magnetic sharing"""
+    async def _execute(self, input_data: Any, **kwargs) -> Union[str, List[Dict[str, str]]]:
+        """Execute web search with resource state tracking"""
         try:
             # Get base query from input
             base_query = await self.prepare_input(input_data)
@@ -168,9 +169,11 @@ class WebSearchTool(MagneticTool):
             
             # Try each query until we get good results
             for query in queries:
-                # Share query magnetically (only with models)
-                if self.magnetic:
-                    await self.share_resource("query", query)
+                # Share query with attracted resources
+                if self._attracted_to:
+                    for resource in self._attracted_to:
+                        if hasattr(resource, "query"):
+                            resource.query = query
                 
                 # Perform search
                 try:
@@ -204,9 +207,11 @@ class WebSearchTool(MagneticTool):
             # Format results as markdown
             formatted_results = self._format_results_as_markdown(final_results, base_query)
             
-            # Share results magnetically (only with models)
-            if self.magnetic:
-                await self.share_resource("search_results", formatted_results)
+            # Share results with attracted resources
+            if self._attracted_to:
+                for resource in self._attracted_to:
+                    if hasattr(resource, "search_results"):
+                        resource.search_results = formatted_results
             
             # Return formatted results
             return formatted_results
@@ -216,15 +221,6 @@ class WebSearchTool(MagneticTool):
             raise RuntimeError(f"Search failed: {str(e)}")
 
     def __str__(self) -> str:
-        status = []
-        if self.magnetic:
-            status.append("Magnetic")
-            if self.shared_resources:
-                status.append(f"Shares: {', '.join(self.shared_resources)}")
-            if self.sticky:
-                status.append("Sticky")
-        return (
-            f"{self.name}: {self.description} "
-            f"(Provider: {self.provider}"
-            f"{' - ' + ', '.join(status) if status else ''})"
-        )
+        """String representation"""
+        status = super().__str__()
+        return f"{status} | Provider: {self.provider}"
