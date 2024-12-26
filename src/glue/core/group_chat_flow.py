@@ -62,7 +62,6 @@ class GroupChatManager:
         """Add a model to the chat system"""
         self.models[model.name] = model
         self.tool_relationships[model.name] = {}
-        await self.field.add_resource(model)
         
         # Extract capabilities from role
         capabilities = set()
@@ -78,7 +77,6 @@ class GroupChatManager:
     async def add_tool(self, tool: MagneticTool) -> None:
         """Add a tool to the system"""
         self.tools[tool.name] = tool
-        await self.field.add_resource(tool)
     
     async def set_tool_relationship(
         self,

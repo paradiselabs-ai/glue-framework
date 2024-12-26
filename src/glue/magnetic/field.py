@@ -147,10 +147,43 @@ class MagneticResource:
 
     async def enter_field(self, field: 'MagneticField') -> None:
         """Enter a magnetic field"""
-        if self._current_field and self._current_field != field:
-            await self.exit_field()
-        self._current_field = field
-        self._state = ResourceState.IDLE
+        import logging
+        logger = logging.getLogger('glue')
+        
+        try:
+            logger.debug(f"Resource {self.name} attempting to enter field {field.name}")
+            
+            # Force cleanup if we're in a bad state
+            if self._current_field and self._current_field != field:
+                logger.debug(f"Resource {self.name} has stale field reference, cleaning up...")
+                try:
+                    await self.exit_field()
+                except Exception as e:
+                    logger.error(f"Error during forced cleanup: {str(e)}")
+                finally:
+                    # Ensure clean state regardless of errors
+                    self._current_field = None
+                    self._attracted_to.clear()
+                    self._repelled_by.clear()
+                    self._state = ResourceState.IDLE
+                    self._lock_holder = None
+            
+            logger.debug(f"Resetting state for resource {self.name}")
+            # Reset state before entering new field
+            self._current_field = None
+            self._attracted_to.clear()
+            self._repelled_by.clear()
+            self._state = ResourceState.IDLE
+            self._lock_holder = None
+            
+            logger.debug(f"Resource {self.name} entering new field {field.name}")
+            # Enter new field
+            self._current_field = field
+            self._state = ResourceState.IDLE
+            logger.debug(f"Resource {self.name} successfully entered field {field.name}")
+        except Exception as e:
+            logger.error(f"Error during field entry: {str(e)}")
+            raise
 
     async def exit_field(self) -> None:
         """Exit current magnetic field"""

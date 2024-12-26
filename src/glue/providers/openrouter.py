@@ -5,6 +5,7 @@
 import os
 import json
 import aiohttp
+import re
 from typing import Dict, List, Any, Optional
 from .base import BaseProvider
 from ..core.model import ModelConfig
@@ -45,6 +46,12 @@ class OpenRouterProvider(BaseProvider, MagneticResource):
         # Store model ID separately from role name
         self.model_id = model
         
+        # Ensure clean magnetic state
+        self._current_field = None
+        self._attracted_to = set()
+        self._repelled_by = set()
+        self._state = None
+        
         if not self.api_key:
             raise ValueError("OpenRouter API key not found")
         
@@ -59,6 +66,22 @@ class OpenRouterProvider(BaseProvider, MagneticResource):
                 "role": "system",
                 "content": system_prompt
             })
+
+    async def generate(self, prompt: str) -> str:
+        """Generate a response using the provider's API and tools"""
+        try:
+            # Use base Model's tool analysis and execution
+            tool_scores = await self._analyze_tool_needs(prompt)
+            tool_results = await self._execute_tool_chain(prompt, tool_scores)
+            enhanced_prompt = await self._enhance_prompt_with_results(prompt, tool_results)
+            
+            # Generate response using enhanced prompt
+            request_data = await self._prepare_request(enhanced_prompt)
+            response = await self._make_request(request_data)
+            return await self._process_response(response)
+            
+        except Exception as e:
+            raise RuntimeError(f"Generation failed: {str(e)}")
 
     @classmethod
     async def get_available_models(cls, api_key: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -187,3 +210,20 @@ class OpenRouterProvider(BaseProvider, MagneticResource):
                 "role": "system",
                 "content": self.config.system_prompt
             })
+    
+    async def cleanup(self) -> None:
+        """Clean up provider resources"""
+        # Clear conversation history
+        self.clear_history()
+        
+        # Clean up magnetic resources
+        if self._current_field:
+            try:
+                await self._current_field.remove_resource(self)
+            except Exception as e:
+                self.logger.error(f"Error cleaning up provider: {str(e)}")
+        
+        self._current_field = None
+        self._attracted_to.clear()
+        self._repelled_by.clear()
+        self._state = None

@@ -153,10 +153,6 @@ class GlueExecutor:
                     **config
                 )
                 
-                # Add tool to field
-                self.logger.info("Adding tool to field")
-                await field.add_resource(tool)
-                
                 self.tools[tool_name] = tool
                 self.logger.info(f"Tool {tool_name} setup complete (sticky={sticky})")
             except Exception as e:
@@ -228,12 +224,38 @@ class GlueExecutor:
         
         self.logger.info("\nSetting up workflow...")
         
-        # Add models to field first
+        # First ensure all resources are cleaned up from any previous fields
+        for model in self.models.values():
+            if model._current_field:
+                self.logger.info(f"Cleaning up model {model.name} from previous field")
+                await model._current_field.remove_resource(model)
+                model._current_field = None
+        
+        for tool in self.tools.values():
+            if tool._current_field:
+                self.logger.info(f"Cleaning up tool {tool.name} from previous field")
+                await tool._current_field.remove_resource(tool)
+                tool._current_field = None
+        
+        # Add tools to field
+        for tool_name, tool in self.tools.items():
+            try:
+                self.logger.info(f"Adding tool to field: {tool_name}")
+                await field.add_resource(tool)
+            except Exception as e:
+                self.logger.error(f"Error adding tool {tool_name} to field: {str(e)}")
+                raise
+        
+        # Add models to field
         for model_name, model in self.models.items():
-            self.logger.info(f"Adding model to field: {model_name}")
-            await field.add_resource(model)
-            # Also add to group chat manager
-            await self.group_chat.add_model(model)
+            try:
+                self.logger.info(f"Adding model to field: {model_name}")
+                await field.add_resource(model)
+                # Also add to group chat manager
+                await self.group_chat.add_model(model)
+            except Exception as e:
+                self.logger.error(f"Error adding model {model_name} to field: {str(e)}")
+                raise
         
         # Add tools to group chat manager first
         for tool_name, tool in self.tools.items():
@@ -339,14 +361,15 @@ class GlueExecutor:
                 sticky=self.app.config.get("sticky", False)
             )
             
-            # Create magnetic fields for tools and chat
-            async with MagneticField(self.app.name) as field, \
-                      MagneticField(f"{self.app.name}_chat") as chat_field:
+            # Create primary magnetic field
+            async with MagneticField(self.app.name) as field:
+                # Create chat field as a child field
+                chat_field = field.create_child_field(f"{self.app.name}_chat")
                 
                 # Set chat field in group chat manager
                 self.group_chat.field = chat_field
                 
-                # Setup tools in field
+                # Create tools
                 await self._setup_tools(field, workspace_path)
                 
                 # Link tools to models
@@ -356,7 +379,7 @@ class GlueExecutor:
                             if tool_name in self.tools:
                                 model._tools[tool_name] = self.tools[tool_name]
                 
-                # Setup workflow
+                # Setup workflow (this handles adding resources to field and creating attractions)
                 await self._setup_workflow(field)
                 
                 # Create workspace
@@ -393,21 +416,31 @@ class GlueExecutor:
                         
                         print(f"\nresponse: {response}", flush=True)
         finally:
-            # Save conversation state if sticky
-            if self.app.config.get("sticky", False):
-                self.conversation.save_state()
-            
-            # Cleanup any remaining sessions
-            for tool in self.tools.values():
-                if hasattr(tool, 'cleanup'):
-                    await tool.cleanup()
-            
-            # Cleanup group chat
-            await self.group_chat.cleanup()
-            
-            # Cleanup workspace if not sticky
-            if not self.app.config.get("sticky", False):
-                self.workspace_manager.cleanup_workspace(workspace_path)
+            try:
+                # Save conversation state if sticky
+                if self.app.config.get("sticky", False):
+                    self.conversation.save_state()
+                
+                # Ensure all resources are properly cleaned up
+                for model in self.models.values():
+                    if model._current_field:
+                        await model._current_field.remove_resource(model)
+                
+                for tool in self.tools.values():
+                    if tool._current_field:
+                        await tool._current_field.remove_resource(tool)
+                    if hasattr(tool, 'cleanup'):
+                        await tool.cleanup()
+                
+                # Cleanup group chat
+                await self.group_chat.cleanup()
+                
+                # Cleanup workspace if not sticky
+                if not self.app.config.get("sticky", False):
+                    self.workspace_manager.cleanup_workspace(workspace_path)
+            except Exception as e:
+                self.logger.error(f"Error during cleanup: {str(e)}")
+                raise
 
 async def execute_glue_app(app: GlueApp) -> Any:
     """Execute GLUE application"""

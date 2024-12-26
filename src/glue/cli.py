@@ -417,7 +417,7 @@ def run(file, env):
     """
     try:
         # Load environment
-        load_env(env_path=env)
+        load_env(env_file=env)
         
         # Parse GLUE file
         app = parse_glue_file(file)
@@ -770,4 +770,9 @@ def list_tools():
             
 
 if __name__ == '__main__':
+    cli()
+
+# For backward compatibility
+def main():
+    """Entry point for the GLUE CLI"""
     cli()

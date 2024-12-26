@@ -1,8 +1,10 @@
 # src/glue/core/model.py
+import re
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from datetime import datetime
 from .types import Message, MessageType, WorkflowState
+from .logger import get_logger
 
 @dataclass
 class ModelConfig:
@@ -35,6 +37,7 @@ class Model:
         self._bound_models: Dict[str, 'Model'] = {}
         self._communication = communication
         self._active_workflows: Dict[str, WorkflowState] = {}
+        self.logger = get_logger()
 
     def add_prompt(self, name: str, content: str) -> None:
         """Add a prompt template"""
@@ -55,13 +58,149 @@ class Model:
         """Add a tool that this model can use"""
         self._tools[name] = tool
 
+    async def use_tool(self, tool_name: str, input_data: Any) -> Any:
+        """Execute a tool if available"""
+        if tool_name not in self._tools:
+            raise ValueError(f"Tool {tool_name} not available")
+        return await self._tools[tool_name].execute(input_data)
+
+    async def check_tool_availability(self, tool_name: str) -> bool:
+        """Check if a tool is available and usable"""
+        return tool_name in self._tools and self._tools[tool_name] is not None
+
     def bind_to(self, model: 'Model', binding_type: str = 'glue') -> None:
         """Create a binding to another model"""
         self._bound_models[model.name] = model
         
+    async def _analyze_tool_needs(self, prompt: str) -> Dict[str, float]:
+        """Analyze prompt to determine which tools might be needed.
+        Returns dict of tool_name -> confidence score (0-1)"""
+        tool_scores = {}
+        prompt_lower = prompt.lower()
+        
+        # Common intent patterns
+        search_patterns = [
+            r'(search|find|look up|research|tell me about)',
+            r'(latest|recent|current|new)',
+            r'(news|information|details|data)',
+            r'what (is|are|was|were)',
+            r'how (to|do|does|did)',
+            r'when (was|were|did|is)',
+            r'where (is|are|was|were)'
+        ]
+        
+        file_patterns = [
+            r'(save|write|store|export|output)',
+            r'(file|document|report|notes)',
+            r'(create|make|generate) (a|the)',
+            r'(\.txt|\.md|\.json|\.csv)'
+        ]
+        
+        for tool_name in self._tools:
+            tool = self._tools[tool_name]
+            if not hasattr(tool, 'description'):
+                continue
+            
+            # Base score from tool description
+            description = tool.description.lower()
+            keywords = description.split()
+            base_score = sum(1 for word in keywords if word in prompt_lower) / len(keywords) if keywords else 0
+            
+            # Intent matching score
+            intent_score = 0
+            if tool_name == 'web_search':
+                intent_score = max(
+                    sum(1 for pattern in search_patterns if re.search(pattern, prompt_lower)) / len(search_patterns),
+                    base_score
+                )
+            elif tool_name == 'file_handler':
+                intent_score = max(
+                    sum(1 for pattern in file_patterns if re.search(pattern, prompt_lower)) / len(file_patterns),
+                    base_score
+                )
+            
+            # Combine scores with intent having higher weight
+            final_score = (intent_score * 0.7 + base_score * 0.3)
+            if final_score > 0:
+                tool_scores[tool_name] = final_score
+                self.logger.debug(f"Tool {tool_name} score: {final_score:.2f}")
+        
+        return tool_scores
+
+    async def _execute_tool_chain(
+        self,
+        prompt: str,
+        tool_scores: Dict[str, float]
+    ) -> Dict[str, Any]:
+        """Execute a chain of tools based on scores and dependencies"""
+        results = {}
+        
+        # Sort tools by score
+        sorted_tools = sorted(
+            tool_scores.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        for tool_name, score in sorted_tools:
+            if score < 0.1:  # Minimum confidence threshold
+                continue
+                
+            try:
+                # Check if tool is available and we can use it
+                if await self.check_tool_availability(tool_name):
+                    self.logger.debug(f"Executing tool {tool_name} (score: {score})")
+                    result = await self.use_tool(tool_name, prompt)
+                    results[tool_name] = result
+                    
+                    # Share results with bound models if needed
+                    for model in self._bound_models.values():
+                        if hasattr(model, "_tools"):
+                            await self.send_message(
+                                receiver=model,
+                                content=result,
+                                requires_response=True
+                            )
+            except Exception as e:
+                self.logger.error(f"Tool {tool_name} execution failed: {str(e)}")
+                continue
+        
+        return results
+
+    async def _enhance_prompt_with_results(
+        self,
+        prompt: str,
+        tool_results: Dict[str, Any]
+    ) -> str:
+        """Enhance the original prompt with tool results"""
+        if not tool_results:
+            return prompt
+            
+        enhanced = [prompt, "\n\nTool Results:"]
+        for tool_name, result in tool_results.items():
+            enhanced.append(f"\n\n{tool_name} Results:\n{result}")
+        
+        return "\n".join(enhanced)
+
     async def generate(self, prompt: str) -> str:
-        """Generate a response (to be implemented by provider-specific classes)"""
-        raise NotImplementedError
+        """Generate a response using available tools and capabilities"""
+        try:
+            # Analyze which tools might be needed
+            tool_scores = await self._analyze_tool_needs(prompt)
+            
+            # Execute relevant tools
+            tool_results = await self._execute_tool_chain(prompt, tool_scores)
+            
+            # Enhance prompt with tool results
+            enhanced_prompt = await self._enhance_prompt_with_results(
+                prompt, tool_results
+            )
+            
+            # Generate response (to be implemented by provider-specific classes)
+            raise NotImplementedError
+            
+        except Exception as e:
+            raise RuntimeError(f"Generation failed: {str(e)}")
 
     # Communication methods
     async def send_message(

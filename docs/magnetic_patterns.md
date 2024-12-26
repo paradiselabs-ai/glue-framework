@@ -5,6 +5,7 @@
 ### Flow Operators
 - `><` : Bidirectional attraction (can use and receive)
 - `<-` : Unidirectional flow (can only receive from)
+- `->` : Unidirectional flow (can only send to)
 - `<>` : Repulsion (cannot interact)
 - `<-->` : Double Direct (Exclusively used for Conversational interaction between models)
 
