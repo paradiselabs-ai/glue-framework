@@ -3,18 +3,17 @@
 # ==================== Imports ====================
 import pytest
 import pytest_asyncio
-from typing import Any
 from src.glue.tools.magnetic import (
     MagneticTool,
     ResourceLockedException,
     ResourceStateException
 )
-from src.glue.tools.base import ToolConfig, ToolPermission
-from src.glue.magnetic.field import (
-    MagneticField,
-    AttractionStrength,
-    ResourceState
-)
+from src.glue.tools.base import ToolPermission
+from src.glue.magnetic.field import MagneticField
+from src.glue.core.types import ResourceState
+from src.glue.core.binding import AdhesiveType
+from src.glue.core.registry import ResourceRegistry
+from src.glue.core.state import StateManager
 
 # ==================== Fixtures ====================
 @pytest_asyncio.fixture
@@ -25,7 +24,8 @@ async def tool(TestTool):
 @pytest_asyncio.fixture
 async def field():
     """Create a magnetic field"""
-    async with MagneticField("test_field") as field:
+    registry = ResourceRegistry(StateManager())
+    async with MagneticField("test_field", registry) as field:
         yield field
 
 @pytest_asyncio.fixture
@@ -42,13 +42,13 @@ def test_initialization(TestTool):
     tool = TestTool(
         "test",
         "Test description",
-        AttractionStrength.STRONG
+        AdhesiveType.GLUE
     )
     
     # Check tool properties
     assert tool.name == "test"
     assert tool.description == "Test description"
-    assert tool.strength == AttractionStrength.STRONG
+    assert tool.binding_type == AdhesiveType.GLUE
     assert tool._state == ResourceState.IDLE
     assert not tool._is_initialized
     
@@ -186,11 +186,11 @@ async def test_str_representation(TestTool):
     tool = TestTool(
         "test",
         "Test description",
-        AttractionStrength.STRONG
+        AdhesiveType.GLUE
     )
     expected = (
         "test: Test description "
-        "(Magnetic Tool, Strength: STRONG, State: IDLE)"
+        "(Magnetic Tool, Binding: GLUE, State: IDLE)"
     )
     assert str(tool) == expected
 

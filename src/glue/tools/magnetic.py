@@ -5,6 +5,14 @@ from typing import List, Optional, Any, Dict
 from .base import BaseTool
 from ..magnetic.field import MagneticResource
 
+class ResourceLockedException(Exception):
+    """Raised when trying to access a locked resource"""
+    pass
+
+class ResourceStateException(Exception):
+    """Raised when a resource is in an invalid state for an operation"""
+    pass
+
 class MagneticTool(BaseTool, MagneticResource):
     """Base class for tools that can share resources in a magnetic workspace"""
     

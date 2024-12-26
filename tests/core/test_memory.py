@@ -1,7 +1,7 @@
 # tests/core/test_memory.py
 import pytest
-from datetime import datetime, timedelta
-from src.glue.core.memory import MemoryManager, MemorySegment
+from datetime import timedelta
+from src.glue.core.memory import MemoryManager
 
 @pytest.fixture
 def memory_manager():

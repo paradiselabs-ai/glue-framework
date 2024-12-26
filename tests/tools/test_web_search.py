@@ -4,10 +4,12 @@
 import pytest
 import pytest_asyncio
 import aiohttp
-from typing import Dict, List
+from typing import Dict
 from src.glue.tools.web_search import WebSearchTool
 from src.glue.tools.magnetic import ResourceLockedException, ResourceStateException
-from src.glue.magnetic.field import MagneticField, AttractionStrength, ResourceState
+from src.glue.magnetic.field import MagneticField
+from src.glue.core.types import ResourceState
+from src.glue.core.binding import AdhesiveType
 
 # ==================== Mock Classes ====================
 class MockResponse:
@@ -95,12 +97,12 @@ def test_initialization():
         api_key="test_key",
         name="test_search",
         description="Test search tool",
-        strength=AttractionStrength.STRONG
+        binding_type=AdhesiveType.GLUE
     )
     
     assert tool.name == "test_search"
     assert tool.description == "Test search tool"
-    assert tool.strength == AttractionStrength.STRONG
+    assert tool.binding_type == AdhesiveType.GLUE
     assert tool._state == ResourceState.IDLE
     assert not tool._is_initialized
     assert tool._session is None
@@ -248,11 +250,11 @@ async def test_str_representation():
         api_key="test_key",
         name="test_search",
         description="Test search tool",
-        strength=AttractionStrength.STRONG
+        binding_type=AdhesiveType.GLUE
     )
     expected = (
         "test_search: Test search tool "
         "(Magnetic Web Search Tool, Engine: duckduckgo, "
-        "Strength: STRONG, State: IDLE)"
+        "Binding: GLUE, State: IDLE)"
     )
     assert str(tool) == expected

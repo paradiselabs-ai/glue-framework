@@ -1,6 +1,5 @@
 """Tests for GLUE Magnetic Field System"""
 
-import pytest
 import asyncio
 from typing import Any
 from src.glue.core.resource import Resource, ResourceState
@@ -10,12 +9,9 @@ from src.glue.magnetic.field import (
     MagneticField,
     ResourceAddedEvent,
     AttractionEvent,
-    RepulsionEvent,
-    ChatEvent,
-    PullEvent
+    RepulsionEvent
 )
 from src.glue.magnetic.rules import (
-    RuleSet,
     AttractionRule,
     PolicyPriority,
     AttractionPolicy
@@ -23,6 +19,9 @@ from src.glue.magnetic.rules import (
 
 # ==================== Field Tests ====================
 
+import pytest
+
+@pytest.mark.asyncio
 async def test_field_basic():
     """Test basic field functionality"""
     # Setup
@@ -49,6 +48,7 @@ async def test_field_basic():
     assert not field._active
     assert not field.list_resources()
 
+@pytest.mark.asyncio
 async def test_field_rules():
     """Test field rule system"""
     # Setup
@@ -78,6 +78,7 @@ async def test_field_rules():
         resource1._state = ResourceState.ACTIVE
         assert not await field.attract(resource1, resource2)  # Should fail (not IDLE)
 
+@pytest.mark.asyncio
 async def test_field_events():
     """Test field event system"""
     # Setup
@@ -113,6 +114,7 @@ async def test_field_events():
         assert len(events) == 4
         assert isinstance(events[3], RepulsionEvent)
 
+@pytest.mark.asyncio
 async def test_field_hierarchy():
     """Test hierarchical fields"""
     # Setup
@@ -147,6 +149,7 @@ async def test_field_hierarchy():
         assert child.get_resource("resource1") is None
         assert child.get_resource("resource2") == resource2
 
+@pytest.mark.asyncio
 async def test_field_communication():
     """Test field communication modes"""
     # Setup
@@ -180,6 +183,7 @@ async def test_field_communication():
         assert target.state == ResourceState.PULLING
         assert source in target._attracted_to
 
+@pytest.mark.asyncio
 async def test_field_cleanup():
     """Test field cleanup behavior"""
     # Setup
@@ -213,6 +217,7 @@ async def test_field_cleanup():
     assert not child.list_resources()
     assert resource3.field is None
 
+@pytest.mark.asyncio
 async def test_concurrent_operations():
     """Test concurrent field operations"""
     # Setup

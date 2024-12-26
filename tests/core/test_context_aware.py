@@ -3,12 +3,10 @@
 """Tests for context-aware behavior"""
 
 import pytest
-import asyncio
-from datetime import datetime
 from typing import Dict, Any, List
 from dataclasses import dataclass
 from glue.core.conversation import ConversationManager
-from glue.core.context import ContextState, InteractionType, ComplexityLevel
+from glue.core.context import InteractionType
 from glue.core.model import Model
 from glue.tools.web_search import WebSearchTool
 from glue.tools.file_handler import FileHandlerTool
@@ -72,7 +70,7 @@ class MockFileHandlerTool(FileHandlerTool):
             workspace_dir="test_workspace"
         )
         
-    async def execute(self, content: str, **kwargs) -> Dict[str, Any]:
+    async def _execute(self, content: str, **kwargs) -> Dict[str, Any]:
         """Mock execution that returns operation details"""
         return {
             "success": True,

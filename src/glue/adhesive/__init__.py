@@ -1,124 +1,163 @@
 # src/glue/adhesive/__init__.py
 
-"""GLUE Adhesive System - Intuitive Tool Binding"""
+"""GLUE Adhesive System - High-level Magnetic Field Abstractions"""
 
-import inspect
 from enum import Enum
-from typing import Any, List, Dict, Union, Optional, Callable
+from typing import Any, Dict, List, Optional, Set, Type, Union
+from dataclasses import dataclass
 from functools import wraps
-from ..tools import TOOL_TYPES
+
+from ..core.types import ResourceState
+from ..core.resource import Resource
+from ..magnetic.field import MagneticField
+from ..magnetic.rules import RuleSet, AttractionRule, PolicyPriority, AttractionPolicy
 
 class AdhesiveType(Enum):
-    """Types of adhesive bonds"""
-    TAPE = "tape"          # Testing/development
-    VELCRO = "velcro"      # Easily swappable
-    DUCT_TAPE = "duct"     # Error handling
-    GLUE = "glue"         # Standard development
-    EPOXY = "epoxy"       # Permanent config
-    SUPER_GLUE = "super"  # Production deployment
+    """Types of adhesive bonds mapped to magnetic behaviors"""
+    # Temporary bindings (break after use)
+    TAPE_ATTRACT = "tape_attract"    # Temporary bidirectional
+    TAPE_PUSH = "tape_push"          # Temporary one-way send
+    TAPE_PULL = "tape_pull"          # Temporary one-way receive
+    TAPE_REPEL = "tape_repel"        # Temporary blocking
+    
+    # Flexible bindings (can reconnect)
+    VELCRO_ATTRACT = "velcro_attract"  # Flexible bidirectional
+    VELCRO_PUSH = "velcro_push"        # Flexible one-way send
+    VELCRO_PULL = "velcro_pull"        # Flexible one-way receive
+    VELCRO_REPEL = "velcro_repel"      # Flexible blocking
+    
+    # Persistent bindings (full context)
+    GLUE_ATTRACT = "glue_attract"    # Persistent bidirectional
+    GLUE_PUSH = "glue_push"          # Persistent one-way send
+    GLUE_PULL = "glue_pull"          # Persistent one-way receive
+    GLUE_REPEL = "glue_repel"        # Persistent blocking
+    
+    # Special bindings
+    CHAT = "chat"                    # Direct model chat (<-->)
+
+@dataclass
+class FlowConfig:
+    """Configuration for magnetic flow between resources"""
+    source: str
+    target: str
+    type: str  # "><", "->", "<-", "<>", "<-->"
+    adhesive: AdhesiveType
 
 class Workspace:
-    """Environment for tool interactions"""
+    """Magnetic field workspace for resource interactions"""
     def __init__(self, name: str):
         self.name = name
-        self.tools = {}
-        self.bonds = []
+        self.field: Optional[MagneticField] = None
+        self.resources: Dict[str, Resource] = {}
+        self.flows: List[FlowConfig] = []
     
-    async def __aenter__(self):
+    async def __aenter__(self) -> 'Workspace':
+        """Enter workspace context"""
         return self
     
-    async def __aexit__(self, *args):
-        # Cleanup workspace
-        for tool in self.tools.values():
-            if hasattr(tool, "cleanup"):
-                await tool.cleanup()
+    async def __aexit__(self, *args: Any) -> None:
+        """Exit workspace and cleanup resources"""
+        if self.field:
+            await self.field.cleanup()
+            self.field = None
+            self.resources.clear()
+            self.flows.clear()
 
-def workspace(name: str) -> Workspace:
-    """Create a workspace for tools"""
+    async def add_resource(self, resource: Resource) -> None:
+        """Add resource to workspace"""
+        if self.field:
+            await self.field.add_resource(resource)
+            self.resources[resource.name] = resource
+
+    async def setup_flow(self, flow: FlowConfig) -> None:
+        """Configure magnetic flow between resources"""
+        if not self.field:
+            return
+
+        source = self.resources.get(flow.source)
+        target = self.resources.get(flow.target)
+        if not (source and target):
+            return
+
+        # Configure magnetic behavior based on adhesive type
+        adhesive = flow.adhesive
+        if adhesive.name.startswith('TAPE'):
+            source._break_after_use = True
+            target._break_after_use = True
+        elif adhesive.name.startswith('VELCRO'):
+            source._allow_reconnect = True
+            target._allow_reconnect = True
+        elif adhesive.name.startswith('GLUE'):
+            source._persist_context = True
+            target._persist_context = True
+
+        # Setup magnetic flow
+        if flow.type == "><":  # Bidirectional
+            await self.field.attract(source, target)
+            await self.field.attract(target, source)
+        elif flow.type == "->":  # Source to target
+            await self.field.attract(source, target)
+        elif flow.type == "<-":  # Target from source
+            await self.field.attract(target, source)
+        elif flow.type == "<>":  # Repulsion
+            await self.field.repel(source, target)
+            await self.field.repel(target, source)
+        elif flow.type == "<-->":  # Direct chat
+            await self.field.enable_chat(source, target)
+
+def workspace_context(name: str) -> Workspace:
+    """Create a workspace context"""
     return Workspace(name)
 
 def glue_app(name: str):
-    """Create GLUE application with minimal boilerplate"""
-    def decorator(func):
+    """Create GLUE application with magnetic field support"""
+    def decorator(func: Any):
         @wraps(func)
-        async def wrapper(*args, **kwargs):
-            return await func(*args, **kwargs)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            async with workspace_context(name) as ws:
+                return await func(ws, *args, **kwargs)
         return wrapper
     return decorator
 
-def tool(name: str, **config) -> Any:
-    """Create a tool with minimal configuration"""
-    # Get tool type from mapping
-    tool_type = TOOL_TYPES.get(name.lower())
-    if tool_type is None:
-        raise ValueError(f"Unknown tool type: {name}")
+def bind_magnetic(source: Resource, target: Resource, adhesive: AdhesiveType) -> None:
+    """Configure magnetic binding between resources"""
+    # Configure binding behavior
+    if adhesive.name.startswith('TAPE'):
+        source._break_after_use = True
+        target._break_after_use = True
+    elif adhesive.name.startswith('VELCRO'):
+        source._allow_reconnect = True
+        target._allow_reconnect = True
+    elif adhesive.name.startswith('GLUE'):
+        source._persist_context = True
+        target._persist_context = True
     
-    # Get the tool's __init__ parameters
-    init_params = inspect.signature(tool_type.__init__).parameters
-    
-    # Filter config to only include parameters that the tool accepts
-    filtered_config = {
-        k: v for k, v in config.items() 
-        if k in init_params and k not in ['self', 'args', 'kwargs']
-    }
-    
-    return tool_type(**filtered_config)
+    # Configure magnetic behavior
+    if '_ATTRACT' in adhesive.name:
+        source._attract_mode = 'bidirectional'
+        target._attract_mode = 'bidirectional'
+    elif '_PUSH' in adhesive.name:
+        source._attract_mode = 'push'
+        target._attract_mode = 'receive'
+    elif '_PULL' in adhesive.name:
+        source._attract_mode = 'receive'
+        target._attract_mode = 'push'
+    elif '_REPEL' in adhesive.name:
+        source._attract_mode = 'repel'
+        target._attract_mode = 'repel'
+    elif adhesive == AdhesiveType.CHAT:
+        source._attract_mode = 'chat'
+        target._attract_mode = 'chat'
 
-def tape(tools: List[Any], **config) -> Dict[str, Any]:
-    """Bind tools with tape (testing/development)"""
-    return _bind_tools(tools, AdhesiveType.TAPE, config)
-
-def velcro(tools: List[Any], **config) -> Dict[str, Any]:
-    """Bind tools with velcro (swappable)"""
-    return _bind_tools(tools, AdhesiveType.VELCRO, config)
-
-def duct_tape(tools: List[Any], **config) -> Dict[str, Any]:
-    """Bind tools with duct tape (error handling)"""
-    return _bind_tools(tools, AdhesiveType.DUCT_TAPE, config)
-
-def glue(tools: List[Any], **config) -> Dict[str, Any]:
-    """Bind tools with glue (standard development)"""
-    return _bind_tools(tools, AdhesiveType.GLUE, config)
-
-def epoxy(tools: List[Any], **config) -> Dict[str, Any]:
-    """Bind tools with epoxy (permanent config)"""
-    return _bind_tools(tools, AdhesiveType.EPOXY, config)
-
-def super_glue(tools: List[Any], **config) -> Dict[str, Any]:
-    """Bind tools with super glue (production)"""
-    return _bind_tools(tools, AdhesiveType.SUPER_GLUE, config)
-
-def double_side_tape(operations: List[Any]) -> Any:
-    """Create sequential operations chain"""
-    from .chain import Chain
-    chain = Chain()
-    for op in operations:
-        chain.add_operation(op)
-    return chain
-
-def _bind_tools(
-    tools: List[Any],
-    adhesive: AdhesiveType,
-    config: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Bind tools with specified adhesive"""
-    bound_tools = {}
-    for t in tools:
-        name = getattr(t, "name", t.__class__.__name__.lower())
-        t._adhesive = adhesive
-        bound_tools[name] = t
-    return bound_tools
+def flow(source: str, target: str, type: str = "><", adhesive: AdhesiveType = AdhesiveType.GLUE_ATTRACT) -> FlowConfig:
+    """Define magnetic flow between resources"""
+    return FlowConfig(source, target, type, adhesive)
 
 __all__ = [
-    'workspace',
+    'workspace_context',
     'glue_app',
-    'tool',
-    'tape',
-    'velcro',
-    'duct_tape',
-    'glue',
-    'epoxy',
-    'super_glue',
-    'double_side_tape',
-    'AdhesiveType'
+    'bind_magnetic',
+    'flow',
+    'AdhesiveType',
+    'FlowConfig'
 ]

@@ -2,7 +2,7 @@
 
 # ==================== Imports ====================
 import pytest
-from unittest.mock import patch, AsyncMock, Mock
+from unittest.mock import AsyncMock
 from src.glue.providers.openrouter import OpenRouterProvider
 from src.glue.core.model import ModelConfig
 from .fixtures.provider_fixtures import create_mock_session

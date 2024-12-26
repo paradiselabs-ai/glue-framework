@@ -1,6 +1,5 @@
 # tests/dsl/test_keywords.py
 
-import pytest
 from src.glue.dsl.keywords import get_keyword_type
 from src.glue.dsl.parser import GlueParser
 

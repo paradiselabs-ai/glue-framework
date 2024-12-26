@@ -3,40 +3,44 @@
 # ==================== Imports ====================
 import pytest
 import pytest_asyncio
-from typing import List, Set
+from typing import List
 from src.glue.magnetic.field import (
     MagneticField,
-    MagneticResource,
-    AttractionStrength,
-    ResourceState,
     FieldEvent,
-    ResourceAddedEvent,
-    ResourceRemovedEvent,
     AttractionEvent,
     RepulsionEvent
 )
+from src.glue.core.types import ResourceState
+from src.glue.core.resource import Resource
+from src.glue.core.registry import ResourceRegistry
+from src.glue.core.state import StateManager
 
 # ==================== Fixtures ====================
 @pytest_asyncio.fixture
-async def field():
+async def registry():
+    """Create a resource registry"""
+    return ResourceRegistry(StateManager())
+
+@pytest_asyncio.fixture
+async def field(registry):
     """Create a magnetic field"""
-    async with MagneticField("test_field") as field:
+    async with MagneticField("test_field", registry) as field:
         yield field
 
 @pytest_asyncio.fixture
 async def resources():
     """Create test resources"""
     return [
-        MagneticResource("resource1", AttractionStrength.MEDIUM),
-        MagneticResource("resource2", AttractionStrength.MEDIUM),
-        MagneticResource("resource3", AttractionStrength.STRONG)
+        Resource("resource1", category="test"),
+        Resource("resource2", category="test"),
+        Resource("resource3", category="test")
     ]
 
 @pytest_asyncio.fixture
 async def populated_field(field, resources):
     """Create a field with test resources"""
     for resource in resources:
-        field.add_resource(resource)
+        await field.add_resource(resource)
     return field
 
 # ==================== Test Classes ====================
@@ -49,33 +53,33 @@ class EventCollector:
         self.events.append(event)
 
 # ==================== Tests ====================
-def test_field_initialization():
+def test_field_initialization(registry):
     """Test field initialization"""
-    field = MagneticField("test")
+    field = MagneticField("test", registry)
     assert field.name == "test"
-    assert field.strength == AttractionStrength.MEDIUM
     assert not field._active
-    assert len(field._resources) == 0
+    assert len(registry.get_resources_by_category("field:test")) == 0
 
 @pytest.mark.asyncio
-async def test_field_context_manager():
+async def test_field_context_manager(registry):
     """Test field context manager"""
-    async with MagneticField("test") as field:
+    async with MagneticField("test", registry) as field:
         assert field._active
     assert not field._active
 
 @pytest.mark.asyncio
-async def test_resource_addition(field, resources):
+async def test_resource_addition(field, resources, registry):
     """Test adding resources to field"""
-    field.add_resource(resources[0])
-    assert resources[0].name in field._resources
-    assert field._resources[resources[0].name] == resources[0]
+    await field.add_resource(resources[0])
+    field_resources = registry.get_resources_by_category("field:" + field.name)
+    assert resources[0] in field_resources
 
 @pytest.mark.asyncio
 async def test_resource_removal(populated_field, resources):
     """Test removing resources from field"""
-    populated_field.remove_resource(resources[0])
-    assert resources[0].name not in populated_field._resources
+    await populated_field.remove_resource(resources[0])
+    field_resources = populated_field.registry.get_resources_by_category("field:" + populated_field.name)
+    assert resources[0] not in field_resources
 
 @pytest.mark.asyncio
 async def test_resource_attraction(populated_field, resources):
@@ -111,21 +115,22 @@ async def test_resource_state_changes(populated_field, resources):
     assert resource._state == ResourceState.IDLE
 
 @pytest.mark.asyncio
-async def test_field_hierarchy():
+async def test_field_hierarchy(registry):
     """Test field parent/child relationships"""
-    async with MagneticField("parent") as parent:
+    async with MagneticField("parent", registry) as parent:
         child = parent.create_child_field("child")
         assert child.parent == parent
         assert child in parent._child_fields
         
-        resource = MagneticResource("test")
-        child.add_resource(resource)
-        assert resource.name in child._resources
+        resource = Resource("test", category="test")
+        await child.add_resource(resource)
+        field_resources = registry.get_resources_by_category("field:" + child.name)
+        assert resource in field_resources
         
         # Cleanup should propagate
         await parent.cleanup()
         assert not child._active
-        assert len(child._resources) == 0
+        assert len(registry.get_resources_by_category("field:" + child.name)) == 0
 
 @pytest.mark.asyncio
 async def test_event_system(populated_field, resources):
@@ -165,66 +170,52 @@ async def test_resource_locking(populated_field, resources):
     success = await populated_field.attract(other, resource)
     assert success  # Should work now
 
-@pytest.mark.asyncio
-async def test_strength_compatibility():
-    """Test strength-based attraction rules"""
-    weak_resource = MagneticResource("weak", AttractionStrength.WEAK)
-    strong_resource = MagneticResource("strong", AttractionStrength.STRONG)
-    
-    # Create strong field
-    async with MagneticField("strong", AttractionStrength.STRONG) as strong_field:
-        # Add resources to field
-        strong_field.add_resource(weak_resource)
-        strong_field.add_resource(strong_resource)
-        
-        # Attempt attraction
-        success = await strong_field.attract(weak_resource, strong_resource)
-        assert not success  # Should fail due to weak resource in strong field
 
 @pytest.mark.asyncio
 async def test_cleanup(populated_field, resources):
     """Test field cleanup"""
     await populated_field.cleanup()
     assert not populated_field._active
-    assert len(populated_field._resources) == 0
+    field_resources = populated_field.registry.get_resources_by_category("field:" + populated_field.name)
+    assert len(field_resources) == 0
     for resource in resources:
-        assert resource._current_field is None
+        assert resource._field is None
         assert len(resource._attracted_to) == 0
         assert len(resource._repelled_by) == 0
         assert resource._state == ResourceState.IDLE
 
 @pytest.mark.asyncio
-async def test_event_propagation():
+async def test_event_propagation(registry):
     """Test event propagation through field hierarchy"""
     collector = EventCollector()
     
-    async with MagneticField("parent") as parent:
+    async with MagneticField("parent", registry) as parent:
         parent.on_event(AttractionEvent, collector.collect)
         child = parent.create_child_field("child")
         
-        resource1 = MagneticResource("r1")
-        resource2 = MagneticResource("r2")
-        child.add_resource(resource1)
-        child.add_resource(resource2)
+        resource1 = Resource("r1", category="test")
+        resource2 = Resource("r2", category="test")
+        await child.add_resource(resource1)
+        await child.add_resource(resource2)
         
         await child.attract(resource1, resource2)
         assert len(collector.events) == 1  # Event should propagate to parent
 
 @pytest.mark.asyncio
-async def test_invalid_operations(field, resources):
+async def test_invalid_operations(field, resources, registry):
     """Test invalid operations"""
     resource = resources[0]
     
     # Test operations on inactive field
     await field.cleanup()
     with pytest.raises(RuntimeError):
-        field.add_resource(resource)
+        await field.add_resource(resource)
     
     # Test duplicate resource addition
-    async with MagneticField("test") as new_field:
-        new_field.add_resource(resource)
+    async with MagneticField("test", registry) as new_field:
+        await new_field.add_resource(resource)
         with pytest.raises(ValueError):
-            new_field.add_resource(resource)
+            await new_field.add_resource(resource)
         
         # Test invalid attraction
         other = resources[1]  # Not in field

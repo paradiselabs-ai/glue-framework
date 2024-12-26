@@ -3,7 +3,6 @@
 # ==================== Imports ====================
 import pytest
 from typing import Dict, Any
-from unittest.mock import AsyncMock, Mock
 from src.glue.providers.base import BaseProvider
 from src.glue.core.model import ModelConfig
 

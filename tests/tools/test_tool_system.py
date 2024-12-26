@@ -2,7 +2,7 @@
 
 import pytest
 import asyncio
-from typing import Any, List, Optional
+from typing import Any
 from src.glue.tools.base import (
     BaseTool,
     ToolConfig,
@@ -33,6 +33,7 @@ class TestTool(BaseTool):
 
 # ==================== Tool Tests ====================
 
+@pytest.mark.asyncio
 async def test_tool_basic():
     """Test basic tool functionality"""
     tool = TestTool()
@@ -54,6 +55,7 @@ async def test_tool_basic():
     with pytest.raises(RuntimeError):
         await tool.execute()
 
+@pytest.mark.asyncio
 async def test_tool_error_handling():
     """Test tool error handling"""
     tool = TestTool()
@@ -80,6 +82,7 @@ async def test_tool_error_handling():
     assert test_result["handled"]
     assert "error_handled" in result
 
+@pytest.mark.asyncio
 async def test_tool_permissions():
     """Test tool permission system"""
     tool = TestTool()
@@ -92,6 +95,7 @@ async def test_tool_permissions():
         ToolPermission.READ
     ])
 
+@pytest.mark.asyncio
 async def test_tool_field_integration():
     """Test tool integration with magnetic field"""
     registry = ToolRegistry()
@@ -123,6 +127,7 @@ async def test_tool_field_integration():
 
 # ==================== Registry Tests ====================
 
+@pytest.mark.asyncio
 async def test_tool_registry_basic():
     """Test basic tool registry functionality"""
     registry = ToolRegistry()
@@ -144,6 +149,7 @@ async def test_tool_registry_basic():
     registry.unregister_tool("test_tool")
     assert registry.get_tool("test_tool") is None
 
+@pytest.mark.asyncio
 async def test_tool_registry_permissions():
     """Test tool registry permission management"""
     registry = ToolRegistry()
@@ -164,6 +170,7 @@ async def test_tool_registry_permissions():
     with pytest.raises(PermissionError):
         await registry.execute_tool("test_tool")
 
+@pytest.mark.asyncio
 async def test_concurrent_tool_execution():
     """Test concurrent tool execution"""
     registry = ToolRegistry()

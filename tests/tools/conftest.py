@@ -1,7 +1,6 @@
 # tests/tools/conftest.py
 
 import pytest
-from typing import Any
 from src.glue.tools.magnetic import MagneticTool
 
 class MockTool(MagneticTool):
@@ -19,9 +18,8 @@ class MockTool(MagneticTool):
         )
         self.execute_called = False
     
-    async def execute(self, **kwargs) -> str:
+    async def _execute(self, **kwargs) -> str:
         """Test execution that returns a string"""
-        await super().execute(**kwargs)
         self.execute_called = True
         return "executed"
 

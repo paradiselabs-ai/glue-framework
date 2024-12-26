@@ -1,7 +1,5 @@
 # tests/dsl/test_parser.py
 
-import pytest
-from pathlib import Path
 from src.glue.dsl.parser import parse_glue_file, GlueParser
 
 # Test GLUE file content

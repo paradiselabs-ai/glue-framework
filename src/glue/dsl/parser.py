@@ -6,6 +6,7 @@ import re
 from typing import Dict, List, Any, Optional, Tuple, Set
 from dataclasses import dataclass, field
 from ..core.logger import get_logger
+from ..core.binding import AdhesiveType
 from .keywords import (
     get_keyword_type,
     PROVIDER_KEYWORDS,
@@ -15,12 +16,18 @@ from .keywords import (
 )
 
 @dataclass
+class ToolBindingConfig:
+    """Tool binding configuration"""
+    tool_name: str
+    type: AdhesiveType
+
+@dataclass
 class ModelConfig:
     """Model Configuration"""
     provider: str
     api_key: Optional[str]
     config: Dict[str, Any]
-    tools: List[str]
+    tools: Dict[str, AdhesiveType]  # tool_name -> binding_type
     role: Optional[str]
 
 @dataclass
@@ -219,7 +226,7 @@ class GlueParser:
         provider = None
         api_key = None
         config = {}
-        tools = []
+        tools = {}  # tool_name -> binding_strength
         role = None
         
         # Parse nested blocks
@@ -245,8 +252,32 @@ class GlueParser:
                     provider = normalized
                     self.logger.debug(f"Found provider: {provider}")
                 elif key == 'tools':
-                    # Parse tool list (comma-separated)
-                    tools = [t.strip() for t in value.strip('[]').split(',')]
+                    # Parse tools block
+                    tools_block = self._extract_blocks(value)
+                    if tools_block:
+                        # Parse tool bindings from block
+                        for line in tools_block[0][1].split('\n'):
+                            line = line.strip()
+                            if '=' in line:
+                                tool_name, strength = [x.strip() for x in line.split('=', 1)]
+                                try:
+                                    # Convert string to AdhesiveType
+                                    if strength.lower() == 'tape':
+                                        tools[tool_name] = AdhesiveType.TAPE
+                                    elif strength.lower() == 'velcro':
+                                        tools[tool_name] = AdhesiveType.VELCRO
+                                    elif strength.lower() == 'glue':
+                                        tools[tool_name] = AdhesiveType.GLUE
+                                    elif strength.lower() == 'magnet':
+                                        tools[tool_name] = AdhesiveType.MAGNET
+                                    else:
+                                        raise ValueError(f"Invalid binding type: {strength}")
+                                except ValueError:
+                                    self.logger.warning(f"Invalid binding strength: {strength}")
+                    else:
+                        # Legacy format: comma-separated list
+                        tools = {t.strip(): AdhesiveType.VELCRO 
+                               for t in value.strip('[]').split(',')}
                 elif key == 'role':
                     role = value.strip('"')
                 elif key.startswith('os.'):
@@ -317,7 +348,7 @@ class GlueParser:
         """Parse workflow block"""
         self.logger.debug(f"Parsing workflow block:\n{content}")
         
-        attractions = []
+        attractions = []  # (source, target, binding_strength)
         repulsions = []
         chat_pairs = []
         pull_pairs = []
@@ -330,9 +361,32 @@ class GlueParser:
                 for line in block_content.split('\n'):
                     line = line.strip()
                     if "><" in line:
-                        parts = [p.strip() for p in line.split("><")]
-                        if len(parts) == 2:
-                            attractions.append((parts[0], parts[1]))
+                        # Check for binding strength
+                        if "|" in line:
+                            attraction, strength = line.split("|")
+                            parts = [p.strip() for p in attraction.split("><")]
+                            if len(parts) == 2:
+                                try:
+                                    # Convert string to AdhesiveType
+                                    strength = strength.strip().lower()
+                                    if strength == 'tape':
+                                        binding = AdhesiveType.TAPE
+                                    elif strength == 'velcro':
+                                        binding = AdhesiveType.VELCRO
+                                    elif strength == 'glue':
+                                        binding = AdhesiveType.GLUE
+                                    elif strength == 'magnet':
+                                        binding = AdhesiveType.MAGNET
+                                    else:
+                                        raise ValueError(f"Invalid binding type: {strength}")
+                                    attractions.append((parts[0], parts[1], binding))
+                                except ValueError:
+                                    self.logger.warning(f"Invalid binding strength: {strength}")
+                        else:
+                            parts = [p.strip() for p in line.split("><")]
+                            if len(parts) == 2:
+                                # Default to VELCRO if no binding specified
+                                attractions.append((parts[0], parts[1], AdhesiveType.VELCRO))
             elif block_type == "magnetic pull":
                 # Parse pull rules
                 for line in block_content.split('\n'):

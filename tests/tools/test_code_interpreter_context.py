@@ -3,7 +3,6 @@
 # ==================== Imports ====================
 import pytest
 import pytest_asyncio
-from typing import Dict, List
 from src.glue.tools.code_interpreter import CodeInterpreterTool
 from src.glue.core.context import ContextState, InteractionType, ComplexityLevel
 from src.glue.magnetic.field import MagneticField

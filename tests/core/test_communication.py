@@ -1,16 +1,11 @@
 # tests/core/test_communication.py
 
 import pytest
-import asyncio
-from datetime import datetime
-from typing import Dict, Any
-from glue.core.model import Model, ModelConfig
+from glue.core.model import Model
 from glue.core.memory import MemoryManager
 from glue.core.communication import (
     ModelCommunication,
-    Message,
-    MessageType,
-    WorkflowState
+    MessageType
 )
 from glue.core.context import ContextState, InteractionType, ComplexityLevel
 
@@ -54,7 +49,11 @@ def context():
     return ContextState(
         interaction_type=InteractionType.TASK,
         complexity=ComplexityLevel.MODERATE,
-        tools_required={"test_tool"}
+        tools_required={"test_tool"},
+        requires_research=False,
+        requires_memory=False,
+        requires_persistence=False,
+        confidence=0.8
     )
 
 @pytest.mark.asyncio

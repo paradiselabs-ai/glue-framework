@@ -1,14 +1,16 @@
 """GLUE Magnetic Field System"""
 
 import asyncio
-from typing import Dict, List, Optional, Set, Type, Callable, Any
-from enum import Enum, auto
+from typing import Dict, List, Optional, Set, Type, Callable, Any, TYPE_CHECKING
 from dataclasses import dataclass
 from collections import defaultdict
-from ..core.context import ContextState, InteractionType
-from ..core.resource import Resource, ResourceState
-from ..core.registry import ResourceRegistry
+
+from ..core.types import ResourceState, MagneticResource
 from .rules import RuleSet, AttractionRule, PolicyPriority, AttractionPolicy
+
+if TYPE_CHECKING:
+    from ..core.context import ContextState, InteractionType
+    from ..core.registry import ResourceRegistry
 
 # ==================== Event Types ====================
 class FieldEvent:
@@ -17,40 +19,40 @@ class FieldEvent:
 
 class ResourceAddedEvent(FieldEvent):
     """Event fired when a resource is added to the field"""
-    def __init__(self, resource: Resource):
+    def __init__(self, resource: MagneticResource):
         self.resource = resource
 
 class ResourceRemovedEvent(FieldEvent):
     """Event fired when a resource is removed from the field"""
-    def __init__(self, resource: Resource):
+    def __init__(self, resource: MagneticResource):
         self.resource = resource
 
 class AttractionEvent(FieldEvent):
     """Event fired when resources are attracted"""
-    def __init__(self, source: Resource, target: Resource):
+    def __init__(self, source: MagneticResource, target: MagneticResource):
         self.source = source
         self.target = target
 
 class RepulsionEvent(FieldEvent):
     """Event fired when resources are repelled"""
-    def __init__(self, source: Resource, target: Resource):
+    def __init__(self, source: MagneticResource, target: MagneticResource):
         self.source = source
         self.target = target
 
 class ContextChangeEvent(FieldEvent):
     """Event fired when context changes"""
-    def __init__(self, context: ContextState):
+    def __init__(self, context: 'ContextState'):
         self.context = context
 
 class ChatEvent(FieldEvent):
     """Event fired when models start chatting"""
-    def __init__(self, model1: Resource, model2: Resource):
+    def __init__(self, model1: MagneticResource, model2: MagneticResource):
         self.model1 = model1
         self.model2 = model2
 
 class PullEvent(FieldEvent):
     """Event fired when a resource starts pulling from another"""
-    def __init__(self, target: Resource, source: Resource):
+    def __init__(self, target: MagneticResource, source: MagneticResource):
         self.target = target
         self.source = source
 
@@ -78,7 +80,7 @@ class MagneticField:
     def __init__(
         self,
         name: str,
-        registry: ResourceRegistry,
+        registry: 'ResourceRegistry',
         parent: Optional['MagneticField'] = None,
         rules: Optional[RuleSet] = None
     ):
@@ -88,7 +90,7 @@ class MagneticField:
         self._active = False
         self._event_handlers: Dict[Type[FieldEvent], List[Callable]] = defaultdict(list)
         self._child_fields: List['MagneticField'] = []
-        self._current_context: Optional[ContextState] = None
+        self._current_context: Optional['ContextState'] = None
         
         # Field-wide rules
         self._rules = rules or RuleSet(f"{name}_field_rules")
@@ -96,6 +98,8 @@ class MagneticField:
             name="field_state",
             policy=AttractionPolicy.STATE_BASED,
             priority=PolicyPriority.SYSTEM,
+            state_validator=lambda s1, s2: s1 in [ResourceState.IDLE, ResourceState.SHARED] and 
+                                         s2 in [ResourceState.IDLE, ResourceState.SHARED],
             description="Field-wide state validation"
         ))
 
@@ -124,7 +128,7 @@ class MagneticField:
         self._active = False
         self._current_context = None
 
-    async def update_context(self, context: ContextState) -> None:
+    async def update_context(self, context: 'ContextState') -> None:
         """Update field's context and propagate to resources"""
         self._current_context = context
         
@@ -140,7 +144,7 @@ class MagneticField:
         # Emit event
         self._emit_event(ContextChangeEvent(context))
 
-    async def add_resource(self, resource: Resource) -> None:
+    async def add_resource(self, resource: MagneticResource) -> None:
         """Add a resource to the field"""
         if not self._active:
             raise RuntimeError("Cannot add resources to inactive field")
@@ -156,7 +160,7 @@ class MagneticField:
         # Emit event
         self._emit_event(ResourceAddedEvent(resource))
 
-    async def remove_resource(self, resource: Resource) -> None:
+    async def remove_resource(self, resource: MagneticResource) -> None:
         """Remove a resource from the field"""
         if self.registry.get_resource(resource.name, "field:" + self.name):
             await resource.exit_field()
@@ -165,8 +169,8 @@ class MagneticField:
 
     async def attract(
         self,
-        source: Resource,
-        target: Resource
+        source: MagneticResource,
+        target: MagneticResource
     ) -> bool:
         """Create attraction between two resources"""
         # Verify resources are in field
@@ -188,8 +192,8 @@ class MagneticField:
 
     async def repel(
         self,
-        source: Resource,
-        target: Resource
+        source: MagneticResource,
+        target: MagneticResource
     ) -> None:
         """Create repulsion between two resources"""
         # Verify resources are in field
@@ -236,7 +240,7 @@ class MagneticField:
         if self.parent:
             self.parent._emit_event(event)
 
-    def get_resource(self, name: str) -> Optional[Resource]:
+    def get_resource(self, name: str) -> Optional[MagneticResource]:
         """Get a resource by name"""
         return self.registry.get_resource(name, "field:" + self.name)
 
@@ -247,8 +251,8 @@ class MagneticField:
 
     def get_attractions(
         self,
-        resource: Resource
-    ) -> Set[Resource]:
+        resource: MagneticResource
+    ) -> Set[MagneticResource]:
         """Get all resources attracted to the given resource"""
         if not self.registry.get_resource(resource.name, "field:" + self.name):
             raise ValueError(f"Resource {resource.name} not in field")
@@ -256,8 +260,8 @@ class MagneticField:
 
     def get_repulsions(
         self,
-        resource: Resource
-    ) -> Set[Resource]:
+        resource: MagneticResource
+    ) -> Set[MagneticResource]:
         """Get all resources repelled by the given resource"""
         if not self.registry.get_resource(resource.name, "field:" + self.name):
             raise ValueError(f"Resource {resource.name} not in field")
@@ -265,17 +269,17 @@ class MagneticField:
 
     def get_resource_state(
         self,
-        resource: Resource
+        resource: MagneticResource
     ) -> ResourceState:
         """Get the current state of a resource"""
         if not self.registry.get_resource(resource.name, "field:" + self.name):
             raise ValueError(f"Resource {resource.name} not in field")
-        return resource.state
+        return resource._state
 
     async def lock_resource(
         self,
-        resource: Resource,
-        holder: Resource
+        resource: MagneticResource,
+        holder: MagneticResource
     ) -> bool:
         """Lock a resource for exclusive use"""
         if not self.registry.get_resource(resource.name, "field:" + self.name):
@@ -284,7 +288,7 @@ class MagneticField:
 
     async def unlock_resource(
         self,
-        resource: Resource
+        resource: MagneticResource
     ) -> None:
         """Unlock a resource"""
         if not self.registry.get_resource(resource.name, "field:" + self.name):
@@ -301,8 +305,8 @@ class MagneticField:
 
     async def enable_chat(
         self,
-        model1: Resource,
-        model2: Resource
+        model1: MagneticResource,
+        model2: MagneticResource
     ) -> bool:
         """Enable direct communication between models"""
         # Verify resources are in field
@@ -322,8 +326,8 @@ class MagneticField:
 
     async def enable_pull(
         self,
-        target: Resource,
-        source: Resource
+        target: MagneticResource,
+        source: MagneticResource
     ) -> bool:
         """Enable one-way data flow"""
         # Verify resources are in field

@@ -1,44 +1,72 @@
-# src/glue/core/types.py
+"""GLUE Core Types"""
 
-"""Common types used across GLUE core modules"""
-
-from typing import Dict, List, Any, Optional, Set
+from enum import Enum, auto
+from typing import Dict, Set, Optional, Any, List, Protocol, TYPE_CHECKING, Union
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum, auto
+
+if TYPE_CHECKING:
+    from .context import ContextState
 
 class MessageType(Enum):
-    """Types of messages that models can exchange"""
-    QUERY = auto()          # Request for information
-    RESPONSE = auto()       # Response to a query
-    UPDATE = auto()         # State update
-    TOOL_REQUEST = auto()   # Request to use a tool
-    TOOL_RESULT = auto()    # Result from tool usage
-    WORKFLOW = auto()       # Workflow coordination
-    SYNC = auto()          # State synchronization
+    """Types of messages in a conversation"""
+    SYSTEM = auto()    # System messages
+    USER = auto()      # User messages
+    ASSISTANT = auto() # Assistant messages
+    TOOL = auto()      # Tool output
+    ERROR = auto()     # Error messages
+    QUERY = auto()     # Query messages
+
+class WorkflowState(Enum):
+    """States of a workflow"""
+    IDLE = auto()      # Not running
+    RUNNING = auto()   # Currently executing
+    PAUSED = auto()    # Temporarily paused
+    COMPLETED = auto() # Successfully finished
+    FAILED = auto()    # Failed to complete
+    CANCELLED = auto() # Manually cancelled
 
 @dataclass
 class Message:
-    """A message between models"""
-    msg_type: MessageType
-    sender: str
-    receiver: str
-    content: Any
-    context: Optional['ContextState'] = None
-    timestamp: datetime = field(default_factory=datetime.now)
-    workflow_id: Optional[str] = None
-    requires_response: bool = False
-    response_timeout: Optional[float] = None
+    """Message in a conversation"""
+    type: MessageType
+    content: str
     metadata: Dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.now)
+
+class MagneticResource(Protocol):
+    """Protocol for resources that can participate in magnetic fields"""
+    name: str
+    _state: 'ResourceState'
+    _context: Optional['ContextState']
+    _attracted_to: Set['MagneticResource']
+    _repelled_by: Set['MagneticResource']
+
+class ResourceState(Enum):
+    """States a resource can be in"""
+    IDLE = auto()      # Not currently in use
+    ACTIVE = auto()    # Currently in use
+    LOCKED = auto()    # Cannot be used by others
+    SHARED = auto()    # Being shared between resources
+    CHATTING = auto()  # In direct model-to-model communication
+    PULLING = auto()   # Receiving data only
 
 @dataclass
-class WorkflowState:
-    """State of a multi-model workflow"""
-    workflow_id: str
-    initiator: str
-    participants: Set[str]
-    current_stage: str
-    context: 'ContextState'
-    started_at: datetime
-    updated_at: datetime
-    metadata: Dict[str, Any] = field(default_factory=dict)
+class ResourceMetadata:
+    """Metadata for a resource"""
+    created_at: datetime = field(default_factory=datetime.now)
+    last_used: Optional[datetime] = None
+    use_count: int = 0
+    tags: Set[str] = field(default_factory=set)
+    category: str = "default"
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class TransitionLog:
+    """Log entry for state transition"""
+    resource: str
+    from_state: ResourceState
+    to_state: ResourceState
+    timestamp: datetime = field(default_factory=datetime.now)
+    success: bool = True
+    error: Optional[str] = None

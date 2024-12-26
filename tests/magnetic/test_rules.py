@@ -10,26 +10,23 @@ from src.glue.magnetic.rules import (
     create_state_validator,
     DEFAULT_RULES
 )
-from src.glue.magnetic.field import (
-    MagneticResource,
-    AttractionStrength,
-    ResourceState
-)
+from src.glue.core.types import ResourceState
+from src.glue.core.resource import Resource
 
 # ==================== Fixtures ====================
 @pytest.fixture
 def resources():
     """Create test resources"""
     return [
-        MagneticResource("r1", AttractionStrength.MEDIUM),
-        MagneticResource("r2", AttractionStrength.STRONG),
-        MagneticResource("r3", AttractionStrength.WEAK)
+        Resource("r1"),
+        Resource("r2"),
+        Resource("r3")
     ]
 
 @pytest.fixture
 def custom_validator():
     """Create a custom validation function"""
-    def validator(source: MagneticResource, target: MagneticResource) -> bool:
+    def validator(source: Resource, target: Resource) -> bool:
         return source.name.startswith("r") and target.name.startswith("r")
     return validator
 
@@ -67,20 +64,6 @@ def test_deny_all_policy(resources):
         policy=AttractionPolicy.DENY_ALL
     )
     assert not rule.validate(resources[0], resources[1])
-
-def test_strength_based_policy(resources):
-    """Test STRENGTH_BASED policy"""
-    rule = AttractionRule(
-        name="strength_check",
-        policy=AttractionPolicy.STRENGTH_BASED,
-        min_strength=AttractionStrength.MEDIUM
-    )
-    
-    # Should allow MEDIUM to STRONG
-    assert rule.validate(resources[0], resources[1])
-    
-    # Should deny WEAK to MEDIUM
-    assert not rule.validate(resources[2], resources[0])
 
 def test_state_based_policy(resources, state_validator):
     """Test STATE_BASED policy"""
@@ -171,7 +154,7 @@ def test_system_priority_rules(resources):
 def test_default_rules(resources):
     """Test default rule set"""
     # Default rules should allow valid interactions
-    assert DEFAULT_RULES.validate(resources[0], resources[1])  # MEDIUM to STRONG
+    assert DEFAULT_RULES.validate(resources[0], resources[1])
     
     # Lock a resource
     resources[0]._state = ResourceState.LOCKED

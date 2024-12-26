@@ -1,11 +1,14 @@
 """GLUE State Management System"""
 
 import asyncio
-from typing import Dict, Set, Optional, Callable, Any
+from typing import Dict, Set, Optional, Callable, Any, TYPE_CHECKING, List
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum, auto
-from .resource import Resource, ResourceState
+
+from .types import ResourceState, TransitionLog
+
+if TYPE_CHECKING:
+    from .resource import Resource
 
 class TransitionError(Exception):
     """Error during state transition"""
@@ -16,19 +19,9 @@ class TransitionRule:
     """Rule for state transition"""
     from_states: Set[ResourceState]
     to_states: Set[ResourceState]
-    validator: Optional[Callable[[Resource, ResourceState], bool]] = None
-    side_effect: Optional[Callable[[Resource, ResourceState], None]] = None
+    validator: Optional[Callable[['Resource', ResourceState], bool]] = None
+    side_effect: Optional[Callable[['Resource', ResourceState], None]] = None
     description: str = ""
-
-@dataclass
-class TransitionLog:
-    """Log entry for state transition"""
-    resource: str
-    from_state: ResourceState
-    to_state: ResourceState
-    timestamp: datetime = field(default_factory=datetime.now)
-    success: bool = True
-    error: Optional[str] = None
 
 class StateManager:
     """
@@ -139,7 +132,7 @@ class StateManager:
     
     async def transition(
         self,
-        resource: Resource,
+        resource: 'Resource',
         new_state: ResourceState,
         context: Optional['ContextState'] = None
     ) -> bool:
@@ -217,7 +210,7 @@ class StateManager:
     
     async def validate_transition(
         self,
-        resource: Resource,
+        resource: 'Resource',
         new_state: ResourceState
     ) -> bool:
         """

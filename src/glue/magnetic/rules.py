@@ -1,10 +1,14 @@
 # src/glue/magnetic/rules.py
 
 # ==================== Imports ====================
-from typing import Any, Callable, Dict, List, Optional, Set, Type, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Type, Union, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from .field import MagneticResource, ResourceState
+
+from ..core.types import ResourceState
+
+if TYPE_CHECKING:
+    from .field import MagneticResource
 
 # ==================== Enums ====================
 class AttractionPolicy(Enum):
@@ -22,7 +26,7 @@ class PolicyPriority(Enum):
     SYSTEM = 4  # Cannot be overridden
 
 # ==================== Type Definitions ====================
-ValidationFunc = Callable[[MagneticResource, MagneticResource], bool]
+ValidationFunc = Callable[['MagneticResource', 'MagneticResource'], bool]
 StateValidator = Callable[[ResourceState, ResourceState], bool]
 
 # ==================== Data Classes ====================
@@ -39,8 +43,8 @@ class AttractionRule:
 
     def validate(
         self,
-        source: MagneticResource,
-        target: MagneticResource
+        source: 'MagneticResource',
+        target: 'MagneticResource'
     ) -> bool:
         """Validate if two resources can attract based on this rule"""
         if not self.enabled:
@@ -69,6 +73,27 @@ class RuleSet:
     description: str = ""
     enabled: bool = True
 
+    def copy(self) -> 'RuleSet':
+        """Create a copy of this rule set"""
+        new_rules = [
+            AttractionRule(
+                name=rule.name,
+                policy=rule.policy,
+                priority=rule.priority,
+                custom_validator=rule.custom_validator,
+                state_validator=rule.state_validator,
+                description=rule.description,
+                enabled=rule.enabled
+            )
+            for rule in self.rules
+        ]
+        return RuleSet(
+            name=f"{self.name}_copy",
+            rules=new_rules,
+            description=self.description,
+            enabled=self.enabled
+        )
+
     def add_rule(self, rule: AttractionRule) -> None:
         """Add a rule to the set"""
         self.rules.append(rule)
@@ -81,8 +106,8 @@ class RuleSet:
 
     def validate(
         self,
-        source: MagneticResource,
-        target: MagneticResource
+        source: 'MagneticResource',
+        target: 'MagneticResource'
     ) -> bool:
         """Validate attraction using all rules in the set"""
         if not self.enabled:

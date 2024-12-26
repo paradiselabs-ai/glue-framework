@@ -3,14 +3,12 @@
 # ==================== Imports ====================
 import pytest
 import pytest_asyncio
-import os
-import json
 import tempfile
-from pathlib import Path
-from typing import Dict, List
 from src.glue.tools.file_handler import FileHandlerTool
 from src.glue.tools.magnetic import ResourceLockedException, ResourceStateException
-from src.glue.magnetic.field import MagneticField, AttractionStrength, ResourceState
+from src.glue.magnetic.field import MagneticField
+from src.glue.core.types import ResourceState
+from src.glue.core.binding import AdhesiveType
 
 # ==================== Test Data ====================
 TEST_CONTENT = "Hello, World!"
@@ -55,12 +53,12 @@ def test_initialization():
     tool = FileHandlerTool(
         name="test_handler",
         description="Test file handler",
-        strength=AttractionStrength.STRONG
+        binding_type=AdhesiveType.GLUE
     )
     
     assert tool.name == "test_handler"
     assert tool.description == "Test file handler"
-    assert tool.strength == AttractionStrength.STRONG
+    assert tool.binding_type == AdhesiveType.GLUE
     assert tool._state == ResourceState.IDLE
     assert not tool._is_initialized
     assert ".txt" in tool.allowed_formats
@@ -250,12 +248,12 @@ async def test_str_representation():
     tool = FileHandlerTool(
         name="test_handler",
         description="Test file handler",
-        strength=AttractionStrength.STRONG,
+        binding_type=AdhesiveType.GLUE,
         allowed_formats=[".txt", ".json"]
     )
     expected = (
         "test_handler: Test file handler "
         "(Magnetic File Handler, Formats: .txt, .json, "
-        "Strength: STRONG, State: IDLE)"
+        "Binding: GLUE, State: IDLE)"
     )
     assert str(tool) == expected

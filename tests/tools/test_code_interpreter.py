@@ -3,11 +3,7 @@
 # ==================== Imports ====================
 import pytest
 import pytest_asyncio
-import os
-import tempfile
-from typing import Dict, List
 from src.glue.tools.code_interpreter import CodeInterpreterTool
-from src.glue.tools.magnetic import MagneticTool
 from src.glue.magnetic.field import MagneticField, ResourceState
 
 # ==================== Test Data ====================

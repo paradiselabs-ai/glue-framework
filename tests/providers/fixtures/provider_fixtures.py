@@ -1,7 +1,7 @@
 # tests/providers/fixtures/provider_fixtures.py
 
 # ==================== Imports ====================
-from typing import Dict, Any
+from typing import Dict
 from unittest.mock import AsyncMock
 
 # ==================== Mock Classes ====================

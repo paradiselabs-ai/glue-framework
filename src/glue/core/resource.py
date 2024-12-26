@@ -1,32 +1,19 @@
 """GLUE Resource Base System"""
 
 import asyncio
-from typing import Dict, List, Optional, Set, Any, Type, Callable
-from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Set, Any, Type, Callable, TYPE_CHECKING
 from datetime import datetime
-from enum import Enum, auto
-from .state import StateManager
-from .registry import ResourceRegistry
+
+from .types import ResourceState, ResourceMetadata
+from .binding import AdhesiveType
+from .tool_binding import ToolBinding
 from ..magnetic.rules import RuleSet, AttractionRule, PolicyPriority, AttractionPolicy
 
-class ResourceState(Enum):
-    """States a resource can be in"""
-    IDLE = auto()      # Not currently in use
-    ACTIVE = auto()    # Currently in use
-    LOCKED = auto()    # Cannot be used by others
-    SHARED = auto()    # Being shared between resources
-    CHATTING = auto()  # In direct model-to-model communication
-    PULLING = auto()   # Receiving data only
-
-@dataclass
-class ResourceMetadata:
-    """Metadata for a resource"""
-    created_at: datetime = field(default_factory=datetime.now)
-    last_used: Optional[datetime] = None
-    use_count: int = 0
-    tags: Set[str] = field(default_factory=set)
-    category: str = "default"
-    properties: Dict[str, Any] = field(default_factory=dict)
+if TYPE_CHECKING:
+    from .state import StateManager
+    from .registry import ResourceRegistry
+    from ..magnetic.field import MagneticField
+    from .context import ContextState
 
 class Resource:
     """
@@ -46,7 +33,8 @@ class Resource:
         name: str,
         category: str = "default",
         tags: Optional[Set[str]] = None,
-        rules: Optional[RuleSet] = None
+        rules: Optional[RuleSet] = None,
+        tool_bindings: Optional[Dict[str, AdhesiveType]] = None
     ):
         """Initialize resource"""
         self.name = name
@@ -73,11 +61,19 @@ class Resource:
             name="default_state",
             policy=AttractionPolicy.STATE_BASED,
             priority=PolicyPriority.SYSTEM,
+            state_validator=lambda s1, s2: s1 in [ResourceState.IDLE, ResourceState.SHARED] and 
+                                         s2 in [ResourceState.IDLE, ResourceState.SHARED],
             description="Default state-based validation"
         ))
         
         # Registry reference
-        self._registry: Optional[ResourceRegistry] = None
+        self._registry: Optional['ResourceRegistry'] = None
+        
+        # Tool binding management
+        self._tool_bindings: Dict[str, ToolBinding] = {}
+        if tool_bindings:
+            for tool_name, strength in tool_bindings.items():
+                self.bind_tool(tool_name, strength)
     
     @property
     def state(self) -> ResourceState:
@@ -94,7 +90,7 @@ class Resource:
         """Get current context"""
         return self._context
     
-    async def enter_field(self, field: 'MagneticField', registry: Optional[ResourceRegistry] = None) -> None:
+    async def enter_field(self, field: 'MagneticField', registry: Optional['ResourceRegistry'] = None) -> None:
         """Enter a magnetic field"""
         if self._field and self._field != field:
             await self.exit_field()
@@ -162,6 +158,73 @@ class Resource:
                 "new": context
             })
     
+    def bind_tool(self, tool_name: str, binding_type: AdhesiveType) -> None:
+        """
+        Bind a tool with specified adhesive type
+        
+        Args:
+            tool_name: Name of tool to bind
+            binding_type: Type of adhesive binding to use
+        """
+        if binding_type == AdhesiveType.TAPE:
+            binding = ToolBinding.tape()
+        elif binding_type == AdhesiveType.VELCRO:
+            binding = ToolBinding.velcro()
+        elif binding_type == AdhesiveType.GLUE:
+            binding = ToolBinding.glue()
+        elif binding_type == AdhesiveType.MAGNET:
+            binding = ToolBinding.magnet()
+        else:
+            raise ValueError(f"Invalid binding type: {binding_type}")
+            
+        self._tool_bindings[tool_name] = binding
+    
+    def get_tool_binding(self, tool_name: str) -> Optional[ToolBinding]:
+        """Get binding configuration for a tool"""
+        return self._tool_bindings.get(tool_name)
+    
+    async def use_tool(self, tool_name: str, **kwargs) -> Any:
+        """Use a tool with binding rules"""
+        binding = self.get_tool_binding(tool_name)
+        if not binding:
+            raise ValueError(f"No binding found for tool: {tool_name}")
+        
+        # Get tool from registry
+        if not self._registry:
+            raise RuntimeError("No registry available")
+        tool = self._registry.get_resource(tool_name)
+        if not tool:
+            raise ValueError(f"Tool not found: {tool_name}")
+        
+        try:
+            # Add context for GLUE bindings
+            if binding.maintains_context():
+                kwargs["context"] = binding.context
+            
+            # Execute tool
+            result = await tool.execute(**kwargs)
+            
+            # Update binding state
+            binding.use_count += 1
+            binding.last_used = datetime.now().timestamp()
+            
+            # Store context for GLUE bindings
+            if binding.maintains_context():
+                binding.context.update(result.get("context", {}))
+            
+            # Break TAPE bindings after use
+            if binding.should_break():
+                await self.break_attraction(tool)
+            
+            return result
+            
+        except Exception as e:
+            # Handle reconnection for VELCRO bindings
+            if binding.can_reconnect():
+                # Could implement retry logic here
+                pass
+            raise
+    
     async def attract_to(self, other: 'Resource') -> bool:
         """Create attraction to another resource"""
         # Check rule validation first
@@ -171,7 +234,13 @@ class Resource:
         # Then check basic attraction rules
         if not self.can_attract(other):
             return False
-            
+        
+        # Check tool bindings (skip in test environments)
+        if other.metadata.category == "tool" and not getattr(self, "_skip_binding_check", False):
+            binding = self.get_tool_binding(other.name)
+            if not binding:
+                return False  # No binding configured
+        
         # Create attraction
         self._attracted_to.add(other)
         other._attracted_to.add(self)

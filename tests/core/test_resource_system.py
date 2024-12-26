@@ -3,13 +3,12 @@
 import pytest
 import asyncio
 from datetime import datetime
-from typing import Set, Any
-from src.glue.core.resource import Resource, ResourceState, ResourceMetadata
+from typing import Any
+from src.glue.core.resource import Resource, ResourceState
 from src.glue.core.state import StateManager, TransitionError
 from src.glue.core.registry import ResourceRegistry
 from src.glue.magnetic.field import MagneticField
 from src.glue.magnetic.rules import (
-    RuleSet,
     AttractionRule,
     PolicyPriority,
     AttractionPolicy
@@ -17,6 +16,7 @@ from src.glue.magnetic.rules import (
 
 # ==================== Resource Tests ====================
 
+@pytest.mark.asyncio
 async def test_resource_basic():
     """Test basic resource functionality"""
     resource = Resource("test_resource", category="test", tags={"tag1", "tag2"})
@@ -36,6 +36,7 @@ async def test_resource_basic():
     assert resource._rules is not None
     assert len(resource._rules.rules) == 1  # Default state rule
 
+@pytest.mark.asyncio
 async def test_resource_metadata():
     """Test resource metadata"""
     tags = {"tag1", "tag2"}
@@ -45,11 +46,12 @@ async def test_resource_metadata():
     assert resource.metadata.tags == tags
     assert isinstance(resource.metadata.created_at, datetime)
 
+@pytest.mark.asyncio
 async def test_resource_attraction():
     """Test resource attraction mechanics"""
     # Setup
     registry = ResourceRegistry(StateManager())
-    field = MagneticField("test_field")
+    field = MagneticField("test_field", registry)
     resource1 = Resource("resource1")
     resource2 = Resource("resource2")
     
@@ -72,11 +74,12 @@ async def test_resource_attraction():
     assert resource1.state == ResourceState.IDLE
     assert resource2.state == ResourceState.IDLE
 
+@pytest.mark.asyncio
 async def test_resource_locking():
     """Test resource locking mechanics"""
     # Setup
     registry = ResourceRegistry(StateManager())
-    field = MagneticField("test_field")
+    field = MagneticField("test_field", registry)
     resource1 = Resource("resource1")
     resource2 = Resource("resource2")
     
@@ -102,6 +105,7 @@ async def test_resource_locking():
 
 # ==================== State Manager Tests ====================
 
+@pytest.mark.asyncio
 async def test_state_manager_basic():
     """Test basic state manager functionality"""
     manager = StateManager()
@@ -116,6 +120,7 @@ async def test_state_manager_basic():
     with pytest.raises(TransitionError):
         await manager.transition(resource, ResourceState.PULLING)
 
+@pytest.mark.asyncio
 async def test_state_manager_rules():
     """Test state transition rules"""
     manager = StateManager()
@@ -136,6 +141,7 @@ async def test_state_manager_rules():
         # Return to IDLE for next test
         await manager.transition(resource, ResourceState.IDLE)
 
+@pytest.mark.asyncio
 async def test_state_manager_history():
     """Test state transition history"""
     manager = StateManager()
@@ -153,6 +159,7 @@ async def test_state_manager_history():
 
 # ==================== Resource Registry Tests ====================
 
+@pytest.mark.asyncio
 async def test_registry_basic():
     """Test basic registry functionality"""
     registry = ResourceRegistry()
@@ -166,6 +173,7 @@ async def test_registry_basic():
     registry.unregister("test_resource")
     assert registry.get_resource("test_resource") is None
 
+@pytest.mark.asyncio
 async def test_registry_categories():
     """Test registry category management"""
     registry = ResourceRegistry()
@@ -185,6 +193,7 @@ async def test_registry_categories():
     assert len(cat1_resources) == 2
     assert all(r.metadata.category == "cat1" for r in cat1_resources)
 
+@pytest.mark.asyncio
 async def test_registry_tags():
     """Test registry tag management"""
     registry = ResourceRegistry()
@@ -204,11 +213,12 @@ async def test_registry_tags():
     assert len(tag1_resources) == 1
     assert tag1_resources[0].name == "resource1"
 
+@pytest.mark.asyncio
 async def test_registry_integration():
     """Test registry integration"""
     # Setup
     registry = ResourceRegistry(StateManager())
-    field = MagneticField("test_field")
+    field = MagneticField("test_field", registry)
     resource1 = Resource("resource1")
     resource2 = Resource("resource2")
     
@@ -234,11 +244,12 @@ async def test_registry_integration():
     assert any(e[0] == "attraction" for e in events)
     assert any(e[0] == "state_change" for e in events)
 
+@pytest.mark.asyncio
 async def test_rule_validation():
     """Test rule-based validation"""
     # Setup
     registry = ResourceRegistry(StateManager())
-    field = MagneticField("test_field")
+    field = MagneticField("test_field", registry)
     resource1 = Resource("resource1")
     resource2 = Resource("resource2")
     
@@ -264,11 +275,12 @@ async def test_rule_validation():
 
 # ==================== Integration Tests ====================
 
+@pytest.mark.asyncio
 async def test_full_resource_lifecycle():
     """Test complete resource lifecycle"""
     # Setup
     registry = ResourceRegistry(StateManager())
-    field = MagneticField("test_field")
+    field = MagneticField("test_field", registry)
     
     # Create resources
     resource1 = Resource("resource1", category="test", tags={"tag1"})
@@ -293,6 +305,7 @@ async def test_full_resource_lifecycle():
     assert not resource1._attracted_to
     assert resource1._registry is None
 
+@pytest.mark.asyncio
 async def test_concurrent_operations():
     """Test concurrent resource operations"""
     registry = ResourceRegistry()

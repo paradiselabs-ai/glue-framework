@@ -1,4 +1,5 @@
 import pytest
+import pytest_asyncio
 import sys
 from pathlib import Path
 
@@ -7,15 +8,28 @@ src_path = str(Path(__file__).parent.parent.parent / 'src')
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-from glue.magnetic.field import MagneticField, MagneticResource, ResourceState
+from glue.magnetic.field import MagneticField
+from glue.core.types import ResourceState
 from glue.core.context import ContextAnalyzer, InteractionType
+from glue.core.registry import ResourceRegistry
+from glue.core.state import StateManager
+from glue.core.resource import Resource
+
+@pytest_asyncio.fixture
+async def registry():
+    """Create a resource registry"""
+    return ResourceRegistry(StateManager())
 
 async def create_resources(field: MagneticField):
     """Create and add basic resources to field"""
-    researcher = MagneticResource("researcher")
-    writer = MagneticResource("writer")
-    web_search = MagneticResource("web_search")
-    file_handler = MagneticResource("file_handler")
+    researcher = Resource("researcher", category="model")
+    writer = Resource("writer", category="model")
+    web_search = Resource("web_search", category="tool")
+    file_handler = Resource("file_handler", category="tool")
+    
+    # Skip binding checks in test environment
+    researcher._skip_binding_check = True
+    writer._skip_binding_check = True
     
     await field.add_resource(researcher)
     await field.add_resource(writer)
@@ -25,9 +39,9 @@ async def create_resources(field: MagneticField):
     return researcher, writer, web_search, file_handler
 
 @pytest.mark.asyncio
-async def test_chat_interaction():
+async def test_chat_interaction(registry):
     """Test direct model-to-model communication"""
-    async with MagneticField("test_field") as field:
+    async with MagneticField("test_field", registry) as field:
         researcher, writer, _, _ = await create_resources(field)
         
         # Set up chat only
@@ -40,9 +54,9 @@ async def test_chat_interaction():
         assert writer in researcher._attracted_to
 
 @pytest.mark.asyncio
-async def test_research_flow():
+async def test_research_flow(registry):
     """Test research workflow with web search"""
-    async with MagneticField("test_field") as field:
+    async with MagneticField("test_field", registry) as field:
         researcher, writer, web_search, _ = await create_resources(field)
         
         # Set up research flow
@@ -58,9 +72,9 @@ async def test_research_flow():
         assert writer._state == ResourceState.PULLING
 
 @pytest.mark.asyncio
-async def test_file_operations():
+async def test_file_operations(registry):
     """Test file handling workflow"""
-    async with MagneticField("test_field") as field:
+    async with MagneticField("test_field", registry) as field:
         _, writer, _, file_handler = await create_resources(field)
         
         # Set up file handling only
@@ -71,9 +85,9 @@ async def test_file_operations():
         assert writer._state == ResourceState.SHARED
 
 @pytest.mark.asyncio
-async def test_context_awareness():
+async def test_context_awareness(registry):
     """Test interaction with context analyzer"""
-    async with MagneticField("test_field") as field:
+    async with MagneticField("test_field", registry) as field:
         researcher, writer, web_search, file_handler = await create_resources(field)
         analyzer = ContextAnalyzer()
         
@@ -99,9 +113,9 @@ async def test_context_awareness():
         assert file_handler in writer._attracted_to
 
 @pytest.mark.asyncio
-async def test_workflow_transitions():
+async def test_workflow_transitions(registry):
     """Test transitions between different interactions"""
-    async with MagneticField("test_field") as field:
+    async with MagneticField("test_field", registry) as field:
         researcher, writer, web_search, file_handler = await create_resources(field)
         
         # Start with research

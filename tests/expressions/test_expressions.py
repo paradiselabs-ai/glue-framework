@@ -1,9 +1,8 @@
 """Tests for GLUE Expression System"""
 
-import pytest
-from typing import Dict, Any
+from typing import Any
 from src.glue.expressions.core import field, magnet, magnetize
-from src.glue.core.resource import Resource, ResourceState
+from src.glue.core.resource import ResourceState
 from src.glue.tools.base import BaseTool, ToolConfig, ToolPermission
 
 # ==================== Test Tools ====================
