@@ -23,8 +23,8 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/yourusername/glue"
-"Bug Tracker" = "https://github.com/yourusername/glue/issues"
+"Homepage" = "https://github.com/paradiselabs-ai/glue-framework"
+"Bug Tracker" = "https://github.com/paradiselabs-ai/glue-framework/issues"
 
 [project.scripts]
 glue = "glue.cli:main"

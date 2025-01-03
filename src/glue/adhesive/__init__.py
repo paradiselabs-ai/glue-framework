@@ -153,11 +153,61 @@ def flow(source: str, target: str, type: str = "><", adhesive: AdhesiveType = Ad
     """Define magnetic flow between resources"""
     return FlowConfig(source, target, type, adhesive)
 
+def tape(tools: List[Any], **config) -> Dict[str, Any]:
+    """Create tools with temporary (TAPE) binding"""
+    bound_tools = {}
+    for t in tools:
+        name = getattr(t, "name", t.__class__.__name__.lower())
+        t._adhesive = AdhesiveType.TAPE_ATTRACT
+        bound_tools[name] = t
+    return bound_tools
+
+def velcro(tools: List[Any], **config) -> Dict[str, Any]:
+    """Create tools with flexible (VELCRO) binding"""
+    bound_tools = {}
+    for t in tools:
+        name = getattr(t, "name", t.__class__.__name__.lower())
+        t._adhesive = AdhesiveType.VELCRO_ATTRACT
+        bound_tools[name] = t
+    return bound_tools
+
+def glue(tools: List[Any], **config) -> Dict[str, Any]:
+    """Create tools with persistent (GLUE) binding"""
+    bound_tools = {}
+    for t in tools:
+        name = getattr(t, "name", t.__class__.__name__.lower())
+        t._adhesive = AdhesiveType.GLUE_ATTRACT
+        bound_tools[name] = t
+    return bound_tools
+
+def tool(name: str, **config) -> Any:
+    """Create a tool with optional configuration"""
+    # Get tool type from mapping
+    tool_type = _infer_tool_type(name)
+    if tool_type is None:
+        raise ValueError(f"Unknown tool type: {name}")
+    
+    # Get the tool's __init__ parameters
+    init_params = {}
+    for k, v in config.items():
+        init_params[k] = v
+    
+    return tool_type(**init_params)
+
+def _infer_tool_type(name: str) -> Optional[Type[Any]]:
+    """Infer tool type from name"""
+    from ..tools import TOOL_TYPES
+    return TOOL_TYPES.get(name.lower())
+
 __all__ = [
     'workspace_context',
     'glue_app',
     'bind_magnetic',
     'flow',
+    'tape',
+    'velcro',
+    'glue',
+    'tool',
     'AdhesiveType',
     'FlowConfig'
 ]

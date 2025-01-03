@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: GLUE Documentation
+    url: https://github.com/paradiselabs-ai/glue-framework/tree/main/docs
+    about: Check our documentation before creating an issue
+  - name: GLUE Examples
+    url: https://github.com/paradiselabs-ai/glue-framework/tree/main/examples
+    about: See examples of how to use GLUE
+  - name: GLUE Framework Overview
+    url: https://github.com/paradiselabs-ai/glue-framework/blob/main/progressFiles/GLUE_Framework_Overview.md
+    about: Learn about GLUE's architecture and concepts

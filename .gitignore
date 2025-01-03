@@ -44,6 +44,7 @@ venv.bak/
 *.launch
 *.sublime-workspace
 *.sublime-project
+*.code-workspace  # VSCode workspace files
 
 # OS
 .DS_Store
@@ -66,15 +67,6 @@ coverage.xml
 .pytest_cache/
 htmlcov/
 
-# GLUE specific
-research_results.json
-test.txt
-progressFiles/
-*.log
-logs/
-tmp/
-temp/
-
 # Documentation
 docs/_build/
 docs/_static/
@@ -84,25 +76,44 @@ docs/_templates/
 .ipynb_checkpoints
 *.ipynb
 
-# GLUE Additional Ignores
-# Example apps and logs
+# GLUE Framework Specific
+## Development and Research
+research_results.json
+test.txt
+progressFiles/
+*.log
+logs/
+tmp/
+temp/
+Agent Guide.md
+mcp_integration_analysis.md
+*_insights.md
+*_analysis.md
+research_notes/
+
+## Example apps and logs
 examples/*.glue
 examples/output/
 examples/logs/
 
-# Workspace files
+## Workspace files
 workspace/
 workspace/**/*
 workspaces/
 workspaces/**/*
 
-# Chat files
+## Chat files
 chat/
 chat/**/*
 
-# Progress tracking
+## Progress tracking
 progressFiles/
 progressFiles/**/*
+
+## Development files
+cleanup_archive/
+output/
+test_reports/
 
 # Git
 .git/
@@ -110,3 +121,9 @@ progressFiles/**/*
 
 # Requirements
 requirements.txt
+
+# Local development
+local_notes/
+*.local.*
+TODO.md
+NOTES.md
