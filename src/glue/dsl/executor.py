@@ -9,8 +9,9 @@ from pathlib import Path
 from copy import deepcopy
 from .parser import GlueApp, ModelConfig, ToolConfig
 from ..adhesive import (
-    workspace, double_side_tape,
-    tool as create_tool
+    workspace_context,
+    tool as create_tool,
+    AdhesiveType
 )
 from ..providers import (
     OpenRouterProvider
@@ -306,10 +307,9 @@ class GlueExecutor:
     def _get_binding_patterns(self, field: MagneticField) -> Dict[str, Any]:
         """Get binding patterns from workflow"""
         patterns = {
-            'glue': [],
-            'velcro': [],
-            'magnet': [],
-            'tape': [],
+            AdhesiveType.GLUE_ATTRACT: [],
+            AdhesiveType.VELCRO_ATTRACT: [],
+            AdhesiveType.TAPE_ATTRACT: [],
             'field': field  # Include the magnetic field
         }
         
@@ -319,7 +319,7 @@ class GlueExecutor:
                 # Check if this is a model-tool attraction
                 if (source in self.models and target in self.tools) or \
                    (target in self.models and source in self.tools):
-                    patterns['magnet'].append((source, target))
+                    patterns[AdhesiveType.GLUE_ATTRACT].append((source, target))
         
         return patterns
     
@@ -355,7 +355,7 @@ class GlueExecutor:
                 await self._setup_workflow(field)
                 
                 # Create workspace
-                async with workspace(self.app.name) as ws:
+                async with workspace_context(self.app.name) as ws:
                     # Interactive prompt loop
                     while True:
                         print("\nprompt:", flush=True)

@@ -120,11 +120,13 @@ class Resource:
             old_field = self._field
             self._field = None
             
-            # Reset state
+            # Reset state and cleanup attributes
             async with self._state_change_lock:
                 self._state = ResourceState.IDLE
                 self._lock_holder = None
                 self._context = None
+                if hasattr(self, "_attract_mode"):
+                    delattr(self, "_attract_mode")
             
             await self._emit_event("field_exit", old_field)
             

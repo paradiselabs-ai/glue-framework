@@ -174,6 +174,68 @@ workflow {
 }
 ```
 
+## Mode Management System (Added 2024-03-21)
+
+### Mode Hierarchy and Transitions
+
+The GLUE framework implements an intelligent mode management system that governs how resources interact and transition between different states:
+
+1. **Bidirectional Mode (`><`)**
+   - Strongest binding mode for stable connections
+   - Protected against repel mode transitions
+   - Can transition to push/receive for flexible workflows
+   - Only overridable by chat mode
+
+2. **Push/Receive Modes (`->`, `<-`)**
+   - Dynamic directional flow control
+   - Can be updated based on workflow needs
+   - Supports flexible tool usage patterns
+   - Allows mode changes in response to flow requirements
+
+3. **Repel Mode (`<>`)**
+   - Cannot override bidirectional mode
+   - Used for explicit interaction blocking
+   - Helps enforce workflow boundaries
+   - Supports conflict prevention
+
+4. **Chat Mode (`<-->`)**
+   - Highest priority interaction mode
+   - Can override any existing mode
+   - Dedicated to model-to-model communication
+   - Preserves direct conversation channels
+
+### Resource Cleanup
+
+The framework now includes enhanced resource cleanup:
+- Automatic mode attribute cleanup during field exit
+- Proper state reset during resource cleanup
+- Improved magnetic property management
+- Consistent cleanup across all binding types
+
+### Implementation Example
+
+```python
+# Setting up a workflow with mode transitions
+async with workspace_context("workflow") as ws:
+    # Establish stable bidirectional connection
+    await ws.setup_flow(flow(
+        researcher.name, web_search.name, "><", 
+        AdhesiveType.GLUE_ATTRACT
+    ))
+    
+    # Add push flow (won't override bidirectional)
+    await ws.setup_flow(flow(
+        web_search.name, writer.name, "->", 
+        AdhesiveType.VELCRO_PUSH
+    ))
+    
+    # Try repel (won't affect bidirectional)
+    await ws.setup_flow(flow(
+        researcher.name, file_handler.name, "<>", 
+        AdhesiveType.TAPE_REPEL
+    ))
+```
+
 ## Future Considerations
 
 ### 1. Autonomous Collaboration

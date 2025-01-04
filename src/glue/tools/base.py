@@ -68,10 +68,16 @@ class BaseTool(Resource, ABC):
         self._error_handlers: Dict[type, callable] = {}
         self._is_initialized = False
         
-        # Magnetic configuration (for API compatibility)
+        # Magnetic configuration
         self.magnetic = magnetic
         self.sticky = sticky
         self.shared_resources = shared_resources or []
+        
+        # Magnetic properties
+        self._break_after_use = False
+        self._allow_reconnect = False
+        self._persist_context = False
+        self._attract_mode = "none"
         
         # Add magnetic permission if needed
         if magnetic and ToolPermission.MAGNETIC not in self.config.required_permissions:
