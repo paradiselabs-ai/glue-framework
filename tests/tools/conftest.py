@@ -2,6 +2,8 @@
 
 import pytest
 from src.glue.tools.magnetic import MagneticTool
+from src.glue.core.registry import ResourceRegistry
+from src.glue.core.state import StateManager
 
 class MockTool(MagneticTool):
     """Mock tool for testing"""
@@ -11,9 +13,13 @@ class MockTool(MagneticTool):
         description: str = "Test tool for testing",
         magnetic: bool = True
     ):
+        # Create registry with state manager
+        registry = ResourceRegistry(StateManager())
+        
         super().__init__(
             name=name,
             description=description,
+            registry=registry,
             magnetic=magnetic
         )
         self.execute_called = False

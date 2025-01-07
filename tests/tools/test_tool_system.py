@@ -122,7 +122,7 @@ async def test_tool_field_integration():
         
         # Test cleanup
         await field.remove_resource(tool1)
-        assert tool1.field is None
+        assert tool1._current_field is None
         assert not tool1._attracted_to
 
 # ==================== Registry Tests ====================

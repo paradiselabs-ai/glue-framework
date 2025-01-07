@@ -4,6 +4,7 @@ import asyncio
 from typing import List, Optional, Any, Dict
 from .base import BaseTool
 from ..magnetic.field import MagneticResource, ResourceState
+from ..core.registry import ResourceRegistry
 from ..core.context import InteractionType
 
 class ResourceLockedException(Exception):
@@ -21,6 +22,7 @@ class MagneticTool(BaseTool, MagneticResource):
         self,
         name: str,
         description: str,
+        registry: ResourceRegistry,
         magnetic: bool = True,  # Magnetic tools are magnetic by default
         shared_resources: Optional[List[str]] = None,
         sticky: bool = False,
@@ -315,18 +317,23 @@ class MagneticTool(BaseTool, MagneticResource):
                 if context.interaction_type == InteractionType.CHAT:
                     # Update states for chat mode
                     self._state = ResourceState.CHATTING
-                    if self._current_field:
-                        await self._current_field.enable_chat(self, next(iter(self._attracted_to)))
+                    if self._current_field and self._attracted_to:
+                        for other in self._attracted_to:
+                            other._state = ResourceState.CHATTING
+                            await self._current_field.enable_chat(self, other)
                 elif context.interaction_type == InteractionType.PULL:
                     # Update states for pull mode
                     self._state = ResourceState.PULLING
-                    if self._current_field:
-                        await self._current_field.enable_pull(self, next(iter(self._attracted_to)))
+                    if self._current_field and self._attracted_to:
+                        for other in self._attracted_to:
+                            other._state = ResourceState.SHARED
+                            await self._current_field.enable_pull(self, other)
             elif self._attracted_to:
                 # Update states for shared mode
                 self._state = ResourceState.SHARED
                 if self._current_field:
                     for other in self._attracted_to:
+                        other._state = ResourceState.SHARED
                         await self._current_field.attract(self, other)
             
             # Execute operation

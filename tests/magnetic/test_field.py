@@ -211,11 +211,15 @@ async def test_invalid_operations(field, resources, registry):
     with pytest.raises(RuntimeError):
         await field.add_resource(resource)
     
-    # Test duplicate resource addition
+    # Test duplicate resource addition - should replace gracefully
     async with MagneticField("test", registry) as new_field:
         await new_field.add_resource(resource)
-        with pytest.raises(ValueError):
-            await new_field.add_resource(resource)
+        initial_resource_count = len(new_field.list_resources())
+        
+        # Add same resource again - should replace without error
+        await new_field.add_resource(resource)
+        assert len(new_field.list_resources()) == initial_resource_count
+        assert new_field.get_resource(resource.name) == resource  # Verify it's the same resource
         
         # Test invalid attraction
         other = resources[1]  # Not in field

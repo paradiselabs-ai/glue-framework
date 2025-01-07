@@ -1,14 +1,12 @@
-# src/glue/tools/code_interpreter.py
+# src/glue/tools/code_interpreter.py:
 
 #============ Imports ====================
 
 from typing import Any, Dict, List, Optional
 import subprocess
-
-from asyncio import TimeoutError
+import asyncio
 import tempfile
 import os
-import asyncio
 import re
 import importlib.util
 import traceback
@@ -17,7 +15,9 @@ from .base import ToolConfig, ToolPermission
 from .magnetic import MagneticTool, ResourceStateException
 from ..magnetic.field import ResourceState
 from ..core.binding import AdhesiveType
-from ..core.context import ContextState, InteractionType, ComplexityLevel  # Added for context awareness
+from ..core.context import ContextState, InteractionType, ComplexityLevel
+from ..core.registry import ResourceRegistry
+from ..core.state import StateManager
 
 # ==================== Constants ====================
 SUPPORTED_LANGUAGES = {
@@ -69,6 +69,7 @@ DANGEROUS_IMPORTS = {
 }
 
 # ==================== Code Interpreter Tool ====================
+
 class CodeInterpreterTool(MagneticTool):
     """Tool for executing code in various languages with magnetic capabilities"""
     
@@ -82,9 +83,13 @@ class CodeInterpreterTool(MagneticTool):
         sticky: bool = False,
         binding_type: Optional[AdhesiveType] = None
     ):
+        # Create registry with state manager
+        registry = ResourceRegistry(StateManager())
+        
         super().__init__(
             name=name,
             description=description,
+            registry=registry,
             magnetic=magnetic,
             sticky=sticky,
             shared_resources=["code", "output", "language", "execution_result"],
@@ -111,52 +116,42 @@ class CodeInterpreterTool(MagneticTool):
     async def execute(self, *args, **kwargs) -> Any:
         """Execute with state validation"""
         try:
-            # Validate field presence for magnetic tools
+            # Store original state to properly restore it
+            original_state = self._state
+        
             if self.magnetic and not self._current_field:
                 return {
                     "success": False,
                     "error": "Cannot execute without magnetic field"
                 }
-            
-            # Check if resource is locked
+
             if self._current_field and self._current_field.is_resource_locked(self):
                 return {
                     "success": False,
                     "error": "Resource is locked"
                 }
-            
-            # Store original state
-            original_state = self._state
-            
+
             try:
-                # Execute operation
                 result = await self._execute(*args, **kwargs)
-                
-                # Restore original state if not explicitly changed during execution
-                if self._state == ResourceState.SHARED and not self._attracted_to:
+
+                # Only restore state if it wasn't explicitly changed to CHATTING or PULLING
+                if self._state not in [ResourceState.CHATTING, ResourceState.PULLING]:
                     self._state = original_state
-                
+
                 return result
-                
+            
             except TimeoutError as e:
-                # Restore original state on error
                 self._state = original_state
                 raise e
             except Exception as e:
-                # Restore original state on error
                 self._state = original_state
                 return {
                     "success": False,
                     "error": str(e),
                     "language": args[1] if len(args) > 1 else kwargs.get("language", "python")
                 }
-                
+            
         except ResourceStateException as e:
-            return {
-                "success": False,
-                "error": str(e)
-            }
-        except Exception as e:
             return {
                 "success": False,
                 "error": str(e)
@@ -210,15 +205,48 @@ class CodeInterpreterTool(MagneticTool):
         code = self._clean_code(code, language)
         print(f"Cleaned code:\n{code}")
 
-        # Handle sticky code and persistence
-        if (context and context.requires_persistence) or (self.sticky and language == "python"):
+        # Handle sticky code and persistence for Python
+        if language == "python":
             # Load sticky code
             sticky_code = self._load_sticky_code()
+            
+            # Extract variable assignments and function definitions from current code
+            var_assignments = []
+            func_defs = []
+            other_code = []
+            
+            for line in code.split('\n'):
+                stripped = line.strip()
+                if '=' in stripped and not stripped.startswith(('def ', 'class ')):
+                    var_assignments.append(line)
+                elif stripped.startswith('def '):
+                    func_defs.append(line)
+                else:
+                    other_code.append(line)
+            
+            # Combine code in the right order:
+            # 1. Previous sticky code (for variable persistence)
+            # 2. New variable assignments
+            # 3. Function definitions
+            # 4. Other code
+            combined_code = []
             if sticky_code:
-                # Combine sticky code with new code
-                code = sticky_code + "\n\n" + code
-            # Save new code
-            self._save_sticky_code(code)
+                combined_code.append(sticky_code)
+            if var_assignments:
+                combined_code.append('\n'.join(var_assignments))
+            if func_defs:
+                combined_code.append('\n'.join(func_defs))
+            if other_code:
+                combined_code.append('\n'.join(other_code))
+            
+            code = '\n\n'.join(filter(None, combined_code))
+            
+            # Save variable assignments and function definitions for future use
+            self._save_sticky_code('\n'.join(filter(None, [
+                sticky_code,
+                '\n'.join(var_assignments) if var_assignments else None,
+                '\n'.join(func_defs) if func_defs else None
+            ])))
 
         if language not in self.supported_languages:
             raise ValueError(
@@ -384,10 +412,31 @@ class CodeInterpreterTool(MagneticTool):
         sticky_path = os.path.join(self.workspace_dir, "sticky.py")
         # Append new code while preserving existing code
         existing_code = self._load_sticky_code()
+        
+        # Extract variable definitions and function definitions
+        var_defs = []
+        func_defs = []
+        other_code = []
+        
+        for line in code.split('\n'):
+            stripped = line.strip()
+            if '=' in stripped and not stripped.startswith(('def ', 'class ')):
+                var_defs.append(line)
+            elif stripped.startswith('def '):
+                func_defs.append(line)
+            else:
+                other_code.append(line)
+        
+        # Write to file in order: existing code, variable defs, function defs, other code
         with open(sticky_path, 'w') as f:
             if existing_code:
                 f.write(existing_code + "\n\n")
-            f.write(code)
+            if var_defs:
+                f.write("\n".join(var_defs) + "\n")
+            if func_defs:
+                f.write("\n".join(func_defs) + "\n")
+            if other_code:
+                f.write("\n".join(other_code) + "\n")
 
     def _generate_error_suggestions(self, error_msg: str) -> List[str]:
         """Generate suggestions for fixing common errors"""
@@ -633,65 +682,68 @@ class CodeInterpreterTool(MagneticTool):
             line for line in code.split("\n")
             if line.strip() and not line.strip().startswith(("#", "//"))
         )
-        
-        # Count complexity indicators
-        indicators = {
-            "classes": len(re.findall(r"\bclass\s+\w+", clean_code)),
-            "functions": len(re.findall(r"\bdef\s+\w+", clean_code)),
-            "loops": len(re.findall(r"\b(for|while)\b", clean_code)),
-            "conditionals": len(re.findall(r"\b(if|elif|else)\b", clean_code)),
-            "recursion": len(re.findall(r"\b\w+\([^)]*\)\s*(?:{|\n)", clean_code)),
-            "imports": len(re.findall(r"\b(import|from)\b", clean_code)),
-            "lines": len(clean_code.split("\n"))
+    
+        # Simple patterns - basic operations, single function calls
+        simple_patterns = {
+            "print_statements": len(re.findall(r"\bprint\s*\(", clean_code)),
+            "basic_assignments": len(re.findall(r"=(?![=])", clean_code)),
+            "simple_math": len(re.findall(r"[+\-*/]=?", clean_code))
         }
-        
-        # Calculate base complexity score
-        base_score = (
-            indicators["classes"] * 3 +
-            indicators["functions"] * 2 +
-            indicators["loops"] * 2 +
-            indicators["conditionals"] +
-            indicators["recursion"] * 3 +  # Recursion is weighted heavily
-            indicators["imports"] +
-            indicators["lines"] / 10
-        )
-
-        # Additional complexity factors
-        additional_score = 0
-
-        # Check for recursive functions
-        if "return" in clean_code:
-            for func_name in re.findall(r"\bdef\s+(\w+)", clean_code):
-                if re.search(rf"\b{func_name}\s*\(", clean_code[clean_code.find(func_name)+len(func_name):]):
-                    additional_score += 5  # Significant boost for recursive functions
-
-        # Check for nested structures
-        nesting_level = 0
-        max_nesting = 0
+    
+        # Moderate patterns - basic functions, basic loops, simple recursion
+        moderate_patterns = {
+            "functions": len(re.findall(r"\bdef\s+\w+\s*\([^)]*\):", clean_code)),
+            "basic_loops": len(re.findall(r"\b(for|while)\b", clean_code)),
+            "conditionals": len(re.findall(r"\b(if|elif|else)\b", clean_code)),
+            "simple_recursion": bool(
+                # Check for simple recursive function (single recursive call)
+                re.search(r"def\s+(\w+)[^{]*?return[^{]*?\1\s*\([^{]*$", 
+                         clean_code, 
+                         re.MULTILINE | re.DOTALL)
+            )
+        }
+    
+        # Complex patterns - classes, nested structures, complex recursion
+        complex_patterns = {
+            "classes": len(re.findall(r"\bclass\s+\w+", clean_code)),
+            "nested_functions": len(re.findall(r"def.*\n\s+def\s+", clean_code)),
+            "decorators": len(re.findall(r"@\w+", clean_code)),
+            "comprehensions": len(re.findall(r"\[.*for.*in.*\]", clean_code)),
+            "complex_recursion": bool(  # Multiple recursive calls or complex recursive pattern
+                re.search(r"def\s+(\w+).*\1.*\1", clean_code, re.DOTALL) and
+                not moderate_patterns["simple_recursion"]
+            )
+        }
+    
+        # Calculate scores with adjusted weights
+        simple_score = sum(simple_patterns.values())
+        moderate_score = sum(moderate_patterns.values()) * 2
+        complex_score = sum(1 for v in complex_patterns.values() if v) * 3
+    
+        # Check nesting level
+        max_indent = 0
+        current_indent = 0
         for line in clean_code.split('\n'):
-            if re.search(r':\s*$', line):  # Line ends with colon
-                nesting_level += 1
-                max_nesting = max(max_nesting, nesting_level)
-            elif line.strip() and len(line) - len(line.lstrip()) < nesting_level * 4:
-                nesting_level = (len(line) - len(line.lstrip())) // 4
-
-        additional_score += max_nesting * 2  # Boost for deep nesting
-
-        # Check for complex data structures
-        if re.search(r'class.*:.*\bdef\b.*\bself\b', clean_code, re.DOTALL):
-            additional_score += 8  # Significant boost for classes with methods
-
-        # Final score combines base and additional complexity
-        score = base_score + additional_score
-        
-        # Determine complexity level
-        if score <= 5:
-            return ComplexityLevel.SIMPLE
-        elif score <= 15:
+            if line.strip():
+                current_indent = len(line) - len(line.lstrip())
+                max_indent = max(max_indent, current_indent)
+    
+        # Adjust scores based on nesting
+        if max_indent > 12:  # More than 3 levels of nesting
+            complex_score += 2
+        elif max_indent > 8:  # More than 2 levels of nesting
+            moderate_score += 2
+    
+        # Determine complexity level based on scores and characteristics
+        if (complex_score > 0 and not (
+            len(complex_patterns) == 1 and complex_patterns.get("comprehensions", 0) == 1
+        )) or max_indent > 12:
+            return ComplexityLevel.COMPLEX
+        elif moderate_score > 0 or simple_score > 3 or max_indent > 8:
             return ComplexityLevel.MODERATE
         else:
-            return ComplexityLevel.COMPLEX
-
+            return ComplexityLevel.SIMPLE
+    
     async def assess_security(self, code: str) -> Dict[str, Any]:
         """Assess code security and identify potential risks"""
         concerns = []
@@ -824,6 +876,63 @@ class CodeInterpreterTool(MagneticTool):
         
         # Determine overall validity
         valid = True
+        
+        # Check for syntax errors
+        try:
+            compile(code, '<string>', 'exec')
+        except SyntaxError:
+            valid = False
+            warnings.append({
+                "type": "error",
+                "message": "Code contains syntax errors"
+            })
+        
+        # Check for undefined variables in Python code
+        undefined_vars = set()
+        if code.strip():  # Only check if code is not empty
+            try:
+                # Try to compile the code to check for syntax
+                compile(code, '<string>', 'exec')
+                
+                # Extract all variable names being used
+                used_vars = set()
+                defined_vars = {'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'True', 'False', 'None'}
+                
+                # Find all variable uses
+                for match in re.finditer(r'\b([a-zA-Z_]\w*)\b', code):
+                    var = match.group(1)
+                    if var not in defined_vars:
+                        used_vars.add(var)
+                
+                # Find all variable definitions
+                for line in code.split('\n'):
+                    stripped = line.strip()
+                    if '=' in stripped and not stripped.startswith(('def ', 'class ')):
+                        var_name = stripped.split('=')[0].strip()
+                        defined_vars.add(var_name)
+                    elif stripped.startswith('def '):
+                        func_name = stripped[4:].split('(')[0].strip()
+                        defined_vars.add(func_name)
+                    elif stripped.startswith('class '):
+                        class_name = stripped[6:].split('(')[0].strip()
+                        defined_vars.add(class_name)
+                
+                # Find undefined variables
+                undefined_vars = used_vars - defined_vars
+            except Exception as e:
+                warnings.append({
+                    "type": "error",
+                    "message": f"Error analyzing code: {str(e)}"
+                })
+        
+        if undefined_vars:
+            valid = False
+            warnings.append({
+                "type": "error",
+                "message": f"Undefined variables: {', '.join(undefined_vars)}"
+            })
+        
+        # Security and complexity checks
         if security["level"] == "dangerous":
             valid = False
         if warnings and any(w["type"] == "security" for w in warnings):

@@ -9,6 +9,8 @@ from .search_providers import get_provider, SearchProvider, GenericSearchProvide
 from ..core.logger import get_logger
 from ..core.resource import ResourceState
 from ..core.binding import AdhesiveType
+from ..core.registry import ResourceRegistry
+from ..core.state import StateManager
 
 class WebSearchTool(MagneticTool):
     """
@@ -34,9 +36,13 @@ class WebSearchTool(MagneticTool):
         binding_type: Optional[AdhesiveType] = None,
         **provider_config
     ):
+        # Create registry with state manager
+        registry = ResourceRegistry(StateManager())
+        
         super().__init__(
             name=name,
             description=description,
+            registry=registry,
             magnetic=magnetic,
             sticky=sticky,
             shared_resources=["query", "search_results"],

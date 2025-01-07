@@ -335,8 +335,11 @@ class GlueExecutor:
                 sticky=self.app.config.get("sticky", False)
             )
             
-            # Create magnetic field for tools
-            async with MagneticField(self.app.name) as field:
+            # Create registry and magnetic field for tools
+            from ..core.registry import ResourceRegistry
+            from ..core.state import StateManager
+            registry = ResourceRegistry(StateManager())
+            async with MagneticField(self.app.name, registry) as field:
                 # Setup tools in field
                 await self._setup_tools(field, workspace_path)
                 
