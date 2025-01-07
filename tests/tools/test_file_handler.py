@@ -9,6 +9,7 @@ from src.glue.tools.magnetic import ResourceLockedException, ResourceStateExcept
 from src.glue.magnetic.field import MagneticField
 from src.glue.core.types import ResourceState
 from src.glue.core.binding import AdhesiveType
+from src.glue.core.registry import ResourceRegistry
 
 # ==================== Test Data ====================
 TEST_CONTENT = "Hello, World!"
@@ -34,17 +35,22 @@ async def file_handler(temp_dir):
     yield tool
 
 @pytest_asyncio.fixture
-async def field():
+async def registry():
+    """Create a resource registry"""
+    return ResourceRegistry()
+
+@pytest_asyncio.fixture
+async def field(registry):
     """Create a magnetic field"""
-    async with MagneticField("test_field") as field:
+    async with MagneticField("test_field", registry) as field:
         yield field
 
 @pytest_asyncio.fixture
 async def tool_in_field(file_handler, field):
     """Create a tool and add it to a field"""
-    field.add_resource(file_handler)
+    await field.add_resource(file_handler)
     await file_handler.initialize()
-    file_handler._current_field = field
+    await file_handler.enter_field(field)
     return file_handler
 
 # ==================== Tests ====================
@@ -124,14 +130,12 @@ async def test_shared_execution(field):
         name="handler2",
         description="Second handler"
     )
-    field.add_resource(tool1)
-    field.add_resource(tool2)
+    await field.add_resource(tool1)
+    await field.add_resource(tool2)
     await tool1.initialize()
     await tool2.initialize()
-    
-    # Ensure field membership
-    tool1._current_field = field
-    tool2._current_field = field
+    await tool1.enter_field(field)
+    await tool2.enter_field(field)
     
     # Create attraction
     await field.attract(tool1, tool2)
@@ -253,7 +257,6 @@ async def test_str_representation():
     )
     expected = (
         "test_handler: Test file handler "
-        "(Magnetic File Handler, Formats: .txt, .json, "
-        "Binding: GLUE, State: IDLE)"
+        "(Magnetic Tool Binding: GLUE Shares: file_content, file_path, file_format State: IDLE)"
     )
     assert str(tool) == expected

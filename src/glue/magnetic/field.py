@@ -108,6 +108,10 @@ class MagneticField:
         self._active = True
         return self
 
+    def is_active(self) -> bool:
+        """Check if the magnetic field is currently active"""
+        return self._active
+
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Exit the magnetic field context"""
         await self.cleanup()
@@ -149,9 +153,16 @@ class MagneticField:
         if not self._active:
             raise RuntimeError("Cannot add resources to inactive field")
         
-        # Enter field and register
-        await resource.enter_field(self, self.registry)
+        # Check if resource is already in field
+        if self.registry.get_resource(resource.name, "field:" + self.name):
+            await resource.exit_field()
+            self.registry.unregister(resource.name)
+        
+        # Register resource first
         self.registry.register(resource, "field:" + self.name)
+        
+        # Then enter field
+        await resource.enter_field(self, self.registry)
         
         # Set current context if available
         if self._current_context:
@@ -187,6 +198,13 @@ class MagneticField:
         # Create attraction
         success = await source.attract_to(target)
         if success:
+            # Update states
+            if source._state == ResourceState.IDLE:
+                source._state = ResourceState.SHARED
+            if target._state == ResourceState.IDLE:
+                target._state = ResourceState.SHARED
+            
+            # Emit event
             self._emit_event(AttractionEvent(source, target))
         return success
 
@@ -276,6 +294,12 @@ class MagneticField:
             raise ValueError(f"Resource {resource.name} not in field")
         return resource._state
 
+    def is_resource_shared(self, resource: MagneticResource) -> bool:
+        """Check if a resource is in a shared state"""
+        if not self.registry.get_resource(resource.name, "field:" + self.name):
+            raise ValueError(f"Resource {resource.name} not in field")
+        return resource._state == ResourceState.SHARED or bool(resource._attracted_to)
+
     async def lock_resource(
         self,
         resource: MagneticResource,
@@ -285,6 +309,12 @@ class MagneticField:
         if not self.registry.get_resource(resource.name, "field:" + self.name):
             raise ValueError(f"Resource {resource.name} not in field")
         return await resource.lock(holder)
+
+    def is_resource_locked(self, resource: MagneticResource) -> bool:
+        """Check if a resource is currently locked"""
+        if not self.registry.get_resource(resource.name, "field:" + self.name):
+            raise ValueError(f"Resource {resource.name} not in field")
+        return resource._state == ResourceState.LOCKED
 
     async def unlock_resource(
         self,
@@ -319,8 +349,11 @@ class MagneticField:
         # Start chat
         success = await model1.attract_to(model2)
         if success:
+            # Update states for both models
             model1._state = ResourceState.CHATTING
             model2._state = ResourceState.CHATTING
+            # Ensure mutual attraction
+            await model2.attract_to(model1)
             self._emit_event(ChatEvent(model1, model2))
         return success
 
@@ -340,6 +373,8 @@ class MagneticField:
         # Start pull
         success = await target.attract_to(source)
         if success:
+            # Update states for both resources
             target._state = ResourceState.PULLING
+            source._state = ResourceState.SHARED
             self._emit_event(PullEvent(target, source))
         return success

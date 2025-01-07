@@ -12,6 +12,7 @@ class InteractionType(Enum):
     CHAT = auto()          # Simple conversation
     RESEARCH = auto()      # Information gathering
     TASK = auto()          # Specific task execution
+    PULL = auto()          # One-way data flow
     UNKNOWN = auto()       # Fallback type
 
 class ComplexityLevel(Enum):

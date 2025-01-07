@@ -1,7 +1,7 @@
 # src/glue/tools/file_handler.py
 
 # ==================== Imports ====================
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Tuple
 import os
 import json
 import yaml
@@ -11,6 +11,7 @@ import asyncio
 from pathlib import Path
 from .base import ToolConfig, ToolPermission
 from .magnetic import MagneticTool
+from ..core.binding import AdhesiveType
 from ..core.logger import get_logger
 
 # ==================== Constants ====================
@@ -41,8 +42,10 @@ class FileHandlerTool(MagneticTool):
         allowed_formats: Optional[List[str]] = None,
         magnetic: bool = True,
         sticky: bool = False,
-        workspace_dir: Optional[str] = None
+        workspace_dir: Optional[str] = None,
+        binding_type: Optional[AdhesiveType] = None
     ):
+        # Initialize with magnetic tool configuration
         super().__init__(
             name=name,
             description=description,
@@ -57,7 +60,8 @@ class FileHandlerTool(MagneticTool):
                     ToolPermission.MAGNETIC
                 ],
                 cache_results=False
-            )
+            ),
+            binding_type=binding_type or AdhesiveType.GLUE if magnetic else None
         )
         # Use workspace_dir if provided, otherwise use base_path or cwd
         self.base_path = os.path.abspath(workspace_dir or base_path or os.getcwd())
@@ -164,20 +168,33 @@ class FileHandlerTool(MagneticTool):
         
         return None
 
-    def _infer_operation(self, content: str) -> tuple[str, str, Optional[str]]:
+    def _infer_operation(self, content: Union[str, Dict[str, Any], List[Dict[str, Any]]]) -> Tuple[str, str, Optional[str]]:
         """Infer operation type and file path from natural language input"""
         self.logger.debug(f"Inferring operation from content: {content}")
         
+        # Handle dictionary input
+        if isinstance(content, dict):
+            file_path = content.get('path', 'document')
+            operation = content.get('operation', 'write')
+            content_str = content.get('content', '')
+            return operation, file_path, content_str
+        
+        # Handle list input (for CSV data)
+        if isinstance(content, list):
+            return "write", "data.csv", content
+        
+        # Handle string input
+        content_str = str(content)
         # Check if content looks like a document (has title and content)
-        has_title = bool(re.search(r'^Title:', content, re.MULTILINE | re.IGNORECASE))
-        has_content = len(content.split('\n')) > 2  # More than just title and blank line
+        has_title = bool(re.search(r'^Title:', content_str, re.MULTILINE | re.IGNORECASE))
+        has_content = len(content_str.split('\n')) > 2  # More than just title and blank line
         
         # Extract file path and format hints
         file_path = None
         format_hint = None
         
         # Look for format hints like "as markdown" or "in json"
-        format_match = re.search(r'(?:as|in|to)\s+(\w+)', content.lower())
+        format_match = re.search(r'(?:as|in|to)\s+(\w+)', content_str.lower())
         if format_match:
             format_name = format_match.group(1)
             # Map common format names to extensions
@@ -201,7 +218,7 @@ class FileHandlerTool(MagneticTool):
             self.logger.debug(f"Found format hint: {format_hint}")
         
         # Look for explicit file path (must contain slash or valid extension)
-        for word in content.lower().split():
+        for word in content_str.lower().split():
             if '/' in word or any(word.endswith(ext) for ext in SUPPORTED_FORMATS):
                 file_path = word
                 self.logger.debug(f"Found explicit file path: {file_path}")
@@ -209,7 +226,7 @@ class FileHandlerTool(MagneticTool):
         
         # Extract topic for filename if no explicit path
         if not file_path:
-            topic = self._extract_topic(content)
+            topic = self._extract_topic(content_str)
             if topic:
                 # Convert to snake case
                 topic = re.sub(r'[^\w\s-]', '', topic)  # Remove special chars
@@ -229,26 +246,28 @@ class FileHandlerTool(MagneticTool):
             self.logger.debug(f"Added format extension: {file_path}")
         
         # Determine operation
-        if any(word in content.lower() for word in ["save", "write", "create"]):
+        if any(word in content_str.lower() for word in ["save", "write", "create"]):
             # Explicit save/write/create operation
-            return "write", file_path, content
+            return "write", file_path, content_str
         elif has_title and has_content:
             # If content looks like a document, it's a write operation
             self.logger.debug("Content looks like a document, using write operation")
-            return "write", file_path, content
-        elif any(word in content.lower() for word in ["append", "add to"]):
-            return "append", file_path, content
-        elif any(word in content.lower() for word in ["delete", "remove"]):
+            return "write", file_path, content_str
+        elif any(word in content_str.lower() for word in ["append", "add to"]):
+            return "append", file_path, content_str
+        elif any(word in content_str.lower() for word in ["delete", "remove"]):
             return "delete", file_path, None
-        elif any(word in content.lower() for word in ["read", "show", "get", "what"]):
+        elif any(word in content_str.lower() for word in ["read", "show", "get", "what"]):
             # Only read if explicitly requested
             return "read", file_path, None
         else:
             # Default to write for research summaries and other content
-            return "write", file_path, content
+            return "write", file_path, content_str
 
-    async def execute(self, content: str, **kwargs) -> Dict[str, Any]:
+    async def _execute(self, *args, **kwargs) -> Dict[str, Any]:
         """Execute file operation based on natural language input"""
+        # Handle positional arguments
+        content = args[0] if args else kwargs.get("content", "")
         self.logger.debug(f"Executing with content: {content}")
         
         # Infer operation and file path from content
@@ -306,13 +325,22 @@ class FileHandlerTool(MagneticTool):
             elif format_handler == "csv":
                 content = list(csv.DictReader(f))
 
-        return {
+        result = {
             "success": True,
             "operation": "read",
             "format": format_handler,
             "content": content,
-            "path": str(path)
+            "path": str(path),
+            "file_content": content  # Add file_content for backward compatibility
         }
+
+        # Share content magnetically
+        if self.magnetic:
+            await self.share_resource("file_content", content)
+            await self.share_resource("file_path", str(path))
+            await self.share_resource("file_format", format_handler)
+
+        return result
 
     async def _write_file(
         self,
@@ -409,16 +437,15 @@ class FileHandlerTool(MagneticTool):
         await super().cleanup()
 
     def __str__(self) -> str:
-        formats = ", ".join(self.allowed_formats.keys())
-        status = []
+        """String representation"""
+        status = f"{self.name}: {self.description}"
         if self.magnetic:
-            status.append("Magnetic")
+            status += f" (Magnetic Tool"
+            if self.binding_type:
+                status += f" Binding: {self.binding_type.name}"
             if self.shared_resources:
-                status.append(f"Shares: {', '.join(self.shared_resources)}")
+                status += f" Shares: {', '.join(self.shared_resources)}"
             if self.sticky:
-                status.append("Sticky")
-        return (
-            f"{self.name}: {self.description} "
-            f"(Formats: {formats}"
-            f"{' - ' + ', '.join(status) if status else ''})"
-        )
+                status += " Sticky"
+            status += f" State: {self.state.name})"
+        return status

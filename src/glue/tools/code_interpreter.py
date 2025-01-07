@@ -4,6 +4,8 @@
 
 from typing import Any, Dict, List, Optional
 import subprocess
+
+from asyncio import TimeoutError
 import tempfile
 import os
 import asyncio
@@ -12,8 +14,9 @@ import importlib.util
 import traceback
 from pathlib import Path
 from .base import ToolConfig, ToolPermission
-from .magnetic import MagneticTool
+from .magnetic import MagneticTool, ResourceStateException
 from ..magnetic.field import ResourceState
+from ..core.binding import AdhesiveType
 from ..core.context import ContextState, InteractionType, ComplexityLevel  # Added for context awareness
 
 # ==================== Constants ====================
@@ -76,7 +79,8 @@ class CodeInterpreterTool(MagneticTool):
         supported_languages: Optional[List[str]] = None,
         workspace_dir: Optional[str] = None,
         magnetic: bool = True,
-        sticky: bool = False
+        sticky: bool = False,
+        binding_type: Optional[AdhesiveType] = None
     ):
         super().__init__(
             name=name,
@@ -92,7 +96,8 @@ class CodeInterpreterTool(MagneticTool):
                 ],
                 timeout=60.0,
                 cache_results=False
-            )
+            ),
+            binding_type=binding_type or AdhesiveType.GLUE if magnetic else None
         )
         self.supported_languages = (
             {lang: SUPPORTED_LANGUAGES[lang] 
@@ -103,283 +108,85 @@ class CodeInterpreterTool(MagneticTool):
         self.workspace_dir = os.path.abspath(workspace_dir or "workspace")
         self._temp_files: List[str] = []
 
-    def _infer_language(self, code: str) -> str:
-        """Infer programming language from code content"""
-        # Remove comments and empty lines
-        code = "\n".join(line for line in code.split("\n") 
-                        if line.strip() and not line.strip().startswith(("#", "//")))
-        
-        # Count language markers
-        scores = {
-            lang: sum(1 for marker in config["markers"] if marker in code)
-            for lang, config in self.supported_languages.items()
-        }
-        
-        # Get language with highest score
-        if scores:
-            max_score = max(scores.values())
-            if max_score > 0:
-                return max(
-                    scores.items(),
-                    key=lambda x: (x[1], len(self.supported_languages[x[0]]["markers"]))
-                )[0]
-        
-        # Default to python if can't determine
-        return "python"
-
-    def _normalize_indentation(self, code: str) -> str:
-        """Normalize code indentation"""
-        lines = code.split('\n')
-        # Find minimum indentation level (excluding empty lines)
-        indents = [len(line) - len(line.lstrip()) 
-                  for line in lines if line.strip()]
-        if not indents:
-            return code
-        min_indent = min(indents)
-        
-        # Remove common indentation prefix
-        if min_indent > 0:
-            normalized = []
-            for line in lines:
-                if line.strip():
-                    # Only remove indentation from non-empty lines
-                    if line[:min_indent].isspace():
-                        line = line[min_indent:]
-                normalized.append(line)
-            return '\n'.join(normalized)
-        return code
-
-    def _clean_code(self, code: str, language: str) -> str:
-        """Clean up code before execution"""
-        if language == "python":
-            # Process the code line by line
-            lines = []
-            for line in code.split('\n'):
-                # Handle function parameters
-                if 'def ' in line and '(' in line and ')' in line:
-                    # Extract function parameters
-                    before_params = line[:line.find('(') + 1]
-                    after_params = line[line.find(')'):]
-                    params = line[line.find('(') + 1:line.find(')')].strip()
-                    if params:
-                        # Split parameters and handle self parameter specially
-                        param_list = params.split()
-                        if param_list[0] == 'self':
-                            # Ensure 'self' is separated from other parameters
-                            params = 'self' + (', ' + ', '.join(param_list[1:]) if len(param_list) > 1 else '')
-                        else:
-                            params = ', '.join(param_list)
-                    line = before_params + params + after_params
-                
-                # Handle list literals
-                if '[' in line and ']' in line:
-                    # Find all list literals in the line
-                    result = []
-                    pos = 0
-                    while True:
-                        # Find next list start
-                        list_start = line.find('[', pos)
-                        if list_start == -1:
-                            result.append(line[pos:])
-                            break
-                        
-                        # Add text before the list
-                        result.append(line[pos:list_start])
-                        
-                        # Find matching closing bracket
-                        bracket_count = 1
-                        i = list_start + 1
-                        while i < len(line) and bracket_count > 0:
-                            if line[i] == '[':
-                                bracket_count += 1
-                            elif line[i] == ']':
-                                bracket_count -= 1
-                            i += 1
-                        
-                        if bracket_count == 0:
-                            # Extract list content
-                            list_content = line[list_start:i]
-                            # Only modify simple numeric lists
-                            if not any(c in list_content for c in "(){}[],'\"") and list_content.strip('[]').strip():
-                                numbers = list_content.strip('[]').split()
-                                list_content = '[' + ', '.join(numbers) + ']'
-                            result.append(list_content)
-                            pos = i
-                        else:
-                            # No matching bracket found, treat as normal text
-                            result.append(line[list_start:])
-                            break
-                    
-                    line = ''.join(result)
-                lines.append(line)
+    async def execute(self, *args, **kwargs) -> Any:
+        """Execute with state validation"""
+        try:
+            # Validate field presence for magnetic tools
+            if self.magnetic and not self._current_field:
+                return {
+                    "success": False,
+                    "error": "Cannot execute without magnetic field"
+                }
             
-            code = '\n'.join(lines)
-        
-        # Normalize indentation
-        code = self._normalize_indentation(code)
-        
-        return code
-
-    async def prepare_input(self, text: str) -> str:
-        """Extract code from model's response"""
-        # First check if we have code shared magnetically
-        if self.magnetic:
-            shared_code = self.get_shared_resource("code")
-            if shared_code:
-                return shared_code
-        
-        # Look for code between triple backticks
-        code_blocks = re.findall(r'```(?:\w+)?\n(.*?)```', text, re.DOTALL)
-        if code_blocks:
-            # Use the first code block that contains actual code
-            for block in code_blocks:
-                cleaned = block.strip()
-                if cleaned and any(marker in cleaned 
-                                 for lang in self.supported_languages.values() 
-                                 for marker in lang["markers"]):
-                    return cleaned
-        
-        # If no code blocks found, try to extract code by looking for common patterns
-        lines = text.split("\n")
-        code_lines = []
-        in_code = False
-        
-        for line in lines:
-            stripped = line.strip()
-            # Detect start of code block
-            if any(marker in line for lang in self.supported_languages.values() 
-                  for marker in lang["markers"]):
-                in_code = True
+            # Check if resource is locked
+            if self._current_field and self._current_field.is_resource_locked(self):
+                return {
+                    "success": False,
+                    "error": "Resource is locked"
+                }
             
-            # Keep line if it looks like code
-            if in_code:
-                # Keep indented lines or lines that look like code
-                if line.startswith((' ', '\t')) or any(
-                    marker in line for lang in self.supported_languages.values() 
-                    for marker in lang["markers"]
-                ):
-                    code_lines.append(line)
-                # Empty lines in code blocks
-                elif not stripped:
-                    code_lines.append(line)
-                # End of code block
-                elif not any(char in stripped for char in "(){}[]=:,"):
-                    in_code = False
-        
-        if code_lines:
-            return '\n'.join(code_lines)
-        
-        # If no code found, return original text
-        return text
-
-    async def initialize(self) -> None:
-        """Initialize workspace environment"""
-        os.makedirs(self.workspace_dir, exist_ok=True)
-        if self.sticky:
-            # Create sticky module file if it doesn't exist
-            sticky_path = os.path.join(self.workspace_dir, "sticky.py")
-            if not os.path.exists(sticky_path):
-                with open(sticky_path, 'w') as f:
-                    f.write("# Sticky code module\n")
-        await super().initialize()
-
-    async def cleanup(self) -> None:
-        """Cleanup temporary files and magnetic resources"""
-        # Clean up temp files first
-        for file_path in self._temp_files[:]:  # Create a copy of the list
+            # Store original state
+            original_state = self._state
+            
             try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                self._temp_files.remove(file_path)
-            except OSError:
-                pass
-        
-        # Repel from all attracted resources
-        if self._current_field:
-            for resource in list(self._attracted_to):
-                await self._current_field.repel(self, resource)
-            
-            # Clear repelled_by set after repelling
-            self._repelled_by.clear()
-            
-            # Set current field to None after cleanup
-            self._current_field = None
-            
-        # Clean up magnetic resources
-        await super().cleanup()
+                # Execute operation
+                result = await self._execute(*args, **kwargs)
+                
+                # Restore original state if not explicitly changed during execution
+                if self._state == ResourceState.SHARED and not self._attracted_to:
+                    self._state = original_state
+                
+                return result
+                
+            except TimeoutError as e:
+                # Restore original state on error
+                self._state = original_state
+                raise e
+            except Exception as e:
+                # Restore original state on error
+                self._state = original_state
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "language": args[1] if len(args) > 1 else kwargs.get("language", "python")
+                }
+                
+        except ResourceStateException as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
 
-    def _load_sticky_code(self) -> str:
-        """Load code from sticky module"""
-        sticky_path = os.path.join(self.workspace_dir, "sticky.py")
-        if os.path.exists(sticky_path):
-            with open(sticky_path, 'r') as f:
-                return f.read()
-        return ""
-
-    def _save_sticky_code(self, code: str):
-        """Save code to sticky module"""
-        sticky_path = os.path.join(self.workspace_dir, "sticky.py")
-        # Append new code while preserving existing code
-        existing_code = self._load_sticky_code()
-        with open(sticky_path, 'w') as f:
-            if existing_code:
-                f.write(existing_code + "\n\n")
-            f.write(code)
-
-    def _generate_error_suggestions(self, error_msg: str) -> List[str]:
-        """Generate suggestions for fixing common errors"""
-        suggestions = []
-        
-        if "NameError" in error_msg:
-            var_match = re.search(r"name '(\w+)' is not defined", error_msg)
-            if var_match:
-                var_name = var_match.group(1)
-                suggestions.append(f"Define variable '{var_name}' before using it")
-                suggestions.append(f"Check for typos in variable name '{var_name}'")
-        elif "SyntaxError" in error_msg:
-            suggestions.append("Check for missing parentheses or brackets")
-            suggestions.append("Verify proper indentation")
-            suggestions.append("Ensure all string quotes are properly closed")
-        elif "TypeError" in error_msg:
-            suggestions.append("Verify the types of variables being used")
-            suggestions.append("Check if you're calling methods on the correct type of object")
-        elif "ImportError" in error_msg or "ModuleNotFoundError" in error_msg:
-            suggestions.append("Verify the module name is correct")
-            suggestions.append("Ensure the required package is installed")
-        
-        suggestions.extend([
-            "Review the code for logical errors",
-            "Check the documentation for correct usage",
-            "Consider adding debug print statements"
-        ])
-        
-        return suggestions
-
-    async def execute(
-        self,
-        code: str,
-        language: Optional[str] = None,
-        timeout: Optional[float] = None,
-        context: Optional[ContextState] = None,  # Added context parameter
-        **kwargs
-    ) -> Dict[str, Any]:
+    async def _execute(self, *args, **kwargs) -> Dict[str, Any]:
         """Execute code with automatic language detection and magnetic sharing"""
-        # Check if we're in a field
-        if not self._current_field:
-            return {
-                "success": False,
-                "error": "Cannot execute without magnetic field",
-                "language": language or "unknown"
-            }
+        # Handle positional arguments
+        code = args[0] if args else kwargs.get("code", "")
+        language = args[1] if len(args) > 1 else kwargs.get("language")
+        timeout = args[2] if len(args) > 2 else kwargs.get("timeout")
+        context = kwargs.get("context")
+    
+        # Update state based on context and field interactions
+        if context:
+            if context.interaction_type == InteractionType.CHAT:
+                # Use field's enable_chat to properly set states
+                for resource in self._attracted_to:
+                    await self._current_field.enable_chat(self, resource)
+            elif context.interaction_type == InteractionType.PULL:
+                # Use field's enable_pull to properly set states
+                for resource in self._attracted_to:
+                    await self._current_field.enable_pull(self, resource)
+    
+        # Check for shared or attracted resources
+        if self._current_field and self._current_field.is_resource_shared(self):
+            # Update state through field to ensure proper propagation
+            if self._attracted_to:
+                await self._current_field.attract(self, next(iter(self._attracted_to)))
         
-        # Check if we're locked
-        if self._state == ResourceState.LOCKED:
-            return {
-                "success": False,
-                "error": "Resource is locked",
-                "language": language or "unknown"
-            }
-
         # Context-aware validation if context provided
         if context:
             validation = await self.validate_code(code, context)
@@ -389,7 +196,7 @@ class CodeInterpreterTool(MagneticTool):
                     "error": "Code validation failed",
                     "validation": validation
                 }
-            
+                
             # Apply context-based resource limits
             limits = await self.get_resource_limits(context)
             timeout = min(timeout or float('inf'), limits["time_seconds"])
@@ -423,7 +230,7 @@ class CodeInterpreterTool(MagneticTool):
         timeout = timeout or lang_config["timeout"]
 
         # Share code magnetically before execution
-        if self.magnetic:
+        if self.magnetic and self._current_field:
             await self.share_resource("code", code)
             await self.share_resource("language", language)
 
@@ -432,7 +239,7 @@ class CodeInterpreterTool(MagneticTool):
         try:
             # Create workspace directory if needed
             os.makedirs(self.workspace_dir, exist_ok=True)
-            
+        
             # Create and write temp file
             temp_file = tempfile.NamedTemporaryFile(
                 suffix=f".{lang_config['extension']}",
@@ -542,71 +349,74 @@ class CodeInterpreterTool(MagneticTool):
             
             return error_result
 
-    async def _on_resource_shared(self, source: 'MagneticTool', resource_name: str, data: Any) -> None:
-        """Handle shared resources from other tools"""
-        # If we receive file content that looks like code, prepare to execute it
-        if resource_name == "file_content":
-            language = self._infer_language(data)
-            if language in self.supported_languages:
-                await self.share_resource("code", data)
-                await self.share_resource("language", language)
+    async def cleanup(self) -> None:
+        """Cleanup temporary files and magnetic resources"""
+        try:
+            # Clean up temp files first
+            for file_path in list(self._temp_files):  # Create a copy of the list
+                try:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                except OSError:
+                    pass  # Ignore errors during cleanup
+            # Clear temp files list
+            self._temp_files.clear()
+            
+            # Clean up magnetic resources and field
+            await super().cleanup()
+            
+        except Exception as e:
+            print(f"Error during cleanup: {str(e)}")
+            # Ensure temp files list is cleared even on error
+            self._temp_files.clear()
+            raise
 
-    def __str__(self) -> str:
-        langs = ", ".join(self.supported_languages.keys())
-        status = []
-        if self.magnetic:
-            status.append("Magnetic")
-            if self.shared_resources:
-                # Use specific order expected by tests
-                ordered_resources = ["code", "output", "language", "execution_result"]
-                status.append(f"Shares: {', '.join(ordered_resources)}")
-            if self.sticky:
-                status.append("Sticky")
-        return (
-            f"{self.name}: {self.description} "
-            f"(Languages: {langs}"
-            f"{' - ' + ', '.join(status) if status else ''})"
-        )
+    def _load_sticky_code(self) -> str:
+        """Load code from sticky module"""
+        sticky_path = os.path.join(self.workspace_dir, "sticky.py")
+        if os.path.exists(sticky_path):
+            with open(sticky_path, 'r') as f:
+                return f.read()
+        return ""
 
-    # ==================== Context-Aware Methods ====================
-    
-    async def analyze_complexity(self, code: str) -> ComplexityLevel:
-        """Analyze code complexity based on various metrics"""
-        # Remove comments and empty lines
-        clean_code = "\n".join(
-            line for line in code.split("\n")
-            if line.strip() and not line.strip().startswith(("#", "//"))
-        )
+    def _save_sticky_code(self, code: str):
+        """Save code to sticky module"""
+        sticky_path = os.path.join(self.workspace_dir, "sticky.py")
+        # Append new code while preserving existing code
+        existing_code = self._load_sticky_code()
+        with open(sticky_path, 'w') as f:
+            if existing_code:
+                f.write(existing_code + "\n\n")
+            f.write(code)
+
+    def _generate_error_suggestions(self, error_msg: str) -> List[str]:
+        """Generate suggestions for fixing common errors"""
+        suggestions = []
         
-        # Count complexity indicators
-        indicators = {
-            "classes": len(re.findall(r"\bclass\s+\w+", clean_code)),
-            "functions": len(re.findall(r"\bdef\s+\w+", clean_code)),
-            "loops": len(re.findall(r"\b(for|while)\b", clean_code)),
-            "conditionals": len(re.findall(r"\b(if|elif|else)\b", clean_code)),
-            "recursion": len(re.findall(r"\b\w+\([^)]*\)\s*(?:{|\n)", clean_code)),
-            "imports": len(re.findall(r"\b(import|from)\b", clean_code)),
-            "lines": len(clean_code.split("\n"))
-        }
+        if "NameError" in error_msg:
+            var_match = re.search(r"name '(\w+)' is not defined", error_msg)
+            if var_match:
+                var_name = var_match.group(1)
+                suggestions.append(f"Define variable '{var_name}' before using it")
+                suggestions.append(f"Check for typos in variable name '{var_name}'")
+        elif "SyntaxError" in error_msg:
+            suggestions.append("Check for missing parentheses or brackets")
+            suggestions.append("Verify proper indentation")
+            suggestions.append("Ensure all string quotes are properly closed")
+        elif "TypeError" in error_msg:
+            suggestions.append("Verify the types of variables being used")
+            suggestions.append("Check if you're calling methods on the correct type of object")
+        elif "ImportError" in error_msg or "ModuleNotFoundError" in error_msg:
+            suggestions.append("Verify the module name is correct")
+            suggestions.append("Ensure the required package is installed")
         
-        # Calculate complexity score
-        score = (
-            indicators["classes"] * 3 +
-            indicators["functions"] * 2 +
-            indicators["loops"] * 2 +
-            indicators["conditionals"] +
-            indicators["recursion"] * 3 +
-            indicators["imports"] +
-            indicators["lines"] / 10
-        )
+        suggestions.extend([
+            "Review the code for logical errors",
+            "Check the documentation for correct usage",
+            "Consider adding debug print statements"
+        ])
         
-        # Determine complexity level
-        if score <= 5:
-            return ComplexityLevel.SIMPLE
-        elif score <= 15:
-            return ComplexityLevel.MODERATE
-        else:
-            return ComplexityLevel.COMPLEX
+        return suggestions
 
     async def detect_language(self, code: str) -> str:
         """Enhanced language detection with context awareness"""
@@ -646,6 +456,241 @@ class CodeInterpreterTool(MagneticTool):
         if scores:
             return max(scores.items(), key=lambda x: x[1])[0]
         return "python"  # Default to python
+
+    def _infer_language(self, code: str) -> str:
+        """Infer programming language from code content"""
+        # Remove comments and empty lines
+        code = "\n".join(line for line in code.split("\n") 
+                        if line.strip() and not line.strip().startswith(("#", "//")))
+        
+        # Count language markers
+        scores = {
+            lang: sum(1 for marker in config["markers"] if marker in code)
+            for lang, config in self.supported_languages.items()
+        }
+        
+        # Get language with highest score
+        if scores:
+            max_score = max(scores.values())
+            if max_score > 0:
+                return max(
+                    scores.items(),
+                    key=lambda x: (x[1], len(self.supported_languages[x[0]]["markers"]))
+                )[0]
+        
+        # Default to python if can't determine
+        return "python"
+
+    def _normalize_indentation(self, code: str) -> str:
+        """Normalize code indentation"""
+        lines = code.split('\n')
+        # Find minimum indentation level (excluding empty lines)
+        indents = [len(line) - len(line.lstrip()) 
+                  for line in lines if line.strip()]
+        if not indents:
+            return code
+        min_indent = min(indents)
+        
+        # Remove common indentation prefix
+        if min_indent > 0:
+            normalized = []
+            for line in lines:
+                if line.strip():
+                    # Only remove indentation from non-empty lines
+                    if line[:min_indent].isspace():
+                        line = line[min_indent:]
+                normalized.append(line)
+            return '\n'.join(normalized)
+        return code
+
+    def _clean_code(self, code: str, language: str) -> str:
+        """Clean up code before execution"""
+        if language == "python":
+            lines = []
+            for original_line in code.split('\n'):
+                line = original_line
+                # Handle function definitions
+                if 'def ' in line and '(' in line and ')' in line:
+                    parts = line.split('(', 1)
+                    before_params = parts[0] + '('
+                    params_with_closing = parts[1]
+                    params = params_with_closing[:params_with_closing.rfind(')')]
+                    after_params = ')' + params_with_closing[params_with_closing.rfind(')')+1:]
+                    if params.strip():
+                        params_list = [p.strip() for p in params.split()]
+                        if params_list and params_list[0] == 'self':
+                            formatted_params = 'self' + (', ' + ', '.join(params_list[1:]) if len(params_list) > 1 else '')
+                        else:
+                            formatted_params = ', '.join(params_list)
+                        line = before_params + formatted_params + after_params
+
+                import ast
+
+                # Handle list literals
+                if '[' in line and ']' in line:
+                    def replace_list(match):
+                        try:
+                            list_content = match.group(0)
+                            # Safely evaluate the list literal
+                            parsed_list = ast.literal_eval(list_content)
+                            # Format the list back into a string with proper spacing
+                            formatted_content = ', '.join(repr(item) for item in parsed_list)
+                            return f'[{formatted_content}]'
+                        except (SyntaxError, ValueError):
+                            # If parsing fails, return the original content
+                            return match.group(0)
+
+                    line = re.sub(r'\[.*?\]', replace_list, line)
+
+                # Handle method calls
+                if '.' in line and '(' in line and ')' in line:
+                    parts = line.split('.')
+                    if len(parts) > 1:
+                        base = parts[0]
+                        method_with_params = parts[1]
+                        if '(' in method_with_params and ')' in method_with_params:
+                            before_params = method_with_params[:method_with_params.find('(')+1]
+                            params_with_closing = method_with_params[method_with_params.find('(')+1:]
+                            params = params_with_closing[:params_with_closing.rfind(')')]
+                            after_params = ')' + params_with_closing[params_with_closing.rfind(')')+1:]
+                            if params.strip():
+                                param_list = [p.strip() for p in params.split()]
+                                formatted_params = ', '.join(param_list)
+                                method_call = before_params + formatted_params + after_params
+                                line = base + '.' + method_call
+                lines.append(line)
+            code = '\n'.join(lines)
+
+        # Normalize indentation
+        code = self._normalize_indentation(code)
+        return code
+
+    async def prepare_input(self, text: str) -> str:
+        """Extract code from model's response"""
+        # First check if we have code shared magnetically
+        if self.magnetic:
+            shared_code = self.get_shared_resource("code")
+            if shared_code:
+                return shared_code
+        
+        # Look for code between triple backticks
+        code_blocks = re.findall(r'```(?:\w+)?\n(.*?)```', text, re.DOTALL)
+        if code_blocks:
+            # Use the first code block that contains actual code
+            for block in code_blocks:
+                cleaned = block.strip()
+                if cleaned and any(marker in cleaned 
+                                 for lang in self.supported_languages.values() 
+                                 for marker in lang["markers"]):
+                    return cleaned
+        
+        # If no code blocks found, try to extract code by looking for common patterns
+        lines = text.split("\n")
+        code_lines = []
+        in_code = False
+        
+        for line in lines:
+            stripped = line.strip()
+            # Detect start of code block
+            if any(marker in line for lang in self.supported_languages.values() 
+                  for marker in lang["markers"]):
+                in_code = True
+            
+            # Keep line if it looks like code
+            if in_code:
+                # Keep indented lines or lines that look like code
+                if line.startswith((' ', '\t')) or any(
+                    marker in line for lang in self.supported_languages.values() 
+                    for marker in lang["markers"]
+                ):
+                    code_lines.append(line)
+                # Empty lines in code blocks
+                elif not stripped:
+                    code_lines.append(line)
+                # End of code block
+                elif not any(char in stripped for char in "(){}[]=:,"):
+                    in_code = False
+        
+        if code_lines:
+            return '\n'.join(code_lines)
+        
+        # If no code found, return original text
+        return text
+
+    async def _on_resource_shared(self, source: 'MagneticTool', resource_name: str, data: Any) -> None:
+        """Handle shared resources from other tools"""
+        # If we receive file content that looks like code, prepare to execute it
+        if resource_name == "file_content":
+            language = self._infer_language(data)
+            if language in self.supported_languages:
+                await self.share_resource("code", data)
+                await self.share_resource("language", language)
+
+    async def analyze_complexity(self, code: str) -> ComplexityLevel:
+        """Analyze code complexity based on various metrics"""
+        # Remove comments and empty lines
+        clean_code = "\n".join(
+            line for line in code.split("\n")
+            if line.strip() and not line.strip().startswith(("#", "//"))
+        )
+        
+        # Count complexity indicators
+        indicators = {
+            "classes": len(re.findall(r"\bclass\s+\w+", clean_code)),
+            "functions": len(re.findall(r"\bdef\s+\w+", clean_code)),
+            "loops": len(re.findall(r"\b(for|while)\b", clean_code)),
+            "conditionals": len(re.findall(r"\b(if|elif|else)\b", clean_code)),
+            "recursion": len(re.findall(r"\b\w+\([^)]*\)\s*(?:{|\n)", clean_code)),
+            "imports": len(re.findall(r"\b(import|from)\b", clean_code)),
+            "lines": len(clean_code.split("\n"))
+        }
+        
+        # Calculate base complexity score
+        base_score = (
+            indicators["classes"] * 3 +
+            indicators["functions"] * 2 +
+            indicators["loops"] * 2 +
+            indicators["conditionals"] +
+            indicators["recursion"] * 3 +  # Recursion is weighted heavily
+            indicators["imports"] +
+            indicators["lines"] / 10
+        )
+
+        # Additional complexity factors
+        additional_score = 0
+
+        # Check for recursive functions
+        if "return" in clean_code:
+            for func_name in re.findall(r"\bdef\s+(\w+)", clean_code):
+                if re.search(rf"\b{func_name}\s*\(", clean_code[clean_code.find(func_name)+len(func_name):]):
+                    additional_score += 5  # Significant boost for recursive functions
+
+        # Check for nested structures
+        nesting_level = 0
+        max_nesting = 0
+        for line in clean_code.split('\n'):
+            if re.search(r':\s*$', line):  # Line ends with colon
+                nesting_level += 1
+                max_nesting = max(max_nesting, nesting_level)
+            elif line.strip() and len(line) - len(line.lstrip()) < nesting_level * 4:
+                nesting_level = (len(line) - len(line.lstrip())) // 4
+
+        additional_score += max_nesting * 2  # Boost for deep nesting
+
+        # Check for complex data structures
+        if re.search(r'class.*:.*\bdef\b.*\bself\b', clean_code, re.DOTALL):
+            additional_score += 8  # Significant boost for classes with methods
+
+        # Final score combines base and additional complexity
+        score = base_score + additional_score
+        
+        # Determine complexity level
+        if score <= 5:
+            return ComplexityLevel.SIMPLE
+        elif score <= 15:
+            return ComplexityLevel.MODERATE
+        else:
+            return ComplexityLevel.COMPLEX
 
     async def assess_security(self, code: str) -> Dict[str, Any]:
         """Assess code security and identify potential risks"""
@@ -796,3 +841,17 @@ class CodeInterpreterTool(MagneticTool):
                 }
             }
         }
+
+    def __str__(self) -> str:
+        """String representation"""
+        status = f"{self.name}: {self.description}"
+        if self.magnetic:
+            status += f" (Magnetic Tool"
+            if self.binding_type:
+                status += f" Binding: {self.binding_type.name}"
+            if self.shared_resources:
+                status += f" Shares: {', '.join(self.shared_resources)}"
+            if self.sticky:
+                status += " Sticky"
+            status += f" State: {self.state.name})"
+        return status

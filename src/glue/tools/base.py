@@ -1,5 +1,6 @@
 """GLUE Tool Base System"""
 
+import asyncio
 from typing import Any, Dict, List, Optional, Set
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -50,7 +51,8 @@ class BaseTool(Resource, ABC):
         permissions: Optional[Set[str]] = None,
         magnetic: bool = False,  # Keep magnetic flag for API compatibility
         sticky: bool = False,    # Keep sticky flag for API compatibility
-        shared_resources: Optional[List[str]] = None  # Resources to share magnetically
+        shared_resources: Optional[List[str]] = None,  # Resources to share magnetically
+        binding_type: Optional['AdhesiveType'] = None  # Binding type for magnetic tools
     ):
         # Initialize base resource
         tags = {"tool", name}
@@ -73,6 +75,10 @@ class BaseTool(Resource, ABC):
         self.sticky = sticky
         self.shared_resources = shared_resources or []
         
+        # Binding configuration
+        from ..core.binding import AdhesiveType
+        self.binding_type = binding_type or AdhesiveType.GLUE if magnetic else None
+        
         # Magnetic properties
         self._break_after_use = False
         self._allow_reconnect = False
@@ -84,11 +90,11 @@ class BaseTool(Resource, ABC):
             self.config.required_permissions.append(ToolPermission.MAGNETIC)
 
     @abstractmethod
-    async def _execute(self, **kwargs) -> Any:
+    async def _execute(self, *args, **kwargs) -> Any:
         """Tool-specific implementation"""
         pass
 
-    async def execute(self, **kwargs) -> Any:
+    async def execute(self, *args, **kwargs) -> Any:
         """Execute tool with resource state tracking"""
         if self.state != ResourceState.IDLE:
             raise RuntimeError(f"Tool {self.name} is busy (state: {self.state.name})")
@@ -97,7 +103,7 @@ class BaseTool(Resource, ABC):
         try:
             if not self._is_initialized:
                 await self.initialize()
-            result = await self._execute(**kwargs)
+            result = await self._execute(*args, **kwargs)
             return result
         finally:
             self._state = ResourceState.IDLE
@@ -122,14 +128,17 @@ class BaseTool(Resource, ABC):
             for perm in self.config.required_permissions
         )
 
-    async def safe_execute(self, **kwargs) -> Any:
+    async def safe_execute(self, *args, **kwargs) -> Any:
         """Execute with error handling and validation"""
         try:
-            return await self.execute(**kwargs)
+            return await self.execute(*args, **kwargs)
         except Exception as e:
-            handler = self._error_handlers.get(type(e))
+            error_type = type(e)
+            handler = self._error_handlers.get(error_type)
             if handler:
-                return await handler(e)
+                if asyncio.iscoroutinefunction(handler):
+                    return await handler(e)
+                return handler(e)
             raise
 
     # Magnetic API compatibility methods
@@ -156,14 +165,17 @@ class BaseTool(Resource, ABC):
 
     def __str__(self) -> str:
         """String representation"""
-        status = super().__str__()
+        status = f"{self.name}: {self.description}"
         if self.magnetic:
-            status += f" | Magnetic"
+            status += f" (Magnetic Tool"
+            if self.binding_type:
+                status += f" Binding: {self.binding_type.name}"
             if self.shared_resources:
-                status += f" | Shares: {', '.join(self.shared_resources)}"
+                status += f" Shares: {', '.join(self.shared_resources)}"
             if self.sticky:
-                status += " | Sticky"
-        return f"{status} | {self.description}"
+                status += " Sticky"
+            status += f" State: {self.state.name})"
+        return status
 
 # ==================== Tool Registry ====================
 class ToolRegistry(ResourceRegistry):
@@ -180,9 +192,18 @@ class ToolRegistry(ResourceRegistry):
         super().__init__()
         self._granted_permissions: Dict[str, List[ToolPermission]] = {}
 
+    def register(self, tool: BaseTool, category: str = None) -> None:
+        """Register a tool or resource"""
+        if isinstance(tool, BaseTool):
+            super().register(tool, "tool")
+        else:
+            if not category:
+                raise ValueError("Category required for non-tool resources")
+            super().register(tool, category)
+
     def register_tool(self, tool: BaseTool) -> None:
         """Register a tool"""
-        self.register(tool, "tool")
+        self.register(tool)
 
     def unregister_tool(self, tool_name: str) -> None:
         """Unregister a tool"""
@@ -203,6 +224,7 @@ class ToolRegistry(ResourceRegistry):
     async def execute_tool(
         self,
         tool_name: str,
+        *args,
         **kwargs
     ) -> Any:
         """Execute a tool with permission checking"""
@@ -216,7 +238,7 @@ class ToolRegistry(ResourceRegistry):
                 f"Tool {tool_name} lacks required permissions"
             )
 
-        return await tool.safe_execute(**kwargs)
+        return await tool.safe_execute(*args, **kwargs)
 
     def list_tools(self) -> List[str]:
         """List all registered tools"""

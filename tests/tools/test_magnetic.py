@@ -24,15 +24,16 @@ async def tool(TestTool):
 @pytest_asyncio.fixture
 async def field():
     """Create a magnetic field"""
-    registry = ResourceRegistry(StateManager())
+    state_manager = StateManager()
+    registry = ResourceRegistry(state_manager)
     async with MagneticField("test_field", registry) as field:
         yield field
 
 @pytest_asyncio.fixture
 async def tool_in_field(tool, field):
     """Create a tool and add it to a field"""
-    field.add_resource(tool)
     await tool.initialize()
+    await field.add_resource(tool)
     tool._current_field = field
     return tool
 
@@ -99,12 +100,10 @@ async def test_shared_execution(field, TestTool):
     # Create and add tools
     tool1 = TestTool("tool1", "First tool")
     tool2 = TestTool("tool2", "Second tool")
-    field.add_resource(tool1)
-    field.add_resource(tool2)
     await tool1.initialize()
     await tool2.initialize()
-    
-    # Ensure field membership
+    await field.add_resource(tool1)
+    await field.add_resource(tool2)
     tool1._current_field = field
     tool2._current_field = field
     
@@ -130,9 +129,8 @@ async def test_state_transitions(tool_in_field, TestTool):
     # With attraction
     other = TestTool("other", "Other tool")
     field = tool_in_field._current_field
-    field.add_resource(other)
+    await field.add_resource(other)
     await other.initialize()
-    other._current_field = field
     await field.attract(tool_in_field, other)
     
     result = await tool_in_field.execute()
@@ -149,9 +147,8 @@ async def test_error_handling(tool_in_field, TestTool):
     
     error_tool = ErrorTool("error", "Error tool")
     field = tool_in_field._current_field
-    field.add_resource(error_tool)
+    await field.add_resource(error_tool)
     await error_tool.initialize()
-    error_tool._current_field = field
     
     # Try execution that raises error
     with pytest.raises(ValueError):
@@ -165,9 +162,8 @@ async def test_cleanup(tool_in_field, TestTool):
     """Test resource cleanup"""
     other = TestTool("other", "Other tool")
     field = tool_in_field._current_field
-    field.add_resource(other)
+    await field.add_resource(other)
     await other.initialize()
-    other._current_field = field
     await field.attract(tool_in_field, other)
     
     # Cleanup
@@ -190,7 +186,7 @@ async def test_str_representation(TestTool):
     )
     expected = (
         "test: Test description "
-        "(Magnetic Tool, Binding: GLUE, State: IDLE)"
+        "(Magnetic Tool Binding: GLUE State: IDLE)"
     )
     assert str(tool) == expected
 
@@ -220,9 +216,8 @@ async def test_error_handler(tool_in_field, TestTool):
     error_tool.add_error_handler(ValueError, handle_error)
     
     field = tool_in_field._current_field
-    field.add_resource(error_tool)
+    await field.add_resource(error_tool)
     await error_tool.initialize()
-    error_tool._current_field = field
     
     result = await error_tool.safe_execute()
     assert result == "handled"

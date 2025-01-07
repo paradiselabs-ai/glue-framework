@@ -10,6 +10,7 @@ from src.glue.tools.magnetic import ResourceLockedException, ResourceStateExcept
 from src.glue.magnetic.field import MagneticField
 from src.glue.core.types import ResourceState
 from src.glue.core.binding import AdhesiveType
+from src.glue.core.registry import ResourceRegistry
 
 # ==================== Mock Classes ====================
 class MockResponse:
@@ -70,17 +71,22 @@ async def search_tool():
         await tool.cleanup()
 
 @pytest_asyncio.fixture
-async def field():
+async def registry():
+    """Create a resource registry"""
+    return ResourceRegistry()
+
+@pytest_asyncio.fixture
+async def field(registry):
     """Create a magnetic field"""
-    async with MagneticField("test_field") as field:
+    async with MagneticField("test_field", registry) as field:
         yield field
 
 @pytest_asyncio.fixture
 async def tool_in_field(search_tool, field):
     """Create a tool and add it to a field"""
-    field.add_resource(search_tool)
+    await field.add_resource(search_tool)
     await search_tool.initialize()
-    search_tool._current_field = field
+    await search_tool.enter_field(field)
     return search_tool
 
 @pytest_asyncio.fixture
@@ -154,14 +160,14 @@ async def test_shared_execution(field, mock_session):
         name="search2",
         description="Second search tool"
     )
-    field.add_resource(tool1)
-    field.add_resource(tool2)
+    await field.add_resource(tool1)
+    await field.add_resource(tool2)
     await tool1.initialize()
     await tool2.initialize()
+    await tool1.enter_field(field)
+    await tool2.enter_field(field)
     
-    # Ensure field membership and session
-    tool1._current_field = field
-    tool2._current_field = field
+    # Set session
     tool1._session = mock_session
     
     # Create attraction
@@ -187,9 +193,9 @@ async def test_cleanup(tool_in_field, mock_session):
         description="Other tool"
     )
     field = tool_in_field._current_field
-    field.add_resource(other)
+    await field.add_resource(other)
     await other.initialize()
-    other._current_field = field
+    await other.enter_field(field)
     await field.attract(tool_in_field, other)
     
     # Store session for checking
@@ -254,7 +260,6 @@ async def test_str_representation():
     )
     expected = (
         "test_search: Test search tool "
-        "(Magnetic Web Search Tool, Engine: duckduckgo, "
-        "Binding: GLUE, State: IDLE)"
+        "(Magnetic Tool Binding: GLUE Shares: query, search_results State: IDLE)"
     )
     assert str(tool) == expected

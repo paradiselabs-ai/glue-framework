@@ -15,6 +15,24 @@ from glue.core.registry import ResourceRegistry
 from glue.core.state import StateManager
 from glue.core.resource import Resource
 
+class TestResource(Resource):
+    """Test resource implementation"""
+    def __init__(self, name: str, category: str):
+        super().__init__(name)
+        self.category = category
+        self._state = ResourceState.IDLE
+        self._current_field = None
+        self._attracted_to = set()
+        self._repelled_by = set()
+        self._is_initialized = False
+        self._skip_binding_check = True
+
+    async def initialize(self) -> None:
+        self._is_initialized = True
+
+    async def cleanup(self) -> None:
+        self._is_initialized = False
+
 @pytest_asyncio.fixture
 async def registry():
     """Create a resource registry"""
@@ -22,15 +40,19 @@ async def registry():
 
 async def create_resources(field: MagneticField):
     """Create and add basic resources to field"""
-    researcher = Resource("researcher", category="model")
-    writer = Resource("writer", category="model")
-    web_search = Resource("web_search", category="tool")
-    file_handler = Resource("file_handler", category="tool")
+    # Create resources
+    researcher = TestResource("researcher", category="model")
+    writer = TestResource("writer", category="model")
+    web_search = TestResource("web_search", category="tool")
+    file_handler = TestResource("file_handler", category="tool")
     
-    # Skip binding checks in test environment
-    researcher._skip_binding_check = True
-    writer._skip_binding_check = True
+    # Initialize resources
+    await researcher.initialize()
+    await writer.initialize()
+    await web_search.initialize()
+    await file_handler.initialize()
     
+    # Add resources to field
     await field.add_resource(researcher)
     await field.add_resource(writer)
     await field.add_resource(web_search)

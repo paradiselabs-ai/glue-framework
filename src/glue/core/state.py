@@ -60,65 +60,41 @@ class StateManager:
             )
         )
         
-        # ACTIVE -> most states
+        # All states can return to IDLE
+        for state in ResourceState:
+            if state != ResourceState.IDLE:
+                self.add_rule(
+                    TransitionRule(
+                        from_states={state},
+                        to_states={ResourceState.IDLE},
+                        description=f"{state.name} can return to IDLE"
+                    )
+                )
+        
+        # ACTIVE -> SHARED or CHATTING
         self.add_rule(
             TransitionRule(
                 from_states={ResourceState.ACTIVE},
-                to_states={
-                    ResourceState.IDLE,
-                    ResourceState.LOCKED,
-                    ResourceState.SHARED,
-                    ResourceState.CHATTING
-                },
-                description="ACTIVE resources can transition to most states"
+                to_states={ResourceState.SHARED, ResourceState.CHATTING},
+                description="ACTIVE resources can transition to SHARED or CHATTING"
             )
         )
         
-        # LOCKED -> IDLE only
-        self.add_rule(
-            TransitionRule(
-                from_states={ResourceState.LOCKED},
-                to_states={ResourceState.IDLE},
-                description="LOCKED resources can only return to IDLE"
-            )
-        )
-        
-        # SHARED -> non-exclusive states
+        # SHARED -> ACTIVE or CHATTING
         self.add_rule(
             TransitionRule(
                 from_states={ResourceState.SHARED},
-                to_states={
-                    ResourceState.IDLE,
-                    ResourceState.ACTIVE,
-                    ResourceState.SHARED,
-                    ResourceState.CHATTING
-                },
-                description="SHARED resources can transition to non-exclusive states"
+                to_states={ResourceState.ACTIVE, ResourceState.CHATTING},
+                description="SHARED resources can transition to ACTIVE or CHATTING"
             )
         )
         
-        # CHATTING -> communication states
+        # CHATTING -> PULLING
         self.add_rule(
             TransitionRule(
                 from_states={ResourceState.CHATTING},
-                to_states={
-                    ResourceState.IDLE,
-                    ResourceState.SHARED,
-                    ResourceState.PULLING
-                },
-                description="CHATTING resources can transition to communication states"
-            )
-        )
-        
-        # PULLING -> limited states
-        self.add_rule(
-            TransitionRule(
-                from_states={ResourceState.PULLING},
-                to_states={
-                    ResourceState.IDLE,
-                    ResourceState.CHATTING
-                },
-                description="PULLING resources have limited transitions"
+                to_states={ResourceState.PULLING},
+                description="CHATTING resources can transition to PULLING"
             )
         )
     
@@ -172,9 +148,13 @@ class StateManager:
                             f"Transition validation failed: {resource.state} -> {new_state}"
                         )
                 
-                # Perform transition
+                # Get current state and version
                 old_state = resource.state
-                resource._state = new_state
+                current_version = resource._version
+                
+                # Attempt to set state with version check
+                if not await resource.set_state(new_state, current_version):
+                    return False
                 
                 # Run side effect if present
                 if rule.side_effect:
@@ -227,7 +207,7 @@ class StateManager:
         if (resource.state not in self._rules or
             new_state not in self._rules[resource.state]):
             return False
-        
+            
         return True
     
     def _log_transition(self, log: TransitionLog) -> None:

@@ -39,6 +39,8 @@ class Resource:
         """Initialize resource"""
         self.name = name
         self._state = ResourceState.IDLE
+        self._transition_lock = asyncio.Lock()
+        self._version = 0  # Track state changes
         self._field: Optional['MagneticField'] = None
         self._context: Optional['ContextState'] = None
         self._lock_holder: Optional['Resource'] = None
@@ -79,6 +81,16 @@ class Resource:
     def state(self) -> ResourceState:
         """Get current state"""
         return self._state
+
+    async def set_state(self, new_state: ResourceState, expected_version: int) -> bool:
+        """Set resource state with locking"""
+        async with self._transition_lock:
+            # Only allow state change if version matches
+            if self._version != expected_version:
+                return False
+            self._state = new_state
+            self._version += 1
+            return True
     
     @property
     def field(self) -> Optional['MagneticField']:
@@ -197,12 +209,24 @@ class Resource:
         tool = self._registry.get_resource(tool_name)
         if not tool:
             raise ValueError(f"Tool not found: {tool_name}")
+            
+        # Check if tool is attracted
+        if tool not in self._attracted_to:
+            raise ValueError("Tool not found - attraction required before use")
+        
+        # Handle TAPE bindings
+        if binding.type == AdhesiveType.TAPE:
+            # Break immediately after use
+            defer_break = True
+        else:
+            # Check time-based breaking for other types
+            defer_break = binding.should_break()
+        
+        # Add context for GLUE bindings
+        if binding.maintains_context():
+            kwargs["context"] = binding.context
         
         try:
-            # Add context for GLUE bindings
-            if binding.maintains_context():
-                kwargs["context"] = binding.context
-            
             # Execute tool
             result = await tool.execute(**kwargs)
             
@@ -215,11 +239,13 @@ class Resource:
                 binding.context.update(result.get("context", {}))
             
             # Break TAPE bindings after use
-            if binding.should_break():
+            if binding.type == AdhesiveType.TAPE:
                 await self.break_attraction(tool)
+                # Also break from tool's side to ensure clean separation
+                await tool.break_attraction(self)
             
             return result
-            
+        
         except Exception as e:
             # Handle reconnection for VELCRO bindings
             if binding.can_reconnect():
@@ -237,21 +263,38 @@ class Resource:
         if not self.can_attract(other):
             return False
         
-        # Check tool bindings (skip in test environments)
-        if other.metadata.category == "tool" and not getattr(self, "_skip_binding_check", False):
+        # Check tool bindings
+        if other.metadata.category == "tool" or getattr(other, "name", "").endswith("_tool"):
             binding = self.get_tool_binding(other.name)
             if not binding:
                 return False  # No binding configured
+            
+            # Verify tool exists in registry
+            if self._registry and not self._registry.get_resource(other.name):
+                raise ValueError(f"Tool not found: {other.name}")
         
         # Create attraction
         self._attracted_to.add(other)
         other._attracted_to.add(self)
         
-        # Update states
-        if self._state == ResourceState.IDLE:
+        # Update states - tools stay IDLE when attracted
+        if self._state == ResourceState.IDLE and self.metadata.category != "tool":
             self._state = ResourceState.SHARED
-        if other._state == ResourceState.IDLE:
+            if self._registry:
+                self._registry._notify_observers("state_change", {
+                    "resource": self.name,
+                    "old_state": ResourceState.IDLE,
+                    "new_state": ResourceState.SHARED
+                })
+                
+        if other._state == ResourceState.IDLE and other.metadata.category != "tool":
             other._state = ResourceState.SHARED
+            if other._registry:
+                other._registry._notify_observers("state_change", {
+                    "resource": other.name,
+                    "old_state": ResourceState.IDLE,
+                    "new_state": ResourceState.SHARED
+                })
         
         # Emit events
         await self._emit_event("attraction", other)
@@ -292,9 +335,24 @@ class Resource:
         
         # Update states if no more attractions
         if not self._attracted_to:
+            old_state = self._state
             self._state = ResourceState.IDLE
+            if self._registry:
+                self._registry._notify_observers("state_change", {
+                    "resource": self.name,
+                    "old_state": old_state,
+                    "new_state": ResourceState.IDLE
+                })
+                
         if not other._attracted_to:
+            old_state = other._state
             other._state = ResourceState.IDLE
+            if other._registry:
+                other._registry._notify_observers("state_change", {
+                    "resource": other.name,
+                    "old_state": old_state,
+                    "new_state": ResourceState.IDLE
+                })
         
         await self._emit_event("attraction_break", other)
         await other._emit_event("attraction_break", self)

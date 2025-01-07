@@ -13,12 +13,12 @@ from src.glue.tools.base import (
 # ==================== Mock Tools ====================
 class MockTool(BaseTool):
     """Mock tool for testing"""
-    async def execute(self, **kwargs) -> Any:
+    async def _execute(self, **kwargs) -> Any:
         return "mock_result"
 
 class ErrorTool(BaseTool):
     """Tool that raises an error"""
-    async def execute(self, **kwargs) -> Any:
+    async def _execute(self, **kwargs) -> Any:
         raise ValueError("Test error")
 
 # ==================== Fixtures ====================

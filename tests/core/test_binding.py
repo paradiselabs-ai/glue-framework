@@ -8,11 +8,11 @@ from glue.tools.base import BaseTool
 class MockTool(BaseTool):
     """Mock tool for testing"""
     def __init__(self, name: str):
-        super().__init__(name)
+        super().__init__(name=name, description="Test tool")
         self.execute_count = 0
         self.last_context = None
     
-    async def execute(self, **kwargs):
+    async def _execute(self, **kwargs):
         self.execute_count += 1
         self.last_context = kwargs.get("context")
         return {
@@ -23,6 +23,13 @@ class MockTool(BaseTool):
 @pytest.fixture
 async def setup_resources():
     """Setup test resources"""
+    from glue.core.registry import ResourceRegistry
+    from glue.magnetic.field import MagneticField
+    
+    # Create registry and field
+    registry = ResourceRegistry()
+    field = MagneticField("test_field", registry)
+    
     # Create model with different tool bindings
     model = Resource(
         name="test_model",
@@ -43,12 +50,29 @@ async def setup_resources():
     glue_tool = MockTool("glue_tool")
     glue_tool.metadata.category = "tool"
     
-    return model, tape_tool, velcro_tool, glue_tool
+    # Add resources to field
+    await model.enter_field(field, registry)
+    await tape_tool.enter_field(field, registry)
+    await velcro_tool.enter_field(field, registry)
+    await glue_tool.enter_field(field, registry)
+    
+    # Register tools
+    registry.register(tape_tool, "tool")
+    registry.register(velcro_tool, "tool")
+    registry.register(glue_tool, "tool")
+    
+    yield model, tape_tool, velcro_tool, glue_tool
+    
+    # Cleanup
+    await model.exit_field()
+    await tape_tool.exit_field()
+    await velcro_tool.exit_field()
+    await glue_tool.exit_field()
 
 @pytest.mark.asyncio
 async def test_tape_binding(setup_resources):
     """Test TAPE binding behavior"""
-    model, tape_tool, _, _ = setup_resources
+    model, tape_tool, _, _ = await anext(setup_resources)
     
     # Verify initial state
     binding = model.get_tool_binding("tape_tool")
@@ -70,7 +94,7 @@ async def test_tape_binding(setup_resources):
 @pytest.mark.asyncio
 async def test_velcro_binding(setup_resources):
     """Test VELCRO binding behavior"""
-    model, _, velcro_tool, _ = setup_resources
+    model, _, velcro_tool, _ = await anext(setup_resources)
     
     # Verify initial state
     binding = model.get_tool_binding("velcro_tool")
@@ -93,7 +117,7 @@ async def test_velcro_binding(setup_resources):
 @pytest.mark.asyncio
 async def test_glue_binding(setup_resources):
     """Test GLUE binding behavior"""
-    model, _, _, glue_tool = setup_resources
+    model, _, _, glue_tool = await anext(setup_resources)
     
     # Verify initial state
     binding = model.get_tool_binding("glue_tool")
@@ -119,7 +143,7 @@ async def test_glue_binding(setup_resources):
 @pytest.mark.asyncio
 async def test_binding_validation(setup_resources):
     """Test binding validation"""
-    model, tape_tool, _, _ = setup_resources
+    model, tape_tool, _, _ = await anext(setup_resources)
     
     # Try to use tool without binding
     with pytest.raises(ValueError, match="No binding found for tool"):

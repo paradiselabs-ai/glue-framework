@@ -1,13 +1,16 @@
 """Web Search Tool Implementation"""
 
 import re
+import aiohttp
 from typing import Dict, List, Optional, Any, Type, Union
-from .base import BaseTool, ToolConfig, ToolPermission
+from .base import ToolConfig, ToolPermission
+from .magnetic import MagneticTool
 from .search_providers import get_provider, SearchProvider, GenericSearchProvider
 from ..core.logger import get_logger
 from ..core.resource import ResourceState
+from ..core.binding import AdhesiveType
 
-class WebSearchTool(BaseTool):
+class WebSearchTool(MagneticTool):
     """
     Tool for performing web searches with resource capabilities.
     
@@ -26,19 +29,27 @@ class WebSearchTool(BaseTool):
         description: str = "Performs web searches and returns results",
         provider: str = "serp",
         max_results: int = 5,
+        magnetic: bool = True,
+        sticky: bool = False,
+        binding_type: Optional[AdhesiveType] = None,
         **provider_config
     ):
         super().__init__(
             name=name,
             description=description,
+            magnetic=magnetic,
+            sticky=sticky,
+            shared_resources=["query", "search_results"],
             config=ToolConfig(
                 required_permissions=[
                     ToolPermission.NETWORK,
-                    ToolPermission.READ
+                    ToolPermission.READ,
+                    ToolPermission.MAGNETIC
                 ],
                 timeout=10.0,
                 cache_results=True
-            )
+            ),
+            binding_type=binding_type or AdhesiveType.GLUE if magnetic else None
         )
         
         # Get provider class and config
@@ -55,21 +66,30 @@ class WebSearchTool(BaseTool):
             if provider in provider_endpoints and "endpoint" not in provider_config:
                 provider_config["endpoint"] = provider_endpoints[provider]
         
-        # Initialize provider
+        # Initialize provider and session
         self.provider = provider_class(
             api_key=api_key,
             **provider_config
         )
         self.max_results = max_results
         self.logger = get_logger()
+        self._session: Optional[aiohttp.ClientSession] = None
 
     async def initialize(self) -> None:
-        """Initialize search provider"""
+        """Initialize search provider and session"""
+        if not self._session:
+            self._session = aiohttp.ClientSession()
+            # Pass session to provider
+            if hasattr(self.provider, 'set_session'):
+                await self.provider.set_session(self._session)
         await self.provider.initialize()
         await super().initialize()
 
     async def cleanup(self) -> None:
-        """Clean up search provider"""
+        """Clean up search provider and session"""
+        if self._session:
+            await self._session.close()
+            self._session = None
         await self.provider.cleanup()
         await super().cleanup()
 
@@ -153,9 +173,11 @@ class WebSearchTool(BaseTool):
         
         return "\n".join(lines)
 
-    async def _execute(self, input_data: Any, **kwargs) -> Union[str, List[Dict[str, str]]]:
+    async def _execute(self, *args, **kwargs) -> Union[str, List[Dict[str, str]]]:
         """Execute web search with resource state tracking"""
         try:
+            # Handle positional arguments
+            input_data = args[0] if args else kwargs.get("input_data", "")
             # Get base query from input
             base_query = await self.prepare_input(input_data)
             self.logger.debug(f"Base query: {base_query}")
@@ -217,10 +239,19 @@ class WebSearchTool(BaseTool):
             return formatted_results
             
         except Exception as e:
-            self.logger.error(f"Search failed: {str(e)}")
-            raise RuntimeError(f"Search failed: {str(e)}")
+            self.logger.error(f"Search request failed: {str(e)}")
+            raise RuntimeError(f"Search request failed: {str(e)}")
 
     def __str__(self) -> str:
         """String representation"""
-        status = super().__str__()
-        return f"{status} | Provider: {self.provider}"
+        status = f"{self.name}: {self.description}"
+        if self.magnetic:
+            status += f" (Magnetic Tool"
+            if self.binding_type:
+                status += f" Binding: {self.binding_type.name}"
+            if self.shared_resources:
+                status += f" Shares: {', '.join(self.shared_resources)}"
+            if self.sticky:
+                status += " Sticky"
+            status += f" State: {self.state.name})"
+        return status

@@ -36,6 +36,8 @@ class ResourceRegistry:
         self._tags: Dict[str, Set[str]] = defaultdict(set)
         self._state_manager = state_manager or StateManager()
         self._registry_lock = asyncio.Lock()
+        self._transition_locks: Dict[str, asyncio.Lock] = {}
+        self._global_transition_lock = asyncio.Lock()
         self._observers: Dict[str, List[Callable[[str, Any], None]]] = defaultdict(list)
     
     def register(
@@ -245,21 +247,41 @@ class ResourceRegistry:
         if not resource:
             return False
             
-        async with self._registry_lock:
-            success = await self._state_manager.transition(
-                resource,
-                new_state,
-                context
-            )
-            
-            if success:
-                self._notify_observers("state_change", {
-                    "resource": resource_name,
-                    "old_state": resource.state,
-                    "new_state": new_state
-                })
-            
-            return success
+        # Get or create resource-specific lock
+        if resource_name not in self._transition_locks:
+            self._transition_locks[resource_name] = asyncio.Lock()
+
+        try:
+            # First acquire resource-specific lock
+            async with self._transition_locks[resource_name]:
+                # Then acquire global lock
+                async with self._global_transition_lock:
+                    # Get current state before attempting transition
+                    current_state = resource.state
+                    
+                    # Only allow one transition at a time
+                    if current_state != ResourceState.IDLE:
+                        return False
+                    
+                    # Attempt transition
+                    success = await self._state_manager.transition(
+                        resource,
+                        new_state,
+                        context
+                    )
+                    
+                    if success:
+                        # Notify observers of state change
+                        self._notify_observers("state_change", {
+                            "resource": resource_name,
+                            "old_state": current_state,
+                            "new_state": new_state
+                        })
+                        return True
+                    
+                    return False
+        except Exception:
+            return False
     
     def add_observer(
         self,
