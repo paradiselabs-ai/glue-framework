@@ -16,8 +16,15 @@ from .core.resource import Resource, ResourceState
 from .core.state import StateManager
 from .core.registry import ResourceRegistry
 
-# Initialize global registry
-registry = ResourceRegistry(StateManager())
+
+registry = None
+
+def get_registry():
+    """Get or create global registry"""
+    global registry
+    if not registry:
+        registry = ResourceRegistry(StateManager())
+    return registry
 
 def print_version(ctx, param, value):
     if not value or ctx.resilient_parsing:
@@ -435,8 +442,11 @@ def run(file, env):
         # Parse GLUE file
         app = parse_glue_file(file)
         
-        # Execute application
-        asyncio.run(execute_glue_app(app))
+        # Get or create registry
+        registry = get_registry()
+        
+        # Execute application with registry
+        asyncio.run(execute_glue_app(app, registry=registry))
         
     except Exception as e:
         click.echo(f"Error: {str(e)}", err=True)
@@ -718,6 +728,9 @@ SERP_API_KEY=your_api_key_here  # For web search tool
 @cli.command()
 def status():
     """Show status of GLUE resources"""
+    # Get registry
+    registry = get_registry()
+    
     # Show active resources
     active = registry.get_resources_by_state(ResourceState.ACTIVE)
     if active:

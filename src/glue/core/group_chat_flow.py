@@ -51,8 +51,13 @@ class GroupChatManager:
         self.tools: Dict[str, MagneticTool] = {}
         self.tool_relationships: Dict[str, Dict[str, str]] = {}  # model -> {tool -> relationship}
         
+        # Initialize registry with state manager
+        from .state import StateManager
+        from .registry import ResourceRegistry
+        self._registry = ResourceRegistry(StateManager())
+        
         # Magnetic field for interactions
-        self.field = MagneticField(name)
+        self.field = MagneticField(name, self._registry)
     
     async def add_model(self, model: Model) -> None:
         """Add a model to the chat system"""
@@ -188,6 +193,14 @@ class GroupChatManager:
         # Remove from active conversations
         del self.active_conversations[conversation_id]
     
+    def get_active_conversations(self) -> Dict[str, ConversationGroup]:
+        """Get all active conversations"""
+        return {
+            conv_id: group 
+            for conv_id, group in self.active_conversations.items()
+            if group.state != ConversationState.COMPLETE
+        }
+
     async def cleanup(self) -> None:
         """Clean up resources"""
         # End all conversations

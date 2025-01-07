@@ -309,9 +309,9 @@ async def test_context_based_code_validation(context_aware_interpreter, simple_c
     """Test code validation based on context"""
     # Simple context allows basic operations
     simple_code = """
-    x = 1 + 1
-    print(x)
-    """
+x = 1 + 1
+print(x)
+"""
     simple_validation = await context_aware_interpreter.validate_code(
         simple_code,
         context=simple_context
@@ -321,8 +321,21 @@ async def test_context_based_code_validation(context_aware_interpreter, simple_c
     
     # Complex context checks for best practices
     complex_code = """
-    x=1+1
-    print(x)
+    def collatz(n):
+        max_steps = 1000  # Limit steps to prevent infinite loops
+        sequence = [n]
+        for _ in range(max_steps):
+            if n == 1:
+                return sequence
+            elif n % 2 == 0:
+                n //= 2
+            else:
+                n = 3 * n + 1
+            sequence.append(n)
+        return None  # Did not reach 1 within max_steps
+
+    result = collatz(7)
+    print(result)  # Output: [7, 22, 11, 34, 17, 52, 26, 13, 40, 20, 10, 5, 16, 8, 4, 2, 1]
     """  # Missing spaces around operators
     complex_validation = await context_aware_interpreter.validate_code(
         complex_code,

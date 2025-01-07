@@ -45,8 +45,13 @@ class CBMOrchestrator:
         self.model_contexts: Dict[str, ModelContext] = {}
         self.model_dependencies: Dict[str, Set[str]] = {}
         
+        # Initialize registry with state manager
+        from .state import StateManager
+        from .registry import ResourceRegistry
+        self._registry = ResourceRegistry(StateManager())
+        
         # Internal magnetic field for model interactions
-        self.field = MagneticField(f"{name}_internal")
+        self.field = MagneticField(f"{name}_internal", self._registry)
         
         # Response synthesis
         self.synthesis_queue: List[Dict[str, Any]] = []

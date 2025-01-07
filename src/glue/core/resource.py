@@ -104,6 +104,10 @@ class Resource:
     
     async def enter_field(self, field: 'MagneticField', registry: Optional['ResourceRegistry'] = None) -> None:
         """Enter a magnetic field"""
+        # Check if field is active
+        if not field.is_active():
+            raise RuntimeError("Cannot enter inactive field")
+            
         if self._field and self._field != field:
             await self.exit_field()
             

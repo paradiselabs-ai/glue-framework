@@ -91,6 +91,7 @@ class MagneticField:
         self._event_handlers: Dict[Type[FieldEvent], List[Callable]] = defaultdict(list)
         self._child_fields: List['MagneticField'] = []
         self._current_context: Optional['ContextState'] = None
+        self._resources: Dict[str, MagneticResource] = {}
         
         # Field-wide rules
         self._rules = rules or RuleSet(f"{name}_field_rules")
@@ -105,7 +106,8 @@ class MagneticField:
 
     async def __aenter__(self) -> 'MagneticField':
         """Enter the magnetic field context"""
-        self._active = True
+        if not self._active:
+            self._active = True
         return self
 
     def is_active(self) -> bool:
@@ -114,69 +116,124 @@ class MagneticField:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Exit the magnetic field context"""
-        await self.cleanup()
+        # Only cleanup if there was an error
+        if exc_type is not None:
+            await self.cleanup()
+        # Only deactivate if we're the outermost context
+        if not any(child._active for child in self._child_fields):
+            self._active = False
 
     async def cleanup(self) -> None:
         """Clean up the magnetic field"""
-        # Clean up child fields first
-        for child in self._child_fields:
-            await child.cleanup()
-        self._child_fields.clear()
+        # Save current activation state
+        was_active = self._active
         
-        # Clean up resources
-        resources = self.registry.get_resources_by_category("field:" + self.name)
-        for resource in resources:
-            await resource.exit_field()
-            self.registry.unregister(resource.name)
-        
-        self._active = False
-        self._current_context = None
+        try:
+            # Ensure field is active during cleanup
+            if not self._active:
+                self._active = True
+            
+            # Clean up child fields first
+            for child in self._child_fields:
+                await child.cleanup()
+            self._child_fields.clear()
+            
+            # Clean up resources while field is still active
+            resources = self.registry.get_resources_by_category("field:" + self.name)
+            for resource in resources:
+                await resource.exit_field()
+                self.registry.unregister(resource.name)
+            
+            # Clear context
+            self._current_context = None
+            
+            # Clear resources
+            self._resources.clear()
+        finally:
+            # Restore original activation state
+            self._active = was_active
 
     async def update_context(self, context: 'ContextState') -> None:
         """Update field's context and propagate to resources"""
-        self._current_context = context
+        # Save current activation state
+        was_active = self._active
         
-        # Update field rules if context provides any
-        if hasattr(context, "rules"):
-            self._rules = context.rules
-        
-        # Update all resources in field
-        resources = self.registry.get_resources_by_category("field:" + self.name)
-        for resource in resources:
-            await resource.update_context(context)
-        
-        # Emit event
-        self._emit_event(ContextChangeEvent(context))
+        try:
+            # Ensure field is active during context update
+            if not self._active:
+                self._active = True
+            
+            self._current_context = context
+            
+            # Update field rules if context provides any
+            if hasattr(context, "rules"):
+                self._rules = context.rules
+            
+            # Update all resources in field
+            resources = self.registry.get_resources_by_category("field:" + self.name)
+            for resource in resources:
+                await resource.update_context(context)
+            
+            # Emit event
+            self._emit_event(ContextChangeEvent(context))
+        finally:
+            # Restore original activation state
+            self._active = was_active
 
     async def add_resource(self, resource: MagneticResource) -> None:
         """Add a resource to the field"""
-        if not self._active:
-            raise RuntimeError("Cannot add resources to inactive field")
+        # Save current activation state
+        was_active = self._active
         
-        # Check if resource is already in field
-        if self.registry.get_resource(resource.name, "field:" + self.name):
-            await resource.exit_field()
-            self.registry.unregister(resource.name)
-        
-        # Register resource first
-        self.registry.register(resource, "field:" + self.name)
-        
-        # Then enter field
-        await resource.enter_field(self, self.registry)
-        
-        # Set current context if available
-        if self._current_context:
-            await resource.update_context(self._current_context)
-        
-        # Emit event
-        self._emit_event(ResourceAddedEvent(resource))
+        try:
+            # Ensure field is active during resource addition
+            if not self._active:
+                self._active = True
+            
+            # Check if resource is already in field
+            if self.registry.get_resource(resource.name, "field:" + self.name):
+                await resource.exit_field()
+                self.registry.unregister(resource.name)
+            
+            # Register resource first
+            self.registry.register(resource, "field:" + self.name)
+            
+            # Then enter field
+            await resource.enter_field(self, self.registry)
+            
+            # Add to internal resources dict
+            self._resources[resource.name] = resource
+            
+            # Set current context if available
+            if self._current_context:
+                await resource.update_context(self._current_context)
+            
+            # Emit event
+            self._emit_event(ResourceAddedEvent(resource))
+        finally:
+            # Restore original activation state
+            self._active = was_active
 
     async def remove_resource(self, resource: MagneticResource) -> None:
         """Remove a resource from the field"""
-        if self.registry.get_resource(resource.name, "field:" + self.name):
-            await resource.exit_field()
-            self.registry.unregister(resource.name)
-            self._emit_event(ResourceRemovedEvent(resource))
+        # Save current activation state
+        was_active = self._active
+        
+        try:
+            # Ensure field is active during resource removal
+            if not self._active:
+                self._active = True
+            
+            if self.registry.get_resource(resource.name, "field:" + self.name):
+                await resource.exit_field()
+                self.registry.unregister(resource.name)
+                # Remove from internal resources dict
+                if resource.name in self._resources:
+                    del self._resources[resource.name]
+                self._emit_event(ResourceRemovedEvent(resource))
+        finally:
+            # Restore original activation state
+            self._active = was_active
 
     async def attract(
         self,
@@ -184,29 +241,40 @@ class MagneticField:
         target: MagneticResource
     ) -> bool:
         """Create attraction between two resources"""
-        # Verify resources are in field
-        if not (
-            self.registry.get_resource(source.name, "field:" + self.name) and
-            self.registry.get_resource(target.name, "field:" + self.name)
-        ):
-            raise ValueError("Both resources must be in the field")
+        # Save current activation state
+        was_active = self._active
         
-        # Check field rules
-        if not self._rules.validate(source, target):
-            return False
-        
-        # Create attraction
-        success = await source.attract_to(target)
-        if success:
-            # Update states
-            if source._state == ResourceState.IDLE:
-                source._state = ResourceState.SHARED
-            if target._state == ResourceState.IDLE:
-                target._state = ResourceState.SHARED
+        try:
+            # Ensure field is active during attraction
+            if not self._active:
+                self._active = True
             
-            # Emit event
-            self._emit_event(AttractionEvent(source, target))
-        return success
+            # Verify resources are in field
+            if not (
+                self.registry.get_resource(source.name, "field:" + self.name) and
+                self.registry.get_resource(target.name, "field:" + self.name)
+            ):
+                raise ValueError("Both resources must be in the field")
+            
+            # Check field rules
+            if not self._rules.validate(source, target):
+                return False
+            
+            # Create attraction
+            success = await source.attract_to(target)
+            if success:
+                # Update states
+                if source._state == ResourceState.IDLE:
+                    source._state = ResourceState.SHARED
+                if target._state == ResourceState.IDLE:
+                    target._state = ResourceState.SHARED
+                
+                # Emit event
+                self._emit_event(AttractionEvent(source, target))
+            return success
+        finally:
+            # Restore original activation state
+            self._active = was_active
 
     async def repel(
         self,
@@ -214,16 +282,27 @@ class MagneticField:
         target: MagneticResource
     ) -> None:
         """Create repulsion between two resources"""
-        # Verify resources are in field
-        if not (
-            self.registry.get_resource(source.name, "field:" + self.name) and
-            self.registry.get_resource(target.name, "field:" + self.name)
-        ):
-            raise ValueError("Both resources must be in the field")
+        # Save current activation state
+        was_active = self._active
         
-        # Create repulsion
-        await source.repel_from(target)
-        self._emit_event(RepulsionEvent(source, target))
+        try:
+            # Ensure field is active during repulsion
+            if not self._active:
+                self._active = True
+            
+            # Verify resources are in field
+            if not (
+                self.registry.get_resource(source.name, "field:" + self.name) and
+                self.registry.get_resource(target.name, "field:" + self.name)
+            ):
+                raise ValueError("Both resources must be in the field")
+            
+            # Create repulsion
+            await source.repel_from(target)
+            self._emit_event(RepulsionEvent(source, target))
+        finally:
+            # Restore original activation state
+            self._active = was_active
 
     def create_child_field(
         self,
@@ -260,19 +339,18 @@ class MagneticField:
 
     def get_resource(self, name: str) -> Optional[MagneticResource]:
         """Get a resource by name"""
-        return self.registry.get_resource(name, "field:" + self.name)
+        return self._resources.get(name)
 
     def list_resources(self) -> List[str]:
         """List all resources in the field"""
-        resources = self.registry.get_resources_by_category("field:" + self.name)
-        return [r.name for r in resources]
+        return list(self._resources.keys())
 
     def get_attractions(
         self,
         resource: MagneticResource
     ) -> Set[MagneticResource]:
         """Get all resources attracted to the given resource"""
-        if not self.registry.get_resource(resource.name, "field:" + self.name):
+        if resource.name not in self._resources:
             raise ValueError(f"Resource {resource.name} not in field")
         return resource._attracted_to.copy()
 
@@ -281,7 +359,7 @@ class MagneticField:
         resource: MagneticResource
     ) -> Set[MagneticResource]:
         """Get all resources repelled by the given resource"""
-        if not self.registry.get_resource(resource.name, "field:" + self.name):
+        if resource.name not in self._resources:
             raise ValueError(f"Resource {resource.name} not in field")
         return resource._repelled_by.copy()
 
@@ -290,13 +368,13 @@ class MagneticField:
         resource: MagneticResource
     ) -> ResourceState:
         """Get the current state of a resource"""
-        if not self.registry.get_resource(resource.name, "field:" + self.name):
+        if resource.name not in self._resources:
             raise ValueError(f"Resource {resource.name} not in field")
         return resource._state
 
     def is_resource_shared(self, resource: MagneticResource) -> bool:
         """Check if a resource is in a shared state"""
-        if not self.registry.get_resource(resource.name, "field:" + self.name):
+        if resource.name not in self._resources:
             raise ValueError(f"Resource {resource.name} not in field")
         return resource._state == ResourceState.SHARED or bool(resource._attracted_to)
 
@@ -306,13 +384,13 @@ class MagneticField:
         holder: MagneticResource
     ) -> bool:
         """Lock a resource for exclusive use"""
-        if not self.registry.get_resource(resource.name, "field:" + self.name):
+        if resource.name not in self._resources:
             raise ValueError(f"Resource {resource.name} not in field")
         return await resource.lock(holder)
 
     def is_resource_locked(self, resource: MagneticResource) -> bool:
         """Check if a resource is currently locked"""
-        if not self.registry.get_resource(resource.name, "field:" + self.name):
+        if resource.name not in self._resources:
             raise ValueError(f"Resource {resource.name} not in field")
         return resource._state == ResourceState.LOCKED
 
@@ -321,13 +399,12 @@ class MagneticField:
         resource: MagneticResource
     ) -> None:
         """Unlock a resource"""
-        if not self.registry.get_resource(resource.name, "field:" + self.name):
+        if resource.name not in self._resources:
             raise ValueError(f"Resource {resource.name} not in field")
         await resource.unlock()
 
     def __str__(self) -> str:
-        resources = self.registry.get_resources_by_category("field:" + self.name)
-        status = f"MagneticField({self.name}, resources={len(resources)}"
+        status = f"MagneticField({self.name}, resources={len(self._resources)}"
         if self._current_context:
             status += f", mode={self._current_context.interaction_type.name}"
         status += ")"
@@ -339,23 +416,31 @@ class MagneticField:
         model2: MagneticResource
     ) -> bool:
         """Enable direct communication between models"""
-        # Verify resources are in field
-        if not (
-            self.registry.get_resource(model1.name, "field:" + self.name) and
-            self.registry.get_resource(model2.name, "field:" + self.name)
-        ):
-            raise ValueError("Both models must be in the field")
+        # Save current activation state
+        was_active = self._active
         
-        # Start chat
-        success = await model1.attract_to(model2)
-        if success:
-            # Update states for both models
-            model1._state = ResourceState.CHATTING
-            model2._state = ResourceState.CHATTING
-            # Ensure mutual attraction
-            await model2.attract_to(model1)
-            self._emit_event(ChatEvent(model1, model2))
-        return success
+        try:
+            # Ensure field is active during chat setup
+            if not self._active:
+                self._active = True
+            
+            # Verify resources are in field
+            if not (model1.name in self._resources and model2.name in self._resources):
+                raise ValueError("Both models must be in the field")
+            
+            # Start chat
+            success = await model1.attract_to(model2)
+            if success:
+                # Update states for both models
+                model1._state = ResourceState.CHATTING
+                model2._state = ResourceState.CHATTING
+                # Ensure mutual attraction
+                await model2.attract_to(model1)
+                self._emit_event(ChatEvent(model1, model2))
+            return success
+        finally:
+            # Restore original activation state
+            self._active = was_active
 
     async def enable_pull(
         self,
@@ -363,18 +448,26 @@ class MagneticField:
         source: MagneticResource
     ) -> bool:
         """Enable one-way data flow"""
-        # Verify resources are in field
-        if not (
-            self.registry.get_resource(target.name, "field:" + self.name) and
-            self.registry.get_resource(source.name, "field:" + self.name)
-        ):
-            raise ValueError("Both resources must be in the field")
+        # Save current activation state
+        was_active = self._active
         
-        # Start pull
-        success = await target.attract_to(source)
-        if success:
-            # Update states for both resources
-            target._state = ResourceState.PULLING
-            source._state = ResourceState.SHARED
-            self._emit_event(PullEvent(target, source))
-        return success
+        try:
+            # Ensure field is active during pull setup
+            if not self._active:
+                self._active = True
+            
+            # Verify resources are in field
+            if not (target.name in self._resources and source.name in self._resources):
+                raise ValueError("Both resources must be in the field")
+            
+            # Start pull
+            success = await target.attract_to(source)
+            if success:
+                # Update states for both resources
+                target._state = ResourceState.PULLING
+                source._state = ResourceState.SHARED
+                self._emit_event(PullEvent(target, source))
+            return success
+        finally:
+            # Restore original activation state
+            self._active = was_active

@@ -4,7 +4,7 @@
 
 import os
 import asyncio
-from typing import Any, Dict, Set, List, Tuple
+from typing import Any, Dict, Set, List, Tuple, Optional, Type
 from pathlib import Path
 from copy import deepcopy
 from .parser import GlueApp, ModelConfig, ToolConfig
@@ -29,6 +29,7 @@ class GlueExecutor:
         self.app = app
         self.tools = {}
         self.models = {}
+        self._registry = None
         
         # Initialize logger
         self._setup_logger()
@@ -43,6 +44,20 @@ class GlueExecutor:
         )
         self.group_chat = GroupChatManager(app.name)
         self._setup_environment()
+    
+    @property
+    def registry(self) -> Optional['ResourceRegistry']:
+        """Get the resource registry"""
+        if not self._registry:
+            from ..core.registry import ResourceRegistry
+            from ..core.state import StateManager
+            self._registry = ResourceRegistry(StateManager())
+        return self._registry
+    
+    @registry.setter
+    def registry(self, value: 'ResourceRegistry') -> None:
+        """Set the resource registry"""
+        self._registry = value
     
     def _setup_logger(self):
         """Setup logging system"""
@@ -140,19 +155,35 @@ class GlueExecutor:
                 # Determine tool stickiness
                 sticky = self._determine_tool_stickiness(tool_config)
                 
-                # Set workspace path for file operations
-                config = {
-                    **tool_config.config,
-                    "sticky": sticky,
-                    "workspace_dir": workspace_path
-                }
+                # Get tool type
+                tool_type = _infer_tool_type(tool_name)
+                if not tool_type:
+                    raise ValueError(f"Unknown tool type: {tool_name}")
                 
-                tool = create_tool(
-                    tool_name,
-                    api_key=api_key,
-                    provider=tool_config.provider,
-                    **config
-                )
+                # Create tool based on its type
+                if tool_name == "code_interpreter":
+                    tool = tool_type(
+                        name=tool_name,
+                        description="Executes code in a sandboxed environment",
+                        workspace_dir=workspace_path,
+                        magnetic=tool_config.config.get("magnetic", False),
+                        sticky=sticky,
+                        supported_languages=tool_config.config.get("languages", None)
+                    )
+                else:
+                    # Set workspace path for file operations
+                    config = {
+                        **tool_config.config,
+                        "sticky": sticky,
+                        "workspace_dir": workspace_path
+                    }
+                    
+                    tool = tool_type(
+                        name=tool_name,
+                        api_key=api_key,
+                        provider=tool_config.provider,
+                        **config
+                    )
                 
                 # Add tool to field
                 self.logger.info("Adding tool to field")
@@ -200,24 +231,23 @@ class GlueExecutor:
                 model_settings = {
                     "api_key": api_key,
                     "system_prompt": config.role,
-                    "name": model_name  # Use role name instead of model name
+                    "name": model_name,  # Use role name instead of model name
+                    "temperature": config.config.get("temperature", 0.7),
+                    "model": config.config.get("model", "gpt-4")
                 }
-                
-                # Add optional configuration
-                model_settings.update(config.config)
                 
                 # Print masked settings
                 masked_settings = self._mask_sensitive_data(model_settings)
                 self.logger.debug(f"Creating model with settings: {masked_settings}")
                 
-                # Create model
+                # Create model with just model settings
                 model = OpenRouterProvider(**model_settings)
                 
-                # Set role and tools
+                # Set role
                 model.role = config.role
+                
+                # Initialize tools dictionary
                 model._tools = {}
-                for tool_name in config.tools:
-                    model.add_tool(tool_name, None)  # Tools will be linked later
                 
                 self.models[model_name] = model
                 self.logger.info(f"Model {model_name} setup complete")
@@ -335,30 +365,30 @@ class GlueExecutor:
                 sticky=self.app.config.get("sticky", False)
             )
             
-            # Create registry and magnetic field for tools
-            from ..core.registry import ResourceRegistry
-            from ..core.state import StateManager
-            registry = ResourceRegistry(StateManager())
-            async with MagneticField(self.app.name, registry) as field:
-                # Setup tools in field
-                await self._setup_tools(field, workspace_path)
+            # Create workspace with existing registry
+            async with workspace_context(self.app.name, self.registry) as ws:
+                # Use workspace's field
+                field = ws.field
                 
-                # Add tools to group chat manager
-                for tool_name, tool in self.tools.items():
-                    await self.group_chat.add_tool(tool)
-                
-                # Link tools to models
-                for model_name, model in self.models.items():
-                    if hasattr(model, "_tools"):
-                        for tool_name in list(model._tools.keys()):
-                            if tool_name in self.tools:
-                                model._tools[tool_name] = self.tools[tool_name]
-                
-                # Setup workflow
-                await self._setup_workflow(field)
-                
-                # Create workspace
-                async with workspace_context(self.app.name) as ws:
+                # Use field's context manager to ensure it stays active
+                async with field as active_field:
+                    # Setup tools in field
+                    await self._setup_tools(active_field, workspace_path)
+                    
+                    # Add tools to group chat manager
+                    for tool_name, tool in self.tools.items():
+                        await self.group_chat.add_tool(tool)
+                    
+                    # Link tools to models
+                    for model_name, model in self.models.items():
+                        if hasattr(model, "_tools"):
+                            for tool_name in list(model._tools.keys()):
+                                if tool_name in self.tools:
+                                    model._tools[tool_name] = self.tools[tool_name]
+                    
+                    # Setup workflow
+                    await self._setup_workflow(active_field)
+                    
                     # Interactive prompt loop
                     while True:
                         print("\nprompt:", flush=True)
@@ -381,7 +411,7 @@ class GlueExecutor:
                             )
                         else:
                             # Use regular conversation manager for non-chat interactions
-                            binding_patterns = self._get_binding_patterns(field)
+                            binding_patterns = self._get_binding_patterns(active_field)
                             response = await self.conversation.process(
                                 models=self.models,
                                 binding_patterns=binding_patterns,
@@ -407,7 +437,26 @@ class GlueExecutor:
             if not self.app.config.get("sticky", False):
                 self.workspace_manager.cleanup_workspace(workspace_path)
 
-async def execute_glue_app(app: GlueApp) -> Any:
-    """Execute GLUE application"""
+def _infer_tool_type(name: str) -> Optional[Type[Any]]:
+    """Infer tool type from name"""
+    from ..tools.code_interpreter import CodeInterpreterTool
+    from ..tools.web_search import WebSearchTool
+    
+    TOOL_TYPES = {
+        'code_interpreter': CodeInterpreterTool,
+        'web_search': WebSearchTool,
+    }
+    
+    return TOOL_TYPES.get(name.lower())
+
+async def execute_glue_app(app: GlueApp, registry: Optional['ResourceRegistry'] = None) -> Any:
+    """Execute GLUE application
+    
+    Args:
+        app: The GLUE application to execute
+        registry: Optional ResourceRegistry to use for resource management
+    """
     executor = GlueExecutor(app)
+    if registry:
+        executor.registry = registry
     return await executor.execute()

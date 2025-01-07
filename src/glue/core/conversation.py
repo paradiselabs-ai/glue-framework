@@ -105,17 +105,18 @@ class ConversationManager:
 
             # Update magnetic field context if present
             if binding_patterns.get('field'):
-                await binding_patterns['field'].update_context(context)
+                field = binding_patterns['field']
+                await field.update_context(context)
                 # Initialize magnetic tools
                 if tools:
                     for tool_name, tool in tools.items():
                         if hasattr(tool, 'magnetic') and tool.magnetic:
                             await tool.initialize()
                             if not tool._workspace:
-                                await tool.attach_to_workspace(binding_patterns['field'])
-                            # Add tool to field if not already added
-                            if tool.name not in binding_patterns['field']._resources:
-                                await binding_patterns['field'].add_resource(tool)
+                                await tool.attach_to_workspace(field)
+                            # Add tool to field if not already registered
+                            if not field.get_resource(tool.name):
+                                await field.add_resource(tool)
 
             # Store user input in history and memory
             message = {

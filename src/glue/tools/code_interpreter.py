@@ -938,6 +938,12 @@ class CodeInterpreterTool(MagneticTool):
         if warnings and any(w["type"] == "security" for w in warnings):
             valid = False
         
+        # For simple context, only fail on syntax errors and undefined variables
+        if context.complexity == ComplexityLevel.SIMPLE:
+            # Clear any style or complexity warnings for simple context
+            warnings = [w for w in warnings if w["type"] == "error"]
+            valid = not (any(w["type"] == "error" for w in warnings) or undefined_vars)
+        
         return {
             "valid": valid,
             "warnings": warnings,

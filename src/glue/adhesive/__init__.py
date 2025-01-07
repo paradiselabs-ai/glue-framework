@@ -12,6 +12,7 @@ from ..core.resource import Resource
 from ..magnetic.field import MagneticField
 from ..magnetic.rules import RuleSet, AttractionRule, PolicyPriority, AttractionPolicy
 from ..core.registry import ResourceRegistry
+from ..core.state import StateManager
 
 class AdhesiveType(Enum):
     """Types of adhesive bonds mapped to magnetic behaviors"""
@@ -46,17 +47,31 @@ class FlowConfig:
 
 class Workspace:
     """Magnetic field workspace for resource interactions"""
-    def __init__(self, name: str):
+    def __init__(self, name: str, registry: Optional['ResourceRegistry'] = None):
         self.name = name
         self.field: Optional[MagneticField] = None
         self.resources: Dict[str, Resource] = {}
         self.flows: List[FlowConfig] = []
+        self._registry = registry
     
     async def __aenter__(self) -> 'Workspace':
         """Enter workspace context"""
-        registry = ResourceRegistry()
-        self.field = MagneticField(self.name, registry)
-        self.field._active = True  # Activate the field
+        # Import here to avoid circular imports
+        from ..core.registry import ResourceRegistry
+        from ..core.state import StateManager
+        
+        # Create or use existing registry
+        if not self._registry:
+            self._registry = ResourceRegistry(StateManager())
+        
+        # Create field with registry
+        if not self.field:
+            self.field = MagneticField(self.name, self._registry)
+            # Activate field using its context manager
+            await self.field.__aenter__()
+        elif not self.field.is_active():
+            # Reactivate field if it was deactivated
+            await self.field.__aenter__()
         return self
     
     async def __aexit__(self, *args: Any) -> None:
@@ -66,8 +81,8 @@ class Workspace:
             for resource in self.resources.values():
                 await resource.exit_field()
             
-            # Clean up field
-            await self.field.cleanup()
+            # Cleanup field using its context manager
+            await self.field.__aexit__(*args)
             self.field = None
             self.resources.clear()
             self.flows.clear()
@@ -137,16 +152,44 @@ class Workspace:
 
         self.flows.append(flow)
 
-def workspace_context(name: str) -> Workspace:
-    """Create a workspace context"""
-    return Workspace(name)
+def workspace_context(name: str, registry: Optional['ResourceRegistry'] = None) -> Workspace:
+    """Create a workspace context
+    
+    Args:
+        name: Name of the workspace
+        registry: Optional existing ResourceRegistry to use
+    """
+    # Import here to avoid circular imports
+    from ..core.registry import ResourceRegistry
+    from ..core.state import StateManager
+    
+    # Create registry if not provided
+    if not registry:
+        registry = ResourceRegistry(StateManager())
+    
+    return Workspace(name, registry)
 
-def glue_app(name: str):
-    """Create GLUE application with magnetic field support"""
+def glue_app(name: str, registry: Optional['ResourceRegistry'] = None):
+    """Create GLUE application with magnetic field support
+    
+    Args:
+        name: Name of the application
+        registry: Optional existing ResourceRegistry to use
+    """
+    # Import here to avoid circular imports
+    from ..core.registry import ResourceRegistry
+    from ..core.state import StateManager
+    
     def decorator(func: Any):
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            async with workspace_context(name) as ws:
+            # Create registry if not provided
+            if not registry:
+                _registry = ResourceRegistry(StateManager())
+            else:
+                _registry = registry
+                
+            async with workspace_context(name, _registry) as ws:
                 return await func(ws, *args, **kwargs)
         return wrapper
     return decorator

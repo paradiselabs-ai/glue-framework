@@ -353,40 +353,61 @@ class GlueParser:
         chat_pairs = []
         pull_pairs = []
         
-        # Parse nested blocks
+        # Parse lines for direct attractions first
+        for line in content.split('\n'):
+            line = line.strip()
+            if "><" in line:
+                # Check for binding strength
+                if "|" in line:
+                    attraction, strength = line.split("|")
+                    parts = [p.strip() for p in attraction.split("><")]
+                    if len(parts) == 2:
+                        try:
+                            # Convert string to AdhesiveType
+                            strength = strength.strip().lower()
+                            if strength == 'tape':
+                                binding = AdhesiveType.TAPE
+                            elif strength == 'velcro':
+                                binding = AdhesiveType.VELCRO
+                            elif strength == 'glue':
+                                binding = AdhesiveType.GLUE
+                            elif strength == 'magnet':
+                                binding = AdhesiveType.MAGNET
+                            else:
+                                raise ValueError(f"Invalid binding type: {strength}")
+                            attractions.append((parts[0], parts[1]))
+                        except ValueError:
+                            self.logger.warning(f"Invalid binding strength: {strength}")
+                else:
+                    parts = [p.strip() for p in line.split("><")]
+                    if len(parts) == 2:
+                        # Default to VELCRO if no binding specified
+                        attractions.append((parts[0], parts[1]))
+            elif "<>" in line:
+                parts = [p.strip() for p in line.split("<>")]
+                if len(parts) == 2:
+                    repulsions.append((parts[0], parts[1]))
+            elif "<-" in line:
+                parts = [p.strip() for p in line.split("<-")]
+                if len(parts) == 2:
+                    # Note: parts[0] is target, parts[1] is source
+                    pull_pairs.append((parts[0], parts[1]))
+            elif "<-->" in line:
+                parts = [p.strip() for p in line.split("<-->")]
+                if len(parts) == 2:
+                    chat_pairs.append((parts[0], parts[1]))
+        
+        # Then parse nested blocks for any additional configurations
         nested_blocks = self._extract_blocks(content)
         for block_type, block_content in nested_blocks:
             if block_type == "magnetic attraction":
-                # Parse attraction rules
+                # Parse attraction rules from block
                 for line in block_content.split('\n'):
                     line = line.strip()
                     if "><" in line:
-                        # Check for binding strength
-                        if "|" in line:
-                            attraction, strength = line.split("|")
-                            parts = [p.strip() for p in attraction.split("><")]
-                            if len(parts) == 2:
-                                try:
-                                    # Convert string to AdhesiveType
-                                    strength = strength.strip().lower()
-                                    if strength == 'tape':
-                                        binding = AdhesiveType.TAPE
-                                    elif strength == 'velcro':
-                                        binding = AdhesiveType.VELCRO
-                                    elif strength == 'glue':
-                                        binding = AdhesiveType.GLUE
-                                    elif strength == 'magnet':
-                                        binding = AdhesiveType.MAGNET
-                                    else:
-                                        raise ValueError(f"Invalid binding type: {strength}")
-                                    attractions.append((parts[0], parts[1], binding))
-                                except ValueError:
-                                    self.logger.warning(f"Invalid binding strength: {strength}")
-                        else:
-                            parts = [p.strip() for p in line.split("><")]
-                            if len(parts) == 2:
-                                # Default to VELCRO if no binding specified
-                                attractions.append((parts[0], parts[1], AdhesiveType.VELCRO))
+                        parts = [p.strip() for p in line.split("><")]
+                        if len(parts) == 2:
+                            attractions.append((parts[0], parts[1]))
             elif block_type == "magnetic pull":
                 # Parse pull rules
                 for line in block_content.split('\n'):
