@@ -20,6 +20,11 @@ class ModelCommunication:
         self.active_workflows: Dict[str, WorkflowState] = {}
         self.pending_messages: Dict[str, List[Message]] = defaultdict(list)
         self.message_handlers: Dict[MessageType, List[callable]] = defaultdict(list)
+        self._model_registry: Dict[str, Model] = {}  # New: registry to track models
+
+    def register_model(self, model: Model) -> None:
+        """Register a model with the communication system"""
+        self._model_registry[model.name] = model
         
     async def send_message(
         self,
@@ -34,6 +39,10 @@ class ModelCommunication:
         metadata: Optional[Dict[str, Any]] = None
     ) -> Optional[Message]:
         """Send a message from one model to another"""
+        # Register models if not already registered
+        self.register_model(sender)
+        self.register_model(receiver)
+        
         message = Message(
             msg_type=msg_type,
             sender=sender.name,
@@ -76,15 +85,14 @@ class ModelCommunication:
     ) -> Optional[Message]:
         """Deliver a message to its recipient"""
         try:
-            # Enhance message with context
-            enhanced_content = self._enhance_with_context(
-                message.content,
-                message.context
-            )
-            
             # Generate response if needed
             if message.requires_response:
-                response_content = await receiver.generate(enhanced_content)
+                # Pass raw content for simple messages, enhanced content for complex ones
+                content = message.content
+                if message.context and message.msg_type not in {MessageType.QUERY, MessageType.RESPONSE}:
+                    content = self._enhance_with_context(message.content, message.context)
+                    
+                response_content = await receiver.generate(content)
                 response = Message(
                     msg_type=MessageType.RESPONSE,
                     sender=receiver.name,
@@ -124,13 +132,21 @@ Message:
         context: ContextState
     ) -> str:
         """Start a new multi-model workflow"""
+        # Register all models
+        self.register_model(initiator)
+        for participant in participants:
+            self.register_model(participant)
+            
         workflow_id = f"workflow_{datetime.now().timestamp()}"
         
-        # Create workflow state
+        # Create workflow state - include initiator in participants
+        participants_set = {m.name for m in participants}
+        participants_set.add(initiator.name)  # Add initiator to participants
+        
         workflow = WorkflowState(
             workflow_id=workflow_id,
             initiator=initiator.name,
-            participants={m.name for m in participants},
+            participants=participants_set,
             current_stage="initiated",
             context=context,
             started_at=datetime.now(),
@@ -139,17 +155,24 @@ Message:
         
         self.active_workflows[workflow_id] = workflow
         
-        # Notify all participants
+        # Update the workflow state in all participants
+        for model_name in participants_set:
+            model = self._get_model_by_name(model_name)
+            if model:
+                model._active_workflows[workflow_id] = workflow
+        
+        # Notify all participants except initiator
         for participant in participants:
-            await self.send_message(
-                sender=initiator,
-                receiver=participant,
-                msg_type=MessageType.WORKFLOW,
-                content=initial_message,
-                context=context,
-                workflow_id=workflow_id,
-                requires_response=True
-            )
+            if participant.name != initiator.name:
+                await self.send_message(
+                    sender=initiator,
+                    receiver=participant,
+                    msg_type=MessageType.WORKFLOW,
+                    content=initial_message,
+                    context=context,
+                    workflow_id=workflow_id,
+                    requires_response=True
+                )
             
         return workflow_id
         
@@ -166,18 +189,25 @@ Message:
             
         workflow = self.active_workflows[workflow_id]
         
-        if model.name not in workflow.participants:
+        # Check if model is initiator or participant
+        if model.name not in workflow.participants and model.name != workflow.initiator:
             raise ValueError(f"Model {model.name} not in workflow {workflow_id}")
             
         # Update state
         workflow.current_stage = new_stage
         workflow.updated_at = datetime.now()
         
+        # Update workflow state in all participants
+        for participant_name in workflow.participants:
+            participant = self._get_model_by_name(participant_name)
+            if participant:
+                participant._active_workflows[workflow_id] = workflow
+        
         # Notify other participants
         if message:
-            for participant in workflow.participants:
-                if participant != model.name:
-                    receiver = self._get_model_by_name(participant)
+            for participant_name in workflow.participants:
+                if participant_name != model.name:
+                    receiver = self._get_model_by_name(participant_name)
                     if receiver:
                         await self.send_message(
                             sender=model,
@@ -290,9 +320,8 @@ Message:
         self.message_handlers[msg_type].append(handler)
         
     def _get_model_by_name(self, name: str) -> Optional[Model]:
-        """Helper to get model by name"""
-        # This should be implemented based on your model management system
-        raise NotImplementedError
+        """Get a model by its name from the registry"""
+        return self._model_registry.get(name)
         
     def get_workflow_state(self, workflow_id: str) -> Optional[WorkflowState]:
         """Get the current state of a workflow"""
@@ -301,3 +330,8 @@ Message:
     def get_pending_messages(self, model_name: str) -> List[Message]:
         """Get pending messages for a model"""
         return self.pending_messages.get(model_name, [])
+    
+    def set_communication(self, model: Model) -> None:
+        """Set up communication for a model"""
+        self.register_model(model)
+        model._communication = self

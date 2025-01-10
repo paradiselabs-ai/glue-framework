@@ -10,14 +10,19 @@ if TYPE_CHECKING:
 
 class MessageType(Enum):
     """Types of messages in a conversation"""
-    SYSTEM = auto()    # System messages
-    USER = auto()      # User messages
-    ASSISTANT = auto() # Assistant messages
-    TOOL = auto()      # Tool output
-    ERROR = auto()     # Error messages
-    QUERY = auto()     # Query messages
+    SYSTEM = auto()      # System messages
+    USER = auto()        # User messages
+    ASSISTANT = auto()   # Assistant messages
+    TOOL = auto()        # Tool output
+    ERROR = auto()       # Error messages
+    QUERY = auto()       # Query messages
+    TOOL_REQUEST = auto()  # Tool request messages
+    TOOL_RESULT = auto()  # Tool result messages
+    RESPONSE = auto()     # Response messages
+    WORKFLOW = auto()     # Workflow messages
+    SYNC = auto()        # Synchronization messages
 
-class WorkflowState(Enum):
+class WorkflowStateEnum(Enum):
     """States of a workflow"""
     IDLE = auto()      # Not running
     RUNNING = auto()   # Currently executing
@@ -25,12 +30,31 @@ class WorkflowState(Enum):
     COMPLETED = auto() # Successfully finished
     FAILED = auto()    # Failed to complete
     CANCELLED = auto() # Manually cancelled
+    
+@dataclass
+class WorkflowState:
+    """State of a workflow instance"""
+    workflow_id: str
+    initiator: str
+    participants: Set[str]
+    current_stage: str
+    context: Optional['ContextState']
+    started_at: datetime
+    updated_at: datetime
+    state: WorkflowStateEnum = WorkflowStateEnum.IDLE
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class Message:
     """Message in a conversation"""
-    type: MessageType
-    content: str
+    msg_type: MessageType
+    sender: str
+    receiver: str
+    content: Any
+    context: Optional['ContextState'] = None
+    workflow_id: Optional[str] = None
+    requires_response: bool = False
+    response_timeout: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
 

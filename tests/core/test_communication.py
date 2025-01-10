@@ -33,14 +33,14 @@ def communication(memory_manager):
 def model1(communication):
     """Create first test model"""
     model = MockModel("model1", "test")
-    model.set_communication(communication)
+    communication.set_communication(model)
     return model
 
 @pytest.fixture
 def model2(communication):
     """Create second test model"""
     model = MockModel("model2", "test")
-    model.set_communication(communication)
+    communication.set_communication(model)
     return model
 
 @pytest.fixture

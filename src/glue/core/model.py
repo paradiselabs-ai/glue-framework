@@ -139,7 +139,14 @@ class Model:
             context=context
         )
         
-        self._active_workflows[workflow_id] = self._communication.get_workflow_state(workflow_id)
+        # Get the workflow state from communication system
+        workflow_state = self._communication.get_workflow_state(workflow_id)
+        if workflow_state:
+            self._active_workflows[workflow_id] = workflow_state
+            # Sync workflow state to all participants
+            for participant in participants:
+                participant._active_workflows[workflow_id] = workflow_state
+        
         return workflow_id
 
     async def update_workflow(
@@ -151,9 +158,18 @@ class Model:
         """Update a workflow's state"""
         if not self._communication:
             raise RuntimeError("Communication system not initialized")
+
+        # First check with communication system
+        workflow_state = self._communication.get_workflow_state(workflow_id)
+        if not workflow_state:
+            raise ValueError(f"Unknown workflow {workflow_id}")
             
+        # Update local workflow state
         if workflow_id not in self._active_workflows:
-            raise ValueError(f"Not participating in workflow {workflow_id}")
+            if self.name in workflow_state.participants:
+                self._active_workflows[workflow_id] = workflow_state
+            else:
+                raise ValueError(f"Not participating in workflow {workflow_id}")
             
         await self._communication.update_workflow(
             workflow_id=workflow_id,
@@ -161,6 +177,11 @@ class Model:
             new_stage=new_stage,
             message=message
         )
+
+        # Update local state with latest from communication system
+        updated_state = self._communication.get_workflow_state(workflow_id)
+        if updated_state:
+            self._active_workflows[workflow_id] = updated_state
 
     def get_pending_messages(self) -> List[Message]:
         """Get pending messages for this model"""
