@@ -34,3 +34,4 @@ asyncio_mode = "strict"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"
+asyncio_fixture_loop_scope = "function"

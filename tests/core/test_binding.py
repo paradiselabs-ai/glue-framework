@@ -1,6 +1,7 @@
 """Tests for GLUE binding system"""
 
 import pytest
+import pytest_asyncio
 from glue.core.binding import AdhesiveType
 from glue.core.resource import Resource
 from glue.tools.base import BaseTool
@@ -20,7 +21,7 @@ class MockTool(BaseTool):
             "context": {"last_execution": self.execute_count}
         }
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def setup_resources():
     """Setup test resources"""
     from glue.core.registry import ResourceRegistry
@@ -29,6 +30,9 @@ async def setup_resources():
     # Create registry and field
     registry = ResourceRegistry()
     field = MagneticField("test_field", registry)
+    
+    # Set field as active
+    field._active = True
     
     # Create model with different tool bindings
     model = Resource(
@@ -50,7 +54,7 @@ async def setup_resources():
     glue_tool = MockTool("glue_tool")
     glue_tool.metadata.category = "tool"
     
-    # Add resources to field
+    # Add resources to field and registry
     await model.enter_field(field, registry)
     await tape_tool.enter_field(field, registry)
     await velcro_tool.enter_field(field, registry)
@@ -61,23 +65,27 @@ async def setup_resources():
     registry.register(velcro_tool, "tool")
     registry.register(glue_tool, "tool")
     
-    yield model, tape_tool, velcro_tool, glue_tool
-    
-    # Cleanup
+    yield model, tape_tool, velcro_tool, glue_tool, registry, field
+
+    # Cleanup after yield
     await model.exit_field()
     await tape_tool.exit_field()
     await velcro_tool.exit_field()
     await glue_tool.exit_field()
+    field._active = False
 
 @pytest.mark.asyncio
 async def test_tape_binding(setup_resources):
     """Test TAPE binding behavior"""
-    model, tape_tool, _, _ = await anext(setup_resources)
+    model, tape_tool, _, _, registry, _ = setup_resources
     
     # Verify initial state
     binding = model.get_tool_binding("tape_tool")
     assert binding.type == AdhesiveType.TAPE
     assert binding.use_count == 0
+    
+    # Set registry explicitly before use
+    model._registry = registry
     
     # Use tool
     await model.attract_to(tape_tool)
@@ -94,12 +102,15 @@ async def test_tape_binding(setup_resources):
 @pytest.mark.asyncio
 async def test_velcro_binding(setup_resources):
     """Test VELCRO binding behavior"""
-    model, _, velcro_tool, _ = await anext(setup_resources)
+    model, _, velcro_tool, _, registry, _ = setup_resources
     
     # Verify initial state
     binding = model.get_tool_binding("velcro_tool")
     assert binding.type == AdhesiveType.VELCRO
     assert binding.use_count == 0
+    
+    # Set registry explicitly before use
+    model._registry = registry
     
     # Use tool multiple times
     await model.attract_to(velcro_tool)
@@ -117,12 +128,15 @@ async def test_velcro_binding(setup_resources):
 @pytest.mark.asyncio
 async def test_glue_binding(setup_resources):
     """Test GLUE binding behavior"""
-    model, _, _, glue_tool = await anext(setup_resources)
+    model, _, _, glue_tool, registry, _ = setup_resources
     
     # Verify initial state
     binding = model.get_tool_binding("glue_tool")
     assert binding.type == AdhesiveType.GLUE
     assert binding.use_count == 0
+    
+    # Set registry explicitly before use
+    model._registry = registry
     
     # Use tool and verify context persistence
     await model.attract_to(glue_tool)
@@ -143,14 +157,17 @@ async def test_glue_binding(setup_resources):
 @pytest.mark.asyncio
 async def test_binding_validation(setup_resources):
     """Test binding validation"""
-    model, tape_tool, _, _ = await anext(setup_resources)
+    model, tape_tool, _, _, registry, _ = setup_resources
+    
+    # Set registry explicitly before use
+    model._registry = registry
     
     # Try to use tool without binding
     with pytest.raises(ValueError, match="No binding found for tool"):
         await model.use_tool("unknown_tool")
     
     # Try to use tool without attraction
-    with pytest.raises(ValueError, match="Tool not found"):
+    with pytest.raises(ValueError, match="Tool not found - attraction required before use"):
         await model.use_tool("tape_tool")  # Not attracted yet
     
     # Verify proper attraction check
