@@ -33,6 +33,8 @@ Resources can be in various states:
 - SHARED: Being shared between resources
 - CHATTING: In direct model-to-model communication
 - PULLING: Receiving data only
+- PUSHING: Sending data only
+
 
 ```python
 from glue.core.resource import ResourceState

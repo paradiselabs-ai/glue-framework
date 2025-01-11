@@ -11,10 +11,11 @@ First, let's clarify two separate concepts:
    - Multi-turn conversations work out of the box
    - No configuration needed - it's a core feature
 
-2. **Magnetic Tools** (Optional Feature)
-   - Tools can share resources with each other
+2. **Magnetic Tools** (Configured in app)
+   - Models can pass tools between themselves
+   - Tools can keep persistant data between models in the same run
    - Tools can persist data between runs if needed
-   - Only used when you need tools to work together
+   - Can be configured as needed
 
 ## The Whiteboard Analogy
 
@@ -35,9 +36,9 @@ GLUE has two ways tools can work together:
    - Example: `double_side_tape = { code_interpreter }` means "this model works directly with the code interpreter"
 
 2. **Magnetic**
-   - Used when tools need to share resources
+   - Used when models need to share tools that keep persistant data
    - Like tools sharing the same whiteboard space
-   - Example: `magnetic = true` means "this tool can share resources with other magnetic tools"
+   - Example: `magnetic = true` means "this tool can keep its data persistent when being used by other models"
 
 ## Simple Example: Code Interpreter
 

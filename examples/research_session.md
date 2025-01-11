@@ -1,5 +1,96 @@
 # Example Research Session Using GLUE Strengths
 
+# Example .GLUE application: research_assistant.glue
+```
+glue app {
+    name = "Research Assistant"
+    config {
+        development = true
+        sticky = false
+    }
+}
+
+// Tools just need to be magnetic
+tool web_search {
+    provider = serp
+    os.serp_api_key
+    config {
+        magnetic = true  // Can be shared between models
+    }
+}
+
+tool code_interpreter {
+    config {
+        magnetic = true  // Can be shared between models
+    }
+}
+
+// Models define their tool relationships
+model researcher {
+    provider = openrouter
+    role = "Primary researcher who coordinates research efforts"
+    config {
+        model = "meta-llama/llama-3.1-70b-instruct:free"
+        temperature = 0.7
+    }
+    tools {
+        web_search = glue
+        code_interpreter = velcro
+    }
+    
+}
+
+model assistant {
+    provider = openrouter
+    role = "Helper who processes research and generates code"
+    config {
+        model = "meta-llama/llama-3.1-70b-instruct:free"
+        temperature = 0.5
+    }
+    tools {
+        web_search = velcro
+        code_interpreter = velcro
+    }
+}
+
+model writer {
+    provider = openrouter
+    role = "Documentation writer who organizes findings"
+    config {
+        model = "meta-llama/llama-3.1-70b-instruct:free"
+        temperature = 0.3
+    }
+    tools {
+        web_search = tape
+    }
+}
+
+// Workflow only defines model interactions
+workflow {
+    // Two-way collaboration
+    researcher >< assistant  // Full collaboration
+    
+    // One-way information flow
+    assistant -> writer     // Can push findings to writer
+    researcher -> writer    // Can push research to writer
+    
+    // Pull access
+    writer <- assistant     // Writer can pull from assistant
+    
+    // Prevent direct interaction
+    writer <> researcher    // No direct communication
+}
+
+// Optional agent for coordination
+//agent coordinator {
+//    role = "Coordinates information flow between models"
+//    can_task = [researcher, assistant, writer]
+//    monitors = ["tool_usage", "model_requests"]
+//}
+
+apply glue
+```
+
 ## Initial Request
 User: "Research quantum computing and create a tutorial with code examples"
 
