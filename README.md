@@ -1,176 +1,214 @@
-# GLUE Framework
+# GLUE Framework & Expression Language
 
-GLUE (GenAI Linking & Unification Engine) is a powerful framework for building AI applications with an intuitive expression language.
+## Overview
 
-## Features
+GLUE consists of two powerful components:
 
-- **Intuitive Expression Language**: Build AI applications using a simple, declarative syntax
-- **Multi-Model Collaboration**: Seamlessly combine different AI models
-- **Built-in Tool System**: Easily integrate and use tools like web search, file operations, etc.
-- **Provider Support**: Currently, GLUE only works with OpenRouter, however we are in active development and other providers will be added ASAP.
-- **Magnetic Field System**: Unique approach to managing AI resources and interactions
+1. **GLUE Framework** ((G)enerativeAI (L)inking & (U)nification (E)ngine):
+   - Advanced multi-model orchestration 
+   - Magnetic field-based resource management
+   - Intelligent tool sharing and binding
+   - Built-in conversation and memory management
 
-## Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/paradiseLabs/glue.git
-cd glue
-
-# Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
+2. **GLUE Expression Language** ((G)enerativeAI (L)anguage (U)sing (E)xpressions):
+   - Intuitive, declarative syntax for AI app development
+   - Reduces boilerplate through magnetic bindings
+   - Natural workflow definitions
+   - Powerful chain operations
 
 ## Quick Start
 
-1. Create a `.env` file with your API keys:
-```env
-OPENROUTER_API_KEY=your_key_here
-TAVILY_API_KEY=your_key_here
+1. Install GLUE:
+```bash
+pip install glue-framework
 ```
 
-2. Create a GLUE file (e.g., `app.glue`):
+2. Set up your environment (.env):
+```env
+OPENROUTER_API_KEY=your_key_here
+SERP_API_KEY=your_key_here  # For web search capabilities
+```
+
+## Simple Examples
+
+### Basic Chatbot (simple.glue)
+```glue
+glue app {
+    name = "Simple Chat"
+    config {
+        development = true
+    }
+}
+
+model assistant {
+    provider = openrouter
+    role = "You are a helpful AI assistant"
+    config {
+        model = "anthropic/claude-3-sonnet"
+        temperature = 0.7
+    }
+}
+
+// No tools or complex bindings needed for basic chat
+apply glue
+```
+
+### Research Assistant (research.glue)
 ```glue
 glue app {
     name = "Research Assistant"
-    tools = web_search
-    model = researcher
+    config {
+        development = true
+        sticky = false
+    }
 }
 
-researcher {
-    openrouter
-    os.api_key
-    model = "liquid/lfm-40b:free"
-    temperature = 0.7
-    double_side_tape = { web_search }
+// Magnetic tools with shared capabilities
+tool web_search {
+    provider = serp
+    os.serp_api_key
+    config {
+        magnetic = true  // Enable tool sharing
+    }
 }
 
-web_search {
-    tavily
-    os.tavily_api_key
+tool code_interpreter {
+    config {
+        magnetic = true
+    }
 }
 
-researcher_role = "You are a research assistant..."
+// Models with tool bindings
+model researcher {
+    provider = openrouter
+    role = "Primary researcher who coordinates research efforts"
+    config {
+        model = "anthropic/claude-3-sonnet"
+        temperature = 0.7
+    }
+    tools {
+        web_search = glue      // Permanent binding
+        code_interpreter = velcro  // Flexible binding
+    }
+}
+
+model assistant {
+    provider = openrouter
+    role = "Helper who processes research and generates code"
+    config {
+        model = "anthropic/claude-3-sonnet"
+        temperature = 0.5
+    }
+    tools {
+        web_search = velcro
+        code_interpreter = velcro
+    }
+}
+
+model writer {
+    provider = openrouter
+    role = "Documentation writer who organizes findings"
+    config {
+        model = "anthropic/claude-3-sonnet"
+        temperature = 0.3
+    }
+    tools {
+        web_search = tape  // Temporary binding
+    }
+}
+
+// Define model interactions
+workflow {
+    // Two-way collaboration
+    researcher >< assistant  // Bidirectional binding
+    
+    // One-way information flow
+    assistant -> writer     // Push data
+    researcher -> writer    // Push data
+    
+    // Pull access
+    writer <- assistant     // Pull data
+    
+    // Prevent direct interaction
+    writer <> researcher    // Repulsion
+}
 
 apply glue
 ```
 
-3. Run your app:
+## CLI Usage
+
+GLUE provides a powerful CLI for managing your AI applications:
+
 ```bash
-python -m glue.cli app.glue
+# Run a GLUE application
+glue run app.glue
+
+# Create a new GLUE project
+glue new myproject
+
+# List available models
+glue list-models
+
+# List available tools
+glue list-tools
+
+# Create a new component
+glue create --type tool mytool
+glue create --type agent myagent
 ```
 
-## Key Concepts
+## Key Features
 
-### Models
+### Adhesive Binding System
+- `glue`: Permanent bindings with full context sharing
+- `velcro`: Flexible bindings that can be reconnected
+- `tape`: Temporary bindings for one-time operations
+- `magnetic`: Dynamic bindings with resource sharing
 
-Models are the core AI components that can:
-- Process user input
-- Generate responses
-- Use tools
+### Magnetic Field System
+- Resource organization through magnetic fields
+- Dynamic tool sharing and access
+- Context-aware resource management
+- Intelligent cleanup and state management
+
+### Expression Language
+- Intuitive model-tool bindings
+- Natural workflow definitions
+- Resource sharing patterns
 - Chain operations
 
-```glue
-my_model {
-    openrouter
-    os.api_key
-    model = "anthropic/claude-3-opus"
-    temperature = 0.7
-}
-```
+## Upcoming Features
 
-### Tools
+Currently in development:
+1. Advanced Pattern Recognition
+   - Intelligent workflow optimization
+   - Dynamic binding strength adjustment
+   - Context-aware resource allocation
 
-Tools extend model capabilities:
-- Web search
-- File operations
-- Code interpretation
-- Custom tools
+2. Enhanced Tool System
+   - Expanded tool ecosystem
+   - Custom tool development framework
+   - Advanced permission management
 
-```glue
-web_search {
-    tavily
-    os.tavily_api_key
-}
-```
+3. Memory Management
+   - Sophisticated context preservation
+   - Cross-model memory sharing
+   - Enhanced conversation history
 
-### Magnetic Fields
-
-The magnetic field system manages:
-- Resource allocation
-- Tool interactions
-- State management
-- Error handling
-
-### Double-Side Tape
-
-Chain operations between models and tools:
-
-```glue
-researcher {
-    openrouter
-    double_side_tape = { web_search >> analyzer }
-}
-```
-
-## Examples
-
-### Research Assistant
-
-```glue
-glue app {
-    name = "Research Assistant"
-    tools = web_search
-    model = researcher
-}
-
-researcher {
-    openrouter
-    os.api_key
-    double_side_tape = { web_search }
-}
-
-web_search {
-    tavily
-    os.tavily_api_key
-}
-```
-
-### Code Generator
-
-```glue
-glue app {
-    name = "Code Generator"
-    tools = code_interpreter, file_handler
-    model = coder
-}
-
-coder {
-    openrouter
-    os.api_key
-    double_side_tape = { 
-        code_interpreter >> file_handler 
-    }
-}
-```
+4. Advanced Expression Language Features
+   - Complex binding patterns
+   - Dynamic workflow adaptation
+   - Enhanced error handling
 
 ## Contributing
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+Contributions are welcome! See our [Contributing Guide](CONTRIBUTING.md) for details.
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## Acknowledgments
+## Documentation
 
-- OpenRouter for providing access to various AI models
-- The AI/ML community for inspiration and support
+For full documentation, visit our [docs](https://docs.glue-framework.ai).

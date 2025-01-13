@@ -449,7 +449,10 @@ def run(file, env):
         asyncio.run(execute_glue_app(app, registry=registry))
         
     except Exception as e:
+        import traceback
         click.echo(f"Error: {str(e)}", err=True)
+        click.echo("\nFull traceback:", err=True)
+        click.echo(traceback.format_exc(), err=True)
         sys.exit(1)
 
 @cli.command()

@@ -1,7 +1,7 @@
 """GLUE State Management System"""
 
 import asyncio
-from typing import Dict, Set, Optional, Callable, Any, TYPE_CHECKING, List
+from typing import Dict, Set, Optional, Callable, Any, TYPE_CHECKING, List, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -38,11 +38,36 @@ class StateManager:
         """Initialize state manager"""
         self._rules: Dict[ResourceState, Dict[ResourceState, TransitionRule]] = {}
         self._transitions: Dict[Tuple[ResourceState, ResourceState], bool] = {}
-        self._history: List[Tuple[ResourceState, ResourceState]] = []
+        self._history: Dict[str, List[TransitionLog]] = {}
         self._state_locks: Dict[str, asyncio.Lock] = {}
         
         # Setup default rules
         self._setup_default_rules()
+    
+    async def validate_transition(
+        self,
+        resource: 'Resource',
+        new_state: ResourceState
+    ) -> bool:
+        # First check registered transitions
+        if (resource.state, new_state) not in self._transitions:
+            return False
+    
+        if hasattr(resource, 'binding_type'):
+            # GLUE bindings allow any transition
+            if resource.binding_type == AdhesiveType.GLUE:
+                return True
+            # VELCRO allows reconnection
+            if resource.binding_type == AdhesiveType.VELCRO:
+                return new_state in [ResourceState.IDLE, ResourceState.SHARED]
+            # TAPE only allows one transition to SHARED then IDLE
+            if resource.binding_type == AdhesiveType.TAPE:
+                if resource.state == ResourceState.IDLE:
+                    return new_state == ResourceState.SHARED
+                if resource.state == ResourceState.SHARED:
+                    return new_state == ResourceState.IDLE
+            
+        return True  # Allow transition if no binding type
     
     def add_transition(
         self,
@@ -197,30 +222,6 @@ class StateManager:
                     )
                 )
                 raise
-    
-        async def validate_transition(
-            self,
-            resource: 'Resource',
-            new_state: ResourceState
-        ) ->         bool:
-            """Add binding validation"""
-            if hasattr(resource, 'binding_type'):
-                # GLUE bindings allow any transition
-                if resource.binding_type == AdhesiveType.GLUE:
-                    return True
-
-                # VELCRO allows reconnection
-                if resource.binding_type == AdhesiveType.VELCRO:
-                    return new_state in [ResourceState.IDLE, ResourceState.SHARED]
-
-                # TAPE only allows one transition to SHARED then IDLE
-                if resource.binding_type == AdhesiveType.TAPE:
-                    if resource.state == ResourceState.IDLE:
-                        return new_state == ResourceState.SHARED
-                    if resource.state == ResourceState.SHARED:
-                        return new_state == ResourceState.IDLE
-                
-            return True  # Allow transition if no binding type
     
     def _log_transition(self, log: TransitionLog) -> None:
         """Log a transition"""
