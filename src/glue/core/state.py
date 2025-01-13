@@ -37,11 +37,21 @@ class StateManager:
     def __init__(self):
         """Initialize state manager"""
         self._rules: Dict[ResourceState, Dict[ResourceState, TransitionRule]] = {}
-        self._history: Dict[str, List[TransitionLog]] = {}
+        self._transitions: Dict[Tuple[ResourceState, ResourceState], bool] = {}
+        self._history: List[Tuple[ResourceState, ResourceState]] = []
         self._state_locks: Dict[str, asyncio.Lock] = {}
         
         # Setup default rules
         self._setup_default_rules()
+    
+    def add_transition(
+        self,
+        from_state: ResourceState,
+        to_state: ResourceState,
+        cleanup: Optional[Callable] = None
+    ) -> None:
+        """Register valid state transition"""
+        self._transitions[(from_state, to_state)] = True
     
     def _setup_default_rules(self) -> None:
         """Setup default transition rules"""
@@ -188,27 +198,29 @@ class StateManager:
                 )
                 raise
     
-    async def validate_transition(
-        self,
-        resource: 'Resource',
-        new_state: ResourceState
-    ) -> bool:
-        """
-        Validate if a transition is allowed
-        
-        Args:
-            resource: Resource to check
-            new_state: Target state
-            
-        Returns:
-            bool: True if transition is valid
-        """
-        # Check if rule exists
-        if (resource.state not in self._rules or
-            new_state not in self._rules[resource.state]):
-            return False
-            
-        return True
+        async def validate_transition(
+            self,
+            resource: 'Resource',
+            new_state: ResourceState
+        ) ->         bool:
+            """Add binding validation"""
+            if hasattr(resource, 'binding_type'):
+                # GLUE bindings allow any transition
+                if resource.binding_type == AdhesiveType.GLUE:
+                    return True
+
+                # VELCRO allows reconnection
+                if resource.binding_type == AdhesiveType.VELCRO:
+                    return new_state in [ResourceState.IDLE, ResourceState.SHARED]
+
+                # TAPE only allows one transition to SHARED then IDLE
+                if resource.binding_type == AdhesiveType.TAPE:
+                    if resource.state == ResourceState.IDLE:
+                        return new_state == ResourceState.SHARED
+                    if resource.state == ResourceState.SHARED:
+                        return new_state == ResourceState.IDLE
+                
+            return True  # Allow transition if no binding type
     
     def _log_transition(self, log: TransitionLog) -> None:
         """Log a transition"""

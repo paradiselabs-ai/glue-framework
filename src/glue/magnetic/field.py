@@ -4,7 +4,7 @@ import asyncio
 from typing import Dict, List, Optional, Set, Type, Callable, Any, TYPE_CHECKING
 from dataclasses import dataclass
 from collections import defaultdict
-
+from ..core.state import StateManager
 from ..core.types import ResourceState, MagneticResource
 from .rules import RuleSet, AttractionRule, PolicyPriority, AttractionPolicy
 
@@ -83,36 +83,105 @@ class MagneticField:
         registry: 'ResourceRegistry',
         parent: Optional['MagneticField'] = None,
         rules: Optional[RuleSet] = None
-    ):
+    ):  
         self.name = name
         self.registry = registry
         self.parent = parent
         self._active = False
-        self._event_handlers: Dict[Type[FieldEvent], List[Callable]] = defaultdict(list)
-        self._child_fields: List['MagneticField'] = []
-        self._current_context: Optional['ContextState'] = None
-        self._resources: Dict[str, MagneticResource] = {}
-        
+        self._event_handlers = defaultdict(list)
+        self._child_fields = []
+        self._current_context = None
+        self._resources = {}
+        self._state_manager = StateManager()  # Add state manager
+
+        # Configure valid transitions
+        self._setup_transitions()
+
         # Field-wide rules
         self._rules = rules or RuleSet(f"{name}_field_rules")
         self._rules.add_rule(AttractionRule(
             name="field_state",
             policy=AttractionPolicy.STATE_BASED,
             priority=PolicyPriority.SYSTEM,
-            state_validator=lambda s1, s2: s1 in [ResourceState.IDLE, ResourceState.SHARED] and 
-                                         s2 in [ResourceState.IDLE, ResourceState.SHARED],
+            state_validator=lambda s1, s2: True,  # Remove old validation
             description="Field-wide state validation"
         ))
 
-    async def __aenter__(self) -> 'MagneticField':
-        """Enter the magnetic field context"""
-        if not self._active:
-            self._active = True
-        return self
+    def _setup_transitions(self):
+        """Configure valid state transitions"""
+        # IDLE transitions
+        self._state_manager.add_transition(
+            ResourceState.IDLE,
+            ResourceState.SHARED,
+            cleanup=self._cleanup_idle
+        )
+        self._state_manager.add_transition(
+            ResourceState.IDLE,
+            ResourceState.ACTIVE
+        )
+
+        # SHARED transitions
+        self._state_manager.add_transition(
+            ResourceState.SHARED,
+            ResourceState.IDLE,
+            cleanup=self._cleanup_shared
+        )
+        self._state_manager.add_transition(
+            ResourceState.SHARED,
+            ResourceState.CHATTING
+        )
+        self._state_manager.add_transition(
+            ResourceState.SHARED,
+            ResourceState.PULLING
+        )
+
+        # CHATTING transitions
+        self._state_manager.add_transition(
+            ResourceState.CHATTING,
+            ResourceState.IDLE,
+            cleanup=self._cleanup_chatting
+        )
+
+        # PULLING transitions
+        self._state_manager.add_transition(
+            ResourceState.PULLING,
+            ResourceState.IDLE,
+            cleanup=self._cleanup_pulling
+        )
+
+    async def _cleanup_idle(self, resource: 'Resource') -> None:
+        """Cleanup when leaving IDLE state"""
+        pass  # No cleanup needed from IDLE
+
+    async def _cleanup_shared(self, resource: 'Resource') -> None:
+        """Cleanup when leaving SHARED state"""
+        # Break attractions if moving to IDLE
+        if resource._next_state == ResourceState.IDLE:
+            for other in list(resource._attracted_to):
+                await self.break_attraction(resource, other)
+
+    async def _cleanup_chatting(self, resource: 'Resource') -> None:
+        """Cleanup when leaving CHATTING state"""
+        # Break chat connections
+        for other in list(resource._attracted_to):
+            if other._state == ResourceState.CHATTING:
+                await self.break_attraction(resource, other)
+
+    async def _cleanup_pulling(self, resource: 'Resource') -> None:
+        """Cleanup when leaving PULLING state"""
+        # Break pull connections
+        for other in list(resource._attracted_to):
+            if other._state == ResourceState.SHARED:
+                await self.break_attraction(resource, other)
 
     def is_active(self) -> bool:
         """Check if the magnetic field is currently active"""
         return self._active
+
+    async def __aenter__(self) -> 'MagneticField':
+        """Enter the magnetic field context"""
+        self._active = True
+        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Exit the magnetic field context"""
@@ -239,39 +308,38 @@ class MagneticField:
         self,
         source: MagneticResource,
         target: MagneticResource
-    ) -> bool:
+) ->     bool:
         """Create attraction between two resources"""
         # Save current activation state
         was_active = self._active
-        
+
         try:
             # Ensure field is active during attraction
             if not self._active:
                 self._active = True
-            
+
             # Verify resources are in field
             if not (
-                self.registry.get_resource(source.name, "field:" + self.name) and
-                self.registry.get_resource(target.name, "field:" + self.name)
+                self.registry.get_resource(source.name, f"field:{self.name}") and
+                self.registry.get_resource(target.name, f"field:{self.name}")
             ):
                 raise ValueError("Both resources must be in the field")
-            
+
             # Check field rules
             if not self._rules.validate(source, target):
                 return False
-            
+
+            # Transition states
+            await self._state_manager.transition(source, ResourceState.SHARED, self._current_context)
+            await self._state_manager.transition(target, ResourceState.SHARED, self._current_context)
+
             # Create attraction
             success = await source.attract_to(target)
             if success:
-                # Update states
-                if source._state == ResourceState.IDLE:
-                    source._state = ResourceState.SHARED
-                if target._state == ResourceState.IDLE:
-                    target._state = ResourceState.SHARED
-                
                 # Emit event
                 self._emit_event(AttractionEvent(source, target))
             return success
+        
         finally:
             # Restore original activation state
             self._active = was_active

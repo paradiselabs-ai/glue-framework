@@ -73,12 +73,13 @@ class DynamicRole:
             context, should_be_active, tools_needed
         )
         
-        # Update current state
-        self.current_state = (
-            RoleState.ACTIVE if should_be_active
-            else RoleState.TOOL_USER if tools_needed
-            else RoleState.PASSIVE
-        )
+        # Update current state with more flexible logic
+        if should_be_active:
+            self.current_state = RoleState.ACTIVE
+        elif tools_needed:
+            self.current_state = RoleState.TOOL_USER
+        else:
+            self.current_state = RoleState.PASSIVE
         
         self.tools_enabled = tools_needed
         self.response_type = response_type
@@ -103,9 +104,10 @@ class DynamicRole:
         if self.no_direct_interaction:
             return False
             
-        # In chat mode, prefer roles without tools
+        # In chat mode, be more inclusive
         if context.interaction_type == InteractionType.CHAT:
-            return not self.required_tools
+            # Allow roles with tools if they have relevant capabilities
+            return not self.no_direct_interaction
             
         # In research mode, prefer roles with relevant tools
         if context.interaction_type == InteractionType.RESEARCH:
@@ -123,9 +125,9 @@ class DynamicRole:
         if self.required_tools & context.tools_required:
             return True
             
-        # In chat mode, only enable explicitly requested tools
+        # In chat mode, be more flexible with tool usage
         if context.interaction_type == InteractionType.CHAT:
-            return bool(self.allowed_tools & context.tools_required)
+            return bool(self.allowed_tools)
             
         # In research mode, enable tools if we have any allowed tools
         if context.interaction_type == InteractionType.RESEARCH:

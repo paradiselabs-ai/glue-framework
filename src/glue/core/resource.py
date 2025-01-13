@@ -88,6 +88,18 @@ class Resource:
             # Only allow state change if version matches
             if self._version != expected_version:
                 return False
+            
+            # Prevent unnecessary state changes
+            if self._state == new_state:
+                return True
+            
+            # Allow transitions between IDLE and SHARED for models
+            if self.metadata.category != "tool" and new_state in {ResourceState.IDLE, ResourceState.SHARED}:
+                self._state = new_state
+                self._version += 1
+                return True
+            
+            # For other cases, follow standard state transition
             self._state = new_state
             self._version += 1
             return True
@@ -282,8 +294,9 @@ class Resource:
         other._attracted_to.add(self)
         
         # Update states - tools stay IDLE when attracted
+        # Models can transition between IDLE and SHARED
         if self._state == ResourceState.IDLE and self.metadata.category != "tool":
-            self._state = ResourceState.SHARED
+            await self.set_state(ResourceState.SHARED, self._version)
             if self._registry:
                 self._registry._notify_observers("state_change", {
                     "resource": self.name,
@@ -292,7 +305,7 @@ class Resource:
                 })
                 
         if other._state == ResourceState.IDLE and other.metadata.category != "tool":
-            other._state = ResourceState.SHARED
+            await other.set_state(ResourceState.SHARED, other._version)
             if other._registry:
                 other._registry._notify_observers("state_change", {
                     "resource": other.name,

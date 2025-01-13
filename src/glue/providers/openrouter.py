@@ -121,9 +121,13 @@ class OpenRouterProvider(BaseProvider, Resource):
     
     async def _make_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
         """Make request to OpenRouter API with state tracking"""
-        if self.state != ResourceState.IDLE:
+        # Allow generation in SHARED state for models
+        if (self.state not in {ResourceState.IDLE, ResourceState.SHARED} and 
+            self.metadata.category != "tool"):
             raise RuntimeError(f"Provider {self.name} is busy (state: {self.state.name})")
         
+        # Temporarily set state to ACTIVE for generation
+        original_state = self._state
         self._state = ResourceState.ACTIVE
         try:
             headers = self._get_headers()
@@ -150,13 +154,14 @@ class OpenRouterProvider(BaseProvider, Resource):
             self.logger.error(f"Error decoding response: {str(e)}")
             raise
         finally:
-            self._state = ResourceState.IDLE
+            # Restore original state after generation
+            self._state = original_state
     
-    async def _handle_error(self, error_response: Dict[str, Any]) -> None:
-        """Handle OpenRouter API errors"""
-        error_message = error_response.get('error', {}).get('message', str(error_response))
-        self.logger.error(f"API Error Details: {error_message}")
-        raise Exception(f"OpenRouter API error: {error_message}")
+    async def generate(self, prompt: str) -> str:
+        """Generate a response using OpenRouter API"""
+        request_data = await self._prepare_request(prompt)
+        response = await self._make_request(request_data)
+        return await self._process_response(response)
     
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for API request"""
