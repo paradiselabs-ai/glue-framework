@@ -66,6 +66,12 @@ class MagneticResource(Protocol):
     _attracted_to: Set['MagneticResource']
     _repelled_by: Set['MagneticResource']
 
+class AdhesiveType(Enum):
+    """Types of binding strengths"""
+    TAPE = auto()    # Temporary binding
+    VELCRO = auto()  # Flexible binding
+    GLUE = auto()    # Persistent binding
+
 class ResourceState(Enum):
     """States a resource can be in"""
     IDLE = auto()      # Not currently in use

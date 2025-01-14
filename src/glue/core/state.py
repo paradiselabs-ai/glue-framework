@@ -5,7 +5,7 @@ from typing import Dict, Set, Optional, Callable, Any, TYPE_CHECKING, List, Tupl
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .types import ResourceState, TransitionLog
+from .types import ResourceState, TransitionLog, AdhesiveType
 
 if TYPE_CHECKING:
     from .resource import Resource
@@ -52,11 +52,25 @@ class StateManager:
         # First check registered transitions
         if (resource.state, new_state) not in self._transitions:
             return False
-    
+        
+        # Check if resource is locked
+        if resource.state == ResourceState.LOCKED:
+            return new_state == ResourceState.IDLE
+            
+        # Handle special cases for SHARED state
+        if new_state == ResourceState.SHARED:
+            # Only allow transition to SHARED from IDLE or ACTIVE
+            if resource.state not in {ResourceState.IDLE, ResourceState.ACTIVE}:
+                return False
+            # Ensure resource is not already SHARED
+            if resource.state == ResourceState.SHARED:
+                return False
+            
+        # Handle binding type specific rules
         if hasattr(resource, 'binding_type'):
-            # GLUE bindings allow any transition
+            # GLUE bindings allow transitions based on state rules
             if resource.binding_type == AdhesiveType.GLUE:
-                return True
+                return (resource.state, new_state) in self._transitions
             # VELCRO allows reconnection
             if resource.binding_type == AdhesiveType.VELCRO:
                 return new_state in [ResourceState.IDLE, ResourceState.SHARED]
@@ -67,7 +81,8 @@ class StateManager:
                 if resource.state == ResourceState.SHARED:
                     return new_state == ResourceState.IDLE
             
-        return True  # Allow transition if no binding type
+        # Default to transition rules
+        return (resource.state, new_state) in self._transitions
     
     def add_transition(
         self,
@@ -80,18 +95,15 @@ class StateManager:
     
     def _setup_default_rules(self) -> None:
         """Setup default transition rules"""
-        # IDLE -> any state
+        # IDLE -> ACTIVE/SHARED
         self.add_rule(
             TransitionRule(
                 from_states={ResourceState.IDLE},
                 to_states={
                     ResourceState.ACTIVE,
-                    ResourceState.LOCKED,
-                    ResourceState.SHARED,
-                    ResourceState.CHATTING,
-                    ResourceState.PULLING
+                    ResourceState.SHARED
                 },
-                description="IDLE resources can transition to any state"
+                description="IDLE resources can transition to ACTIVE or SHARED"
             )
         )
         
@@ -115,12 +127,12 @@ class StateManager:
             )
         )
         
-        # SHARED -> ACTIVE or CHATTING
+        # SHARED -> ACTIVE, CHATTING or IDLE
         self.add_rule(
             TransitionRule(
                 from_states={ResourceState.SHARED},
-                to_states={ResourceState.ACTIVE, ResourceState.CHATTING},
-                description="SHARED resources can transition to ACTIVE or CHATTING"
+                to_states={ResourceState.ACTIVE, ResourceState.CHATTING, ResourceState.IDLE},
+                description="SHARED resources can transition to ACTIVE, CHATTING or IDLE"
             )
         )
         
@@ -167,11 +179,21 @@ class StateManager:
         
         async with self._state_locks[resource.name]:
             try:
+                # Check if resource is locked
+                if resource.state == ResourceState.LOCKED and new_state != ResourceState.IDLE:
+                    raise TransitionError(
+                        f"Cannot transition from LOCKED to {new_state}"
+                    )
+                
                 # Validate transition
                 if not await self.validate_transition(resource, new_state):
                     raise TransitionError(
                         f"Invalid transition: {resource.state} -> {new_state}"
                     )
+                
+                # Check if resource is already in target state
+                if resource.state == new_state:
+                    return True
                 
                 # Get transition rule
                 rule = self._rules[resource.state][new_state]

@@ -305,50 +305,32 @@ class MagneticTool(BaseTool, MagneticResource):
         
         # Check if resource is locked
         if self._current_field and self._current_field.is_resource_locked(self):
-            raise ResourceStateException("Resource is locked")
+            raise ResourceLockedException("Resource is locked")
+        
+        # Allow execution in IDLE or SHARED state
+        if self.perform_state_checks and self._state not in [ResourceState.IDLE, ResourceState.SHARED]:
+            raise RuntimeError(f"Tool {self.name} is busy (state: {self._state.name})")
         
         # Store original state
         original_state = self._state
         
         try:
-            # Update state based on operation
-            if kwargs.get("context"):
-                context = kwargs["context"]
-                if context.interaction_type == InteractionType.CHAT:
-                    # Update states for chat mode
-                    self._state = ResourceState.CHATTING
-                    if self._current_field and self._attracted_to:
-                        for other in self._attracted_to:
-                            other._state = ResourceState.CHATTING
-                            await self._current_field.enable_chat(self, other)
-                elif context.interaction_type == InteractionType.PULL:
-                    # Update states for pull mode
-                    self._state = ResourceState.PULLING
-                    if self._current_field and self._attracted_to:
-                        for other in self._attracted_to:
-                            other._state = ResourceState.SHARED
-                            await self._current_field.enable_pull(self, other)
-            elif self._attracted_to:
-                # Update states for shared mode
-                self._state = ResourceState.SHARED
-                if self._current_field:
-                    for other in self._attracted_to:
-                        other._state = ResourceState.SHARED
-                        await self._current_field.attract(self, other)
+            # Temporarily set state to IDLE to satisfy BaseTool's check
+            if self._state == ResourceState.SHARED:
+                self._state = ResourceState.IDLE
             
             # Execute operation
             result = await super().execute(*args, **kwargs)
             
-            # Restore original state if not explicitly changed during execution
-            if self._state == ResourceState.SHARED and not self._attracted_to:
-                self._state = original_state
+            # Restore original state
+            self._state = original_state
             
             return result
-            
+        
         except Exception as e:
             # Restore original state on error
             self._state = original_state
-            raise e
+            raise e 
 
     def __str__(self) -> str:
         status = f"{self.name}: {self.description}"

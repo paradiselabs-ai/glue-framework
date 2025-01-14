@@ -70,6 +70,9 @@ class FileHandlerTool(MagneticTool):
             ),
             binding_type=binding_type or AdhesiveType.GLUE if magnetic else None
         )
+        # Track which resource has locked this tool
+        self._locked_by: Optional['MagneticResource'] = None
+        
         # Use workspace_dir if provided, otherwise use base_path or cwd
         self.base_path = os.path.abspath(workspace_dir or base_path or os.getcwd())
         self.allowed_formats = (

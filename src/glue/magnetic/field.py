@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Set, Type, Callable, Any, TYPE_CHECKING
 from dataclasses import dataclass
 from collections import defaultdict
 from ..core.state import StateManager
-from ..core.types import ResourceState, MagneticResource
+from ..core.types import ResourceState, MagneticResource, AdhesiveType
 from .rules import RuleSet, AttractionRule, PolicyPriority, AttractionPolicy
 
 if TYPE_CHECKING:

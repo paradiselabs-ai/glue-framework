@@ -52,7 +52,9 @@ class BaseTool(Resource, ABC):
         magnetic: bool = False,  # Keep magnetic flag for API compatibility
         sticky: bool = False,    # Keep sticky flag for API compatibility
         shared_resources: Optional[List[str]] = None,  # Resources to share magnetically
-        binding_type: Optional['AdhesiveType'] = None  # Binding type for magnetic tools
+        binding_type: Optional['AdhesiveType'] = None,  # Binding type for magnetic tools
+        perform_state_checks=True,
+        **kwargs
     ):
         # Initialize base resource
         tags = {"tool", name}
@@ -69,6 +71,7 @@ class BaseTool(Resource, ABC):
         self.permissions = permissions or set()
         self._error_handlers: Dict[type, callable] = {}
         self._is_initialized = False
+        self.perform_state_checks = perform_state_checks
         
         # Magnetic configuration
         self.magnetic = magnetic
@@ -96,9 +99,8 @@ class BaseTool(Resource, ABC):
 
     async def execute(self, *args, **kwargs) -> Any:
         """Execute tool with resource state tracking"""
-        if self.state != ResourceState.IDLE:
+        if self.perform_state_checks and self.state != ResourceState.IDLE:
             raise RuntimeError(f"Tool {self.name} is busy (state: {self.state.name})")
-            
         self._state = ResourceState.ACTIVE
         try:
             if not self._is_initialized:
