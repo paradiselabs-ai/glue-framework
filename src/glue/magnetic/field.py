@@ -254,37 +254,29 @@ class MagneticField:
 
     async def add_resource(self, resource: MagneticResource) -> None:
         """Add a resource to the field"""
-        # Save current activation state
-        was_active = self._active
+        if not self._active:
+            raise RuntimeError("Cannot add resources to an inactive field")
+            
+        # Check if resource is already in field
+        if self.registry.get_resource(resource.name, "field:" + self.name):
+            await resource.exit_field()
+            self.registry.unregister(resource.name)
         
-        try:
-            # Ensure field is active during resource addition
-            if not self._active:
-                self._active = True
-            
-            # Check if resource is already in field
-            if self.registry.get_resource(resource.name, "field:" + self.name):
-                await resource.exit_field()
-                self.registry.unregister(resource.name)
-            
-            # Register resource first
-            self.registry.register(resource, "field:" + self.name)
-            
-            # Then enter field
-            await resource.enter_field(self, self.registry)
-            
-            # Add to internal resources dict
-            self._resources[resource.name] = resource
-            
-            # Set current context if available
-            if self._current_context:
-                await resource.update_context(self._current_context)
-            
-            # Emit event
-            self._emit_event(ResourceAddedEvent(resource))
-        finally:
-            # Restore original activation state
-            self._active = was_active
+        # Register resource first
+        self.registry.register(resource, "field:" + self.name)
+        
+        # Then enter field
+        await resource.enter_field(self, self.registry)
+        
+        # Add to internal resources dict
+        self._resources[resource.name] = resource
+        
+        # Set current context if available
+        if self._current_context:
+            await resource.update_context(self._current_context)
+        
+        # Emit event
+        self._emit_event(ResourceAddedEvent(resource))
 
     async def remove_resource(self, resource: MagneticResource) -> None:
         """Remove a resource from the field"""
