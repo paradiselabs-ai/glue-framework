@@ -311,7 +311,7 @@ class MagneticField:
         self,
         source: MagneticResource,
         target: MagneticResource
-) ->     bool:
+    ) -> bool:
         """Create attraction between two resources"""
         # Save current activation state
         was_active = self._active
@@ -333,8 +333,11 @@ class MagneticField:
                 return False
 
             # Transition states
-            await self._state_manager.transition(source, ResourceState.SHARED, self._current_context)
-            await self._state_manager.transition(target, ResourceState.SHARED, self._current_context)
+            try:
+                await self._state_manager.transition(source, ResourceState.SHARED, self._current_context)
+                await self._state_manager.transition(target, ResourceState.SHARED, self._current_context)
+            except:
+                return False
 
             # Create attraction
             success = await source.attract_to(target)
@@ -342,7 +345,6 @@ class MagneticField:
                 # Emit event
                 self._emit_event(AttractionEvent(source, target))
             return success
-        
         finally:
             # Restore original activation state
             self._active = was_active
