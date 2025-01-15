@@ -49,6 +49,9 @@ class StateManager:
         resource: 'Resource',
         new_state: ResourceState
     ) -> bool:
+        if resource.state == new_state:
+            return True  # Allow no-op transitions
+    
         # First check registered transitions
         if (resource.state, new_state) not in self._transitions:
             return False
