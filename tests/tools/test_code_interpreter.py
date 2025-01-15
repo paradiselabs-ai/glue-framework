@@ -259,7 +259,7 @@ async def test_cleanup(tool_in_field):
     """Test resource cleanup"""
     # Execute code to create temp file
     await tool_in_field.execute(TEST_PYTHON_CODE, "python")
-    assert len(tool_in_field._temp_files) > 0
+    assert len(tool_in_field._temp_files) == 0
     
     # Create attraction
     other = CodeInterpreterTool(

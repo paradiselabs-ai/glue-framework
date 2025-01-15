@@ -58,6 +58,7 @@ class StateManager:
         
         # Check if resource is locked
         if resource.state == ResourceState.LOCKED:
+            # Only allow transition to IDLE when locked
             return new_state == ResourceState.IDLE
             
         # Handle special cases for SHARED state
