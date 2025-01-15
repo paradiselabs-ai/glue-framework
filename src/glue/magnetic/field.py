@@ -221,6 +221,9 @@ class MagneticField:
         finally:
             # Restore original activation state
             self._active = was_active
+            # Ensure field is deactivated after cleanup
+            if was_active:
+                self._active = False
 
     async def update_context(self, context: 'ContextState') -> None:
         """Update field's context and propagate to resources"""
