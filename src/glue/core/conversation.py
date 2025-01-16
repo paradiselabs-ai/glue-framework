@@ -97,6 +97,7 @@ class ConversationManager:
                 self.logger.debug(f"Available tools: {list(tools.keys())}")
             
             # Analyze context first
+            self.logger.debug("Before context analysis")
             context = self.context_analyzer.analyze(
                 user_input,
                 available_tools=list(tools.keys()) if tools else None
