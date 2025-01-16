@@ -7,10 +7,9 @@ from enum import Enum, auto
 
 class AdhesiveType(Enum):
     """Types of adhesive bindings"""
-    TAPE = auto()    # Temporary test bindings
-    VELCRO = auto()  # Swappable bindings
-    GLUE = auto()    # Permanent bindings
-    MAGNET = auto()  # Dynamic bindings
+    TAPE = auto()    # Temporary binding with no persistence
+    VELCRO = auto()  # Flexible binding with partial persistence
+    GLUE = auto()    # Permanent binding with full persistence
 
 @dataclass
 class BindingConfig:
@@ -21,7 +20,7 @@ class BindingConfig:
     properties: Dict[str, Any] = field(default_factory=dict)
     
     @classmethod
-    def tape(cls, source: str, target: str, duration: timedelta) -> 'BindingConfig':
+    def tape(cls, source: str, target: str, duration: timedelta = timedelta(milliseconds=50)) -> 'BindingConfig':
         """Create a temporary tape binding"""
         return cls(
             type=AdhesiveType.TAPE,
@@ -31,7 +30,7 @@ class BindingConfig:
         )
     
     @classmethod
-    def velcro(cls, source: str, target: str, reconnect_attempts: int = 3) -> 'BindingConfig':
+    def velcro(cls, source: str, target: str, reconnect_attempts: int = 5) -> 'BindingConfig':
         """Create a swappable velcro binding"""
         return cls(
             type=AdhesiveType.VELCRO,
@@ -49,23 +48,13 @@ class BindingConfig:
             target=target,
             properties={"strength": strength}
         )
-    
-    @classmethod
-    def magnet(cls, source: str, target: str, polarity: str = "attract") -> 'BindingConfig':
-        """Create a dynamic magnetic binding"""
-        return cls(
-            type=AdhesiveType.MAGNET,
-            source=source,
-            target=target,
-            properties={"polarity": polarity}
-        )
 
 class Binding:
     """
     Represents an adhesive connection between models.
     
     Features:
-    - Adhesive-based metaphor (tape, velcro, glue, magnet)
+    - Adhesive-based metaphor (tape, velcro, glue)
     - Event handling
     - State tracking
     - Error propagation
@@ -86,19 +75,15 @@ class Binding:
         """Setup binding based on adhesive type"""
         if self.config.type == AdhesiveType.TAPE:
             if "duration" not in self.config.properties:
-                raise ValueError("Tape binding requires duration property")
+                self.config.properties["duration"] = timedelta(milliseconds=50)
                 
         elif self.config.type == AdhesiveType.VELCRO:
             if "reconnect_attempts" not in self.config.properties:
-                self.config.properties["reconnect_attempts"] = 3
+                self.config.properties["reconnect_attempts"] = 5
                 
         elif self.config.type == AdhesiveType.GLUE:
             if "strength" not in self.config.properties:
                 self.config.properties["strength"] = 1.0
-                
-        elif self.config.type == AdhesiveType.MAGNET:
-            if "polarity" not in self.config.properties:
-                self.config.properties["polarity"] = "attract"
     
     def on(self, event: str, handler: Callable) -> None:
         """Register event handler"""
@@ -144,16 +129,10 @@ class Binding:
             if self.use_count > self.config.properties["reconnect_attempts"]:
                 return False
                 
-        elif self.config.type == AdhesiveType.MAGNET:
-            # Check polarity compatibility
-            polarity = self.config.properties["polarity"]
-            if polarity == "repel":
-                return False
-                
         return True
     
     def get_strength(self) -> float:
-        """Get current binding strength"""
+        """Get current binding strength with advanced degradation"""
         base_strength = self.config.properties.get("strength", 1.0)
         
         if self.config.type == AdhesiveType.TAPE:

@@ -6,12 +6,9 @@ from datetime import datetime, timedelta
 
 class AdhesiveType(Enum):
     """Types of bindings available"""
-    GLUE = "glue"         # Permanent binding
-    SUPER_GLUE = "super_glue"  # Immutable binding
-    VELCRO = "velcro"     # Swappable binding
-    TAPE = "tape"         # Temporary binding
-    MAGNET = "magnet"     # Dynamic binding
-    DUCT_TAPE = "duct_tape"  # Fallback binding
+    GLUE = "glue"     # Permanent binding with full persistence
+    VELCRO = "velcro" # Flexible binding with partial persistence
+    TAPE = "tape"     # Temporary binding with no persistence
 
 @dataclass
 class AdhesiveProperties:
@@ -37,41 +34,26 @@ class Adhesive:
         """Get default properties for this adhesive type"""
         defaults = {
             AdhesiveType.GLUE: AdhesiveProperties(
-                strength=0.8,
-                durability=0.9,
-                flexibility=0.3,
-                is_reusable=False
-            ),
-            AdhesiveType.SUPER_GLUE: AdhesiveProperties(
-                strength=1.0,
+                strength=1.0,  # Full persistence
                 durability=1.0,
-                flexibility=0.0,
-                is_reusable=False
+                flexibility=0.3,
+                is_reusable=False,
+                max_uses=None  # Unlimited uses
             ),
             AdhesiveType.VELCRO: AdhesiveProperties(
-                strength=0.6,
-                durability=0.7,
+                strength=0.7,  # Partial persistence
+                durability=0.8,
                 flexibility=0.8,
-                is_reusable=True
+                is_reusable=True,
+                max_uses=5  # Limited reusability
             ),
             AdhesiveType.TAPE: AdhesiveProperties(
-                strength=0.4,
-                durability=0.3,
+                strength=0.3,  # No persistence
+                durability=0.4,
                 flexibility=0.9,
                 duration=timedelta(milliseconds=50),
-                is_reusable=False
-            ),
-            AdhesiveType.MAGNET: AdhesiveProperties(
-                strength=0.5,
-                durability=1.0,
-                flexibility=1.0,
-                is_reusable=True
-            ),
-            AdhesiveType.DUCT_TAPE: AdhesiveProperties(
-                strength=0.7,
-                durability=0.5,
-                flexibility=0.6,
-                is_reusable=False
+                is_reusable=False,
+                max_uses=1  # Single use
             )
         }
         return defaults[self.type]
@@ -103,19 +85,24 @@ class Adhesive:
         return True
 
     def get_strength(self) -> float:
-        """Get current binding strength"""
+        """Get current binding strength with advanced degradation"""
         if not self.active:
             return 0.0
-            
+        
         base_strength = self.properties.strength
         
-        # Strength degrades over time for temporary bindings
+        # Strength degrades for temporary bindings
         if self.properties.duration:
             current_time = self._current_time or datetime.now()
             elapsed = current_time - self.created_at
             remaining_ratio = 1 - (elapsed / self.properties.duration)
             return base_strength * max(0, remaining_ratio)
-            
+        
+        # Strength degrades with uses for reusable bindings
+        if self.properties.is_reusable and self.properties.max_uses:
+            uses_ratio = 1 - (self.uses / self.properties.max_uses)
+            return base_strength * max(0, uses_ratio)
+        
         return base_strength
 
 class AdhesiveFactory:

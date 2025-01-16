@@ -55,26 +55,37 @@ class PullEvent(FieldEvent):
     def __init__(self, target: MagneticResource, source: MagneticResource):
         self.target = target
         self.source = source
+        
+class PushEvent(FieldEvent):
+    """Event fired when a resource starts pushing to another"""
+    def __init__(self, source: MagneticResource, target: MagneticResource):
+        self.source = source
+        self.target = target
 
 # ==================== Main Class ====================
 class MagneticField:
     """
-    Context manager for managing resources and their interactions.
+    Manages interaction boundaries and information flow between resources.
     
-    Features:
-    - Resource tracking via registry
-    - Field-wide rules
-    - Context propagation
-    - Event handling
-    - Hierarchical fields
+    Key Responsibilities:
+    - Define interaction guidelines
+    - Control resource communication
+    - Manage context-aware state transitions
+    - Provide event-driven resource tracking
+    
+    Interaction Patterns:
+    - Bidirectional attraction (><)
+    - Unidirectional push (->)
+    - Unidirectional pull (<-)
+    - Repulsion (<>)
     
     Example:
         ```python
         registry = ResourceRegistry()
         async with MagneticField("research", registry) as field:
-            await field.add_resource(tool1)
-            await field.add_resource(tool2)
-            await field.attract(tool1, tool2)
+            await field.add_resource(researcher)
+            await field.add_resource(assistant)
+            await field.enable_chat(researcher, assistant)
         ```
     """
     def __init__(
@@ -100,11 +111,11 @@ class MagneticField:
         # Field-wide rules
         self._rules = rules or RuleSet(f"{name}_field_rules")
         self._rules.add_rule(AttractionRule(
-            name="field_state",
+            name="interaction_boundary",
             policy=AttractionPolicy.STATE_BASED,
             priority=PolicyPriority.SYSTEM,
-            state_validator=lambda s1, s2: True,  # Remove old validation
-            description="Field-wide state validation"
+            state_validator=lambda s1, s2: True,  # Flexible boundary validation
+            description="Manage resource interaction boundaries"
         ))
 
     def _setup_transitions(self):
@@ -309,12 +320,12 @@ class MagneticField:
         source: MagneticResource,
         target: MagneticResource
 ) ->     bool:
-        """Create attraction between two resources"""
+        """Enable interaction between two resources"""
         # Save current activation state
         was_active = self._active
 
         try:
-            # Ensure field is active during attraction
+            # Ensure field is active during interaction setup
             if not self._active:
                 self._active = True
 
