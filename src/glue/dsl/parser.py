@@ -70,9 +70,9 @@ class GlueParser:
     
     def parse(self, content: str) -> GlueApp:
         """Parse GLUE DSL content"""
+        self.logger.debug("Starting parse")
         # Remove comments
         content = re.sub(r'//.*$', '', content, flags=re.MULTILINE)
-        self.logger.debug(f"Cleaned content:\n{content}")
         
         # First handle colon-style tool definitions
         for line in content.split('\n'):
@@ -89,57 +89,49 @@ class GlueParser:
         
         # Extract and parse blocks
         blocks = self._extract_blocks(content)
+        self.logger.debug(f"Extracted blocks: {blocks}")
         
         # First pass: Find and parse app block
         for block_type, block_content in blocks:
-            keyword_type, _ = get_keyword_type(block_type)
-            if keyword_type == 'app':
+            if block_type == 'glue app':
                 self._parse_app(block_content)
                 break
         
         # Second pass: Parse remaining blocks
         for block_type, block_content in blocks:
-            if block_type == 'glue app':
-                continue
-                
-            parts = block_type.strip().split(None, 1)
-            block_type = parts[0].lower()
-            block_name = parts[1] if len(parts) > 1 else None
+            self.logger.debug(f"Processing block: {block_type}")
             
-            if block_type == 'model':
-                self._parse_model(block_name, block_content)
-            elif block_type == 'tool':
-                self._parse_tool(block_name, block_content)
-            elif block_type == 'workflow':
+            if block_type == 'workflow':
                 self._parse_workflow(block_content)
-        
-        # Handle standalone role definitions
+                if self.workflow:
+                    self.app.workflow = self.workflow
+            elif block_type.startswith('model') or not any(block_type.startswith(x) for x in ['glue app', 'workflow', 'tool']):
+                name = block_type.split(None, 1)[1] if ' ' in block_type else block_type
+                self._parse_model(name, block_content)
+            elif block_type.startswith('tool'):
+                name = block_type.split(None, 1)[1]
+                self._parse_tool(name, block_content)
+
+        # Final pass: Handle top-level configurations AFTER blocks are parsed
         for line in content.split('\n'):
             line = line.strip()
-            if '_role =' in line:
-                model_name, role = line.split('_role =')
-                model_name = model_name.strip()
+            if '_role' in line and '=' in line:
+                key, value = [x.strip() for x in line.split('=', 1)]
+                model_name = key.replace('_role', '').strip()
                 if model_name in self.models:
-                    self.models[model_name].role = self._parse_value(role)
-        
-        if not self.app:
-            self.app = GlueApp(
-                name="glue_app",
-                config={},
-                model_configs=self.models,
-                tool_configs=self.tools,
-                workflow=self.workflow
-            )
-        else:
+                    self.models[model_name].role = self._parse_value(value)
+                    
+        if self.app:
             self.app.model_configs = self.models
-            self.app.tool_configs = self.tools
-            self.app.workflow = self.workflow
-        
+            if self.workflow:
+                self.app.workflow = self.workflow
+
         return self.app
     
     def _extract_blocks(self, content: str) -> List[Tuple[str, str]]:
         """Extract blocks from content"""
         blocks = []
+        self.logger.debug("Starting block extraction")
         
         # Match block patterns
         def find_matching_brace(s: str, start: int) -> int:
@@ -162,7 +154,7 @@ class GlueParser:
             if not match:
                 break
                 
-            block_type = match.group(1)
+            block_type = match.group(1).strip()  # Add strip() here
             block_start = i + match.end()
             
             # Find matching closing brace
@@ -233,16 +225,25 @@ class GlueParser:
         
     def _parse_chain_config(self, value: str) -> Dict[str, Any]:
         """Parse chain configuration"""
-        # Remove braces and whitespace
-        value = value.strip('{}').strip()
+        # Remove curly braces and whitespace
+        value = value.strip()
+        if value.startswith('{'):
+            value = value[1:]
+        if value.endswith('}'):
+            value = value[:-1]
+        value = value.strip()
         
-        # Parse '>>' notation
+        # Split on >> and clean up whitespace
         tools = [t.strip() for t in value.split('>>')]
         
-        return {
-            "tools": tools,
-            "type": "sequential"
-        }
+        # Remove any empty strings and create chain config
+        tools = [t for t in tools if t]
+        if tools:  # Only create config if we have tools
+            return {
+                "type": "sequential",
+                "tools": tools
+            }
+        return None
     
     def _parse_config_block(self, content: str) -> Dict[str, Any]:
         """Parse a config block"""
@@ -256,21 +257,14 @@ class GlueParser:
     
     def _parse_model(self, name: str, content: str):
         """Parse model block"""
-        self.logger.debug(f"Parsing model {name}:\n{content}")
-        
         provider = None
         api_key = None
         config = {}
         tools = {}
         role = None
-        chain = None
+        chain = None  
         
-        # If name is None, this might be a standalone model block
-        # where the block_type itself is the model name
-        if name is None:
-            return
-            
-        # Parse nested blocks
+        # Parse nested blocks first
         nested_blocks = self._extract_blocks(content)
         for block_type, block_content in nested_blocks:
             if block_type == "config":
@@ -281,8 +275,7 @@ class GlueParser:
         for line in lines:
             if not line or '{' in line:
                 continue
-            
-            # Handle os.* lines
+
             if line.startswith('os.'):
                 key = line[3:]
                 if key in PROVIDER_KEYWORDS:
@@ -294,34 +287,52 @@ class GlueParser:
                     continue
             
             if '=' in line:
-                key, value = [x.strip() for x in line.split('=', 1)]
-                key = key.lower()
+                parts = line.split('=', 1)
+                if len(parts) < 2:
+                    continue
+
+                key = parts[0].strip()
+                value = parts[1].strip()    
                 
                 if key == 'double_side_tape':
-                    chain = self._parse_chain_config(value)
-                elif key == 'tools':
-                    tools_block = self._extract_blocks(value)
-                    if tools_block:
-                        for tool_line in tools_block[0][1].split('\n'):
-                            if '=' in tool_line:
-                                tool_name, strength = [x.strip() for x in tool_line.split('=', 1)]
-                                if strength.lower() == 'tape':
-                                    tools[tool_name] = AdhesiveType.TAPE
-                                elif strength.lower() == 'velcro':
-                                    tools[tool_name] = AdhesiveType.VELCRO
-                                elif strength.lower() == 'glue':
-                                    tools[tool_name] = AdhesiveType.GLUE
-                                elif strength.lower() == 'magnet':
-                                    tools[tool_name] = AdhesiveType.MAGNET
-                    else:
-                        tools = {t.strip(): AdhesiveType.VELCRO for t in value.strip('[]').split(',')}
+                    value = value.strip()
+                    if value.startswith('{') and value.endswith('}'):
+                        # Extract content between braces
+                        value = value[1:-1].strip()
+                        if '>>' in value:
+                            # Split on >> and clean up whitespace
+                            tool_chain = [t.strip() for t in value.split('>>')]
+                            # Create chain configuration
+                            chain = {
+                                "type": "sequential",
+                                "tools": tool_chain
+                            }
                 elif key == 'role':
                     role = value.strip('"')
+                elif key == 'tools':
+                    if '{' in value:
+                        tools_block = self._extract_blocks(value)
+                        if tools_block:
+                            for tool_line in tools_block[0][1].split('\n'):
+                                if '=' in tool_line:
+                                    tool_name, strength = [x.strip() for x in tool_line.split('=', 1)]
+                                    strength = strength.lower()
+                                    if strength == 'tape':
+                                        tools[tool_name] = AdhesiveType.TAPE
+                                    elif strength == 'velcro':
+                                        tools[tool_name] = AdhesiveType.VELCRO
+                                    elif strength == 'glue':
+                                        tools[tool_name] = AdhesiveType.GLUE
+                                    elif strength == 'magnet':
+                                        tools[tool_name] = AdhesiveType.MAGNET
+                    else:
+                        tools = {t.strip(): AdhesiveType.VELCRO for t in value.strip('[]').split(',')}
                 else:
                     config[key] = self._parse_value(value)
         
         # Create the model config
-        model_name = name.split()[-1] if 'model' in name.lower() else name
+        model_name = name.split()[-1] if name.startswith('model') else name
+        self.logger.debug(f"Creating model with name: {model_name}")
         self.models[model_name] = ModelConfig(
             provider=provider,
             api_key=api_key,
@@ -330,6 +341,7 @@ class GlueParser:
             role=role,
             chain=chain
         )
+        self.logger.debug(f"After adding model, models dict contains: {list(self.models.keys())}")
 
     
     def _parse_tool(self, name: str, content: str):
@@ -477,6 +489,9 @@ class GlueParser:
             chat=chat_pairs,
             pulls=pull_pairs
         )
+        # Make sure workflow gets attached to app
+        if hasattr(self, 'app') and self.app:
+            self.app.workflow = self.workflow
 
 def parse_glue_file(path: str) -> GlueApp:
     """Parse GLUE file"""

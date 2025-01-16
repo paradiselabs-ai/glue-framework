@@ -43,24 +43,33 @@ def test_parse_model_block():
     assert model.role == "You are a test researcher."
 
 def test_parse_chain():
-    """Test parsing chain block"""
     test_content = """
+    glue app {
+        name = "Test App"
+    }
+    
     researcher {
         os.openrouter
         os.api_key
         double_side_tape = { web_search >> write_file }
     }
+    
+    tool web_search {
+        // tool config
+    }
+    
+    tool write_file {
+        // tool config
+    }
     """
-    print(f"\nParsing chain content:\n{test_content}")
     
     parser = GlueParser()
-    parser.parse(test_content)
+    app = parser.parse(test_content)
     
-    model = parser.models["researcher"]
-    print(f"\nParsed model:\n{model}")
-    
-    # Check chain parsing
+    assert "researcher" in app.model_configs
+    model = app.model_configs["researcher"]
     assert model.chain is not None
+    assert model.chain["type"] == "sequential"
     assert model.chain["tools"] == ["web_search", "write_file"]
 
 def test_parse_tool():
@@ -99,3 +108,44 @@ def test_invalid_syntax():
     assert app.name == "glue_app"
     assert app.tools == []
     assert app.model is None
+    
+def test_parse_workflow():
+    """Test parsing workflow configuration"""
+    test_content = """
+    glue app {
+        name = "Test App"
+    }
+    
+    workflow {
+        researcher >< web_search
+        writer <- web_search
+    }
+    """
+    
+    parser = GlueParser()
+    result = parser.parse(test_content)
+    
+    assert result.workflow is not None
+    assert len(result.workflow.attractions) > 0
+    assert ("researcher", "web_search") in result.workflow.attractions
+    
+def test_parse_complex_workflow():
+    """Test parsing complex workflow configuration"""
+    test_content = """
+    glue app {
+        name = "Test App"
+    }
+    
+    workflow {
+        researcher >< web_search
+        writer <- web_search
+        researcher <> file_handler
+    }
+    """
+    
+    parser = GlueParser()
+    result = parser.parse(test_content)
+    
+    assert result.workflow is not None
+    assert ("researcher", "web_search") in result.workflow.attractions
+    assert ("researcher", "file_handler") in result.workflow.repulsions
