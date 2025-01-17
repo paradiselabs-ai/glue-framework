@@ -29,7 +29,7 @@ class ModelConfig:
     config: Dict[str, Any]
     tools: Dict[str, AdhesiveType]
     role: Optional[str]
-    chain: Optional[Dict[str, Any]] = None  # Add chain support
+    chain: Optional[Dict[str, Any]] = None 
 
 @dataclass
 class ToolConfig:
@@ -73,6 +73,11 @@ class GlueParser:
         self.logger.debug("Starting parse")
         # Remove comments
         content = re.sub(r'//.*$', '', content, flags=re.MULTILINE)
+        
+        # Normalize alternative syntax
+        content = content.replace('application {', 'glue app {')
+        content = content.replace('title =', 'name =')
+        content = content.replace('components =', 'tools =')
         
         # First handle colon-style tool definitions
         for line in content.split('\n'):
@@ -206,44 +211,64 @@ class GlueParser:
                 
             if '=' in line:
                 key, value = [x.strip() for x in line.split('=', 1)]
-                if key == 'app_name':
-                    name = value.strip('"')
+                value = self._parse_value(value)
+                
+                if key in ['name', 'app_name']:
+                    name = value
                 elif key == 'tools':
-                    # Parse comma-separated tool list
                     tools = [t.strip() for t in value.split(',')]
-                elif key == 'model':
-                    model = value.strip()
+                elif key == 'agent':  # Add handling for 'agent' key
+                    model = value
+                    config[key] = value
+                elif key == 'model':  # Also handle explicit 'model' key
+                    model = value
                 else:
-                    config[key] = self._parse_value(value)
+                    config[key] = value
         
         self.app = GlueApp(
             name=name,
             config=config,
             tools=tools,
-            model=model
+            model=model  # This will now be set from either 'agent' or 'model'
         )
         
-    def _parse_chain_config(self, value: str) -> Dict[str, Any]:
-        """Parse chain configuration"""
-        # Remove curly braces and whitespace
+    def _parse_chain_config(self, value: str) -> Optional[Dict[str, Any]]:
+        """Parse chain configuration from a value string"""
+        # Clean up the value
         value = value.strip()
+        
+        # Remove outer braces if present
         if value.startswith('{'):
             value = value[1:]
         if value.endswith('}'):
             value = value[:-1]
         value = value.strip()
         
+        # If empty, return None
+        if not value:
+            return None
+            
+        # For single tool without >> operator
+        if '>>' not in value:
+            tool = value.strip()
+            if tool:  # Only create chain if there's a tool
+                return {
+                    "type": "sequential",
+                    "tools": [tool]
+                }
+                
         # Split on >> and clean up whitespace
-        tools = [t.strip() for t in value.split('>>')]
-        
-        # Remove any empty strings and create chain config
-        tools = [t for t in tools if t]
-        if tools:  # Only create config if we have tools
-            return {
-                "type": "sequential",
-                "tools": tools
-            }
+        if '>>' in value:
+            tools = [t.strip() for t in value.split('>>')]
+            # Remove any empty strings and create chain config
+            tools = [t for t in tools if t]
+            if tools:
+                return {
+                    "type": "sequential",
+                    "tools": tools
+                }
         return None
+
     
     def _parse_config_block(self, content: str) -> Dict[str, Any]:
         """Parse a config block"""
@@ -273,40 +298,39 @@ class GlueParser:
         # Parse remaining lines
         lines = [line.strip() for line in content.split('\n')]
         for line in lines:
-            if not line or '{' in line:
+            if not line or '{' in line and '}' not in line:  # Skip incomplete blocks
+                continue
+
+            # Direct provider keyword check first
+            if line in PROVIDER_KEYWORDS:
+                provider = PROVIDER_KEYWORDS[line]
+                api_key = f"env:{provider.upper()}_API_KEY"
                 continue
 
             if line.startswith('os.'):
                 key = line[3:]
                 if key in PROVIDER_KEYWORDS:
                     provider = PROVIDER_KEYWORDS[key]
+                    api_key = f"env:{provider.upper()}_API_KEY"
                     continue
-                elif key == 'api_key':
+                elif key == 'api_key' or key in CONFIG_KEYWORDS and CONFIG_KEYWORDS[key] == 'api_key':
                     if provider:
                         api_key = f"env:{provider.upper()}_API_KEY"
                     continue
             
             if '=' in line:
                 parts = line.split('=', 1)
-                if len(parts) < 2:
+                if len(parts) != 2:
                     continue
 
                 key = parts[0].strip()
-                value = parts[1].strip()    
+                value = parts[1].strip()
                 
-                if key == 'double_side_tape':
-                    value = value.strip()
-                    if value.startswith('{') and value.endswith('}'):
-                        # Extract content between braces
-                        value = value[1:-1].strip()
-                        if '>>' in value:
-                            # Split on >> and clean up whitespace
-                            tool_chain = [t.strip() for t in value.split('>>')]
-                            # Create chain configuration
-                            chain = {
-                                "type": "sequential",
-                                "tools": tool_chain
-                            }
+                # Handle all chain-related keywords
+                if key in ['double_side_tape', 'chain', 'sequence', 'pipeline']:
+                    parsed_chain = self._parse_chain_config(value)
+                    if parsed_chain:
+                        chain = parsed_chain
                 elif key == 'role':
                     role = value.strip('"')
                 elif key == 'tools':
@@ -329,7 +353,7 @@ class GlueParser:
                         tools = {t.strip(): AdhesiveType.VELCRO for t in value.strip('[]').split(',')}
                 else:
                     config[key] = self._parse_value(value)
-        
+
         # Create the model config
         model_name = name.split()[-1] if name.startswith('model') else name
         self.logger.debug(f"Creating model with name: {model_name}")
@@ -341,7 +365,7 @@ class GlueParser:
             role=role,
             chain=chain
         )
-        self.logger.debug(f"After adding model, models dict contains: {list(self.models.keys())}")
+        self.logger.debug(f"After adding model: provider={provider}, api_key={api_key}, chain={chain}")
 
     
     def _parse_tool(self, name: str, content: str):

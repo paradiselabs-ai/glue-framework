@@ -71,6 +71,78 @@ def test_parse_chain():
     assert model.chain is not None
     assert model.chain["type"] == "sequential"
     assert model.chain["tools"] == ["web_search", "write_file"]
+    
+  
+def test_parse_chain_with_empty_tools():
+    """Test parsing chain with empty tool list"""
+    test_content = """
+    glue app {
+        name = "Test App"
+    }
+    
+    researcher {
+        os.openrouter
+        os.api_key
+        double_side_tape = { }
+    }
+    """
+    
+    parser = GlueParser()
+    app = parser.parse(test_content)
+    
+    assert "researcher" in app.model_configs
+    model = app.model_configs["researcher"]
+    assert model.chain is None  # Empty chain should result in None
+
+def test_parse_chain_with_single_tool():
+    """Test parsing chain with a single tool"""
+    test_content = """
+    glue app {
+        name = "Test App"
+    }
+    
+    researcher {
+        os.openrouter
+        os.api_key
+        double_side_tape = { web_search }
+    }
+    
+    tool web_search {
+        provider = openai
+    }
+    """
+    
+    parser = GlueParser()
+    app = parser.parse(test_content)
+    
+    assert "researcher" in app.model_configs
+    model = app.model_configs["researcher"]
+    assert model.chain is not None
+    assert model.chain["type"] == "sequential"
+    assert model.chain["tools"] == ["web_search"]
+
+def test_parse_chain_with_multiple_tools():
+    """Test parsing chain with multiple tools"""
+    test_content = """
+    glue app {
+        name = "Test App"
+    }
+    
+    researcher {
+        os.openrouter
+        os.api_key
+        double_side_tape = { web_search >> code_gen >> write_file }
+    }
+    """
+    
+    parser = GlueParser()
+    app = parser.parse(test_content)
+    
+    assert "researcher" in app.model_configs
+    model = app.model_configs["researcher"]
+    assert model.chain is not None
+    assert model.chain["type"] == "sequential"
+    assert model.chain["tools"] == ["web_search", "code_gen", "write_file"]
 
 def test_parse_tool():
     """Test parsing tool block"""

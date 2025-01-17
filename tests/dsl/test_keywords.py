@@ -85,7 +85,8 @@ def test_standard_syntax():
     model = parser.models["researcher"]
     assert model.provider == "openrouter"
     assert model.api_key == "env:OPENROUTER_API_KEY"
-    assert model.chain == {"tools": ["search", "file"]}
+    # Updated assertion to expect type field
+    assert model.chain == {"type": "sequential", "tools": ["search", "file"]}
     assert model.role == "You are a test researcher."
     
     # Check tool parsing
@@ -105,7 +106,8 @@ def test_alternative_syntax():
     model = parser.models["assistant"]
     assert model.provider == "openrouter"
     assert model.api_key == "env:OPENROUTER_API_KEY"
-    assert model.chain == {"tools": ["web", "write"]}
+    # Updated assertion to expect type field
+    assert model.chain == {"type": "sequential", "tools": ["web", "write"]}
     assert model.role == "You are a test assistant."
     
     # Check tool parsing

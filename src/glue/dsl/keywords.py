@@ -71,7 +71,13 @@ CONFIG_KEYWORDS = {
     # Development Configuration
     'development': 'development',
     'dev': 'development',
-    'debug': 'development'
+    'debug': 'development',
+    
+    # Chain Configuration
+    'chain': 'chain',
+    'sequence': 'chain',
+    'pipeline': 'chain',
+    'double_side_tape': 'chain'
 }
 
 # Operation Keywords
@@ -93,6 +99,13 @@ OPERATION_KEYWORDS = {
     'then': 'sequence'
 }
 
+ROLE_KEYWORDS = {
+    'role': 'role',
+    'system': 'role',
+    'prompt': 'role',
+    'instruction': 'role'
+}
+
 # Application Keywords
 APP_KEYWORDS = {
     # App Definition
@@ -101,6 +114,8 @@ APP_KEYWORDS = {
     'glue': 'app',
     'glue_app': 'app',
     'agent': 'app',
+    'title': 'name',  # Add this for alternative syntax
+    'components': 'tools',  # Add this for alternative syntax
     
     # App Configuration
     'name': 'name',
@@ -112,8 +127,7 @@ APP_KEYWORDS = {
     # App Components
     'model': 'model',
     'tool': 'tool',
-    'config': 'config',
-    'role': 'role'
+    'config': 'config'
 }
 
 def get_keyword_type(keyword: str) -> tuple[str, str]:
@@ -123,9 +137,16 @@ def get_keyword_type(keyword: str) -> tuple[str, str]:
     # Special cases for app blocks
     if keyword in ['glue app', 'application']:
         return 'app', 'app'
+        
+    # Handle role variations
+    if '_role' in keyword or '_system' in keyword or '_prompt' in keyword or \
+       '_instruction' in keyword or '_behavior' in keyword or '_personality' in keyword:
+        return 'role', 'role'
     
     # Check each keyword mapping
-    if keyword in PROVIDER_KEYWORDS:
+    if keyword in ROLE_KEYWORDS:
+        return 'role', ROLE_KEYWORDS[keyword]
+    elif keyword in PROVIDER_KEYWORDS:
         return 'provider', PROVIDER_KEYWORDS[keyword]
     elif keyword in CONFIG_KEYWORDS:
         return 'config', CONFIG_KEYWORDS[keyword]
