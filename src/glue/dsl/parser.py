@@ -42,8 +42,8 @@ class ToolConfig:
 @dataclass
 class WorkflowConfig:
     """Workflow Configuration"""
-    attractions: List[Tuple[str, str]]  # (source, target) pairs
-    repulsions: List[Tuple[str, str]]   # (source, target) pairs
+    attractions: List[Tuple[str, str, AdhesiveType]]  # (source, target, binding)
+    repulsions: List[Tuple[str, str]]                 # (source, target) pairs
     chat: List[Tuple[str, str]] = field(default_factory=list)  # (model1, model2) pairs
     pulls: List[Tuple[str, str]] = field(default_factory=list)  # (target, source) pairs
 
@@ -296,18 +296,33 @@ class GlueParser:
         config = {}
         tools = {}
         role = None
-        chain = None  
+        chain = None
         
         # Parse nested blocks first
         nested_blocks = self._extract_blocks(content)
         for block_type, block_content in nested_blocks:
             if block_type == "config":
                 config = self._parse_config_block(block_content)
+            elif block_type == "tools":
+                # Parse tools block directly (from Version 2)
+                for line in block_content.split('\n'):
+                    line = line.strip()
+                    if '=' in line:
+                        tool_name, binding = [x.strip() for x in line.split('=', 1)]
+                        binding = binding.lower()
+                        if binding == 'tape':
+                            tools[tool_name] = AdhesiveType.TAPE
+                        elif binding == 'velcro':
+                            tools[tool_name] = AdhesiveType.VELCRO
+                        elif binding == 'glue':
+                            tools[tool_name] = AdhesiveType.GLUE
+                        elif binding == 'magnet':
+                            tools[tool_name] = AdhesiveType.MAGNET
         
         # Parse remaining lines
         lines = [line.strip() for line in content.split('\n')]
         for line in lines:
-            if not line or '{' in line and '}' not in line:  # Skip incomplete blocks
+            if not line:  # Skip empty lines only
                 continue
 
             # Direct provider keyword check first
@@ -315,57 +330,76 @@ class GlueParser:
                 provider = PROVIDER_KEYWORDS[line]
                 api_key = f"env:{provider.upper()}_API_KEY"
                 continue
-
+                
             if line.startswith('os.'):
                 key = line[3:]
                 if key in PROVIDER_KEYWORDS:
                     provider = PROVIDER_KEYWORDS[key]
                     api_key = f"env:{provider.upper()}_API_KEY"
                     continue
-                elif key == 'api_key' or key in CONFIG_KEYWORDS and CONFIG_KEYWORDS[key] == 'api_key':
-                    if provider:
-                        api_key = f"env:{provider.upper()}_API_KEY"
-                    continue
-            
-            if '=' in line:
-                parts = line.split('=', 1)
-                if len(parts) != 2:
-                    continue
 
-                key = parts[0].strip()
-                value = parts[1].strip()
+            if '=' in line:
+                key, value = [x.strip() for x in line.split('=', 1)]
+                key = key.lower()
+                value = value.strip('"\'')  # Remove quotes if present
                 
-                # Handle all chain-related keywords
-                if key in ['double_side_tape', 'chain', 'sequence', 'pipeline']:
+                # Handle provider
+                if key == 'provider':
+                    if value.lower() in PROVIDER_KEYWORDS:
+                        provider = PROVIDER_KEYWORDS[value.lower()]
+                    else:
+                        provider = value
+                    api_key = f"env:{provider.upper()}_API_KEY"
+                    continue
+                    
+                # Handle role variations
+                keyword_type, _ = get_keyword_type(key)
+                if keyword_type == 'role':
+                    role = value
+                    continue
+                    
+                # Handle chain/sequence definitions (from Version 1)
+                if key in ['chain', 'sequence', 'pipeline', 'double_side_tape']:
                     parsed_chain = self._parse_chain_config(value)
                     if parsed_chain:
                         chain = parsed_chain
-                elif key == 'role':
-                    role = value.strip('"')
-                elif key == 'tools':
+                    continue
+                    
+                # Handle tools block if defined with =
+                if key == 'tools':
                     if '{' in value:
+                        # Parse inline tools block
                         tools_block = self._extract_blocks(value)
                         if tools_block:
                             for tool_line in tools_block[0][1].split('\n'):
                                 if '=' in tool_line:
-                                    tool_name, strength = [x.strip() for x in tool_line.split('=', 1)]
-                                    strength = strength.lower()
-                                    if strength == 'tape':
+                                    tool_name, binding = [x.strip() for x in tool_line.split('=', 1)]
+                                    binding = binding.lower()
+                                    if binding == 'tape':
                                         tools[tool_name] = AdhesiveType.TAPE
-                                    elif strength == 'velcro':
+                                    elif binding == 'velcro':
                                         tools[tool_name] = AdhesiveType.VELCRO
-                                    elif strength == 'glue':
+                                    elif binding == 'glue':
                                         tools[tool_name] = AdhesiveType.GLUE
-                                    elif strength == 'magnet':
+                                    elif binding == 'magnet':
                                         tools[tool_name] = AdhesiveType.MAGNET
                     else:
-                        tools = {t.strip(): AdhesiveType.VELCRO for t in value.strip('[]').split(',')}
-                else:
-                    config[key] = self._parse_value(value)
-
+                        # Handle comma-separated list of tools
+                        tool_list = [t.strip() for t in value.strip('[]').split(',')]
+                        for tool in tool_list:
+                            tools[tool] = AdhesiveType.VELCRO  # Default to VELCRO
+                    continue
+                    
+                # Add to general config if not handled specially
+                config[key] = self._parse_value(value)
+        
+        # Remove provider from config if it ended up there
+        config.pop('provider', None)
+        
         # Create the model config
         model_name = name.split()[-1] if name.startswith('model') else name
-        self.logger.debug(f"Creating model with name: {model_name}")
+        self.logger.debug(f"Creating model with name: {model_name}, provider: {provider}")
+        
         self.models[model_name] = ModelConfig(
             provider=provider,
             api_key=api_key,
@@ -374,7 +408,7 @@ class GlueParser:
             role=role,
             chain=chain
         )
-        self.logger.debug(f"After adding model: provider={provider}, api_key={api_key}, chain={chain}")
+        self.logger.debug(f"Created model config: {self.models[model_name]}")
 
     
     def _parse_tool(self, name: str, content: str):

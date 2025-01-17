@@ -31,6 +31,10 @@ def test_parse_model_tool_bindings():
 def test_parse_workflow_bindings():
     """Test parsing workflow bindings with binding strengths"""
     content = """
+    glue app {
+        name = "Test App"
+    }
+
     workflow {
         researcher >< assistant | glue
         assistant >< code_gen | velcro
