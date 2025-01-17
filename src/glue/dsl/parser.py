@@ -120,11 +120,20 @@ class GlueParser:
         # Final pass: Handle top-level configurations AFTER blocks are parsed
         for line in content.split('\n'):
             line = line.strip()
-            if '_role' in line and '=' in line:
+            if '=' in line:
                 key, value = [x.strip() for x in line.split('=', 1)]
-                model_name = key.replace('_role', '').strip()
-                if model_name in self.models:
-                    self.models[model_name].role = self._parse_value(value)
+                # Check if this is a role assignment
+                keyword_type, _ = get_keyword_type(key)
+                if keyword_type == 'role':
+                    # Extract model name by removing role-related suffixes
+                    model_name = key
+                    for suffix in ['_role', '_system', '_prompt', '_instruction', '_behavior', '_personality']:
+                        if model_name.endswith(suffix):
+                            model_name = model_name[:-len(suffix)]
+                            break
+                    
+                    if model_name in self.models:
+                        self.models[model_name].role = self._parse_value(value)
                     
         if self.app:
             self.app.model_configs = self.models
