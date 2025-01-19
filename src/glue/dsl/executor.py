@@ -338,19 +338,22 @@ class GlueExecutor:
     def _get_binding_patterns(self, field: MagneticField) -> Dict[str, Any]:
         """Get binding patterns from workflow"""
         patterns = {
-            AdhesiveType.GLUE_ATTRACT: [],
-            AdhesiveType.VELCRO_ATTRACT: [],
-            AdhesiveType.TAPE_ATTRACT: [],
-            'field': field  # Include the magnetic field
+            # Tool bindings by adhesive type
+            AdhesiveType.GLUE: [],
+            AdhesiveType.VELCRO: [],
+            AdhesiveType.TAPE: [],
+            # Include the field for context
+            'field': field
         }
         
         if self.app.workflow:
-            # Only add model-tool attractions to magnet pattern
+            # Only add model-tool attractions
             for source, target in self.app.workflow.attractions:
                 # Check if this is a model-tool attraction
                 if (source in self.models and target in self.tools) or \
                    (target in self.models and source in self.tools):
-                    patterns[AdhesiveType.GLUE_ATTRACT].append((source, target))
+                    # Use GLUE for model-tool bindings by default
+                    patterns[AdhesiveType.GLUE].append((source, target))
         
         return patterns
     
