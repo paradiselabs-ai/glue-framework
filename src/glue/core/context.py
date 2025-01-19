@@ -179,21 +179,28 @@ class ContextAnalyzer:
         # Determine complexity
         complexity = self._assess_complexity(input_text)
         
-        # Identify required tools based on both patterns and context
-        tools_required = self._identify_tools(input_text, available_tools, requires_research)
+        # Initialize requirements
+        tools_required = set()
+        requires_memory = False
+        requires_persistence = False
         
-        # Analyze additional requirements
-        requires_memory = self._requires_memory(input_text)
-        requires_persistence = self._requires_persistence(input_text)
-        
-        # Adjust for research context
-        if requires_research:
-            # Ensure research tools are included
-            if available_tools and "web_search" in available_tools:
-                tools_required.add("web_search")
-            # Increase complexity for research tasks
-            if complexity == ComplexityLevel.SIMPLE:
-                complexity = ComplexityLevel.MODERATE
+        # Only analyze tool requirements if not a chat interaction
+        if interaction_type != InteractionType.CHAT:
+            # Identify required tools based on both patterns and context
+            tools_required = self._identify_tools(input_text, available_tools, requires_research)
+            
+            # Analyze additional requirements
+            requires_memory = self._requires_memory(input_text)
+            requires_persistence = self._requires_persistence(input_text)
+            
+            # Adjust for research context
+            if requires_research:
+                # Ensure research tools are included
+                if available_tools and "web_search" in available_tools:
+                    tools_required.add("web_search")
+                # Increase complexity for research tasks
+                if complexity == ComplexityLevel.SIMPLE:
+                    complexity = ComplexityLevel.MODERATE
         
         # Create context state
         state = ContextState(
@@ -213,44 +220,28 @@ class ContextAnalyzer:
     
     def _determine_type(self, text: str, requires_research: bool) -> tuple[InteractionType, float]:
         """Determine the type of interaction and confidence level"""
-        # Initialize confidences
-        chat_confidence = 0.0
-        research_confidence = 0.0
-        task_confidence = 0.0
-        
-        # Check research patterns first if research is required
-        if requires_research:
-            research_confidence = 0.8  # High confidence for research
-        else:
-            # Check research patterns
-            for pattern, conf in self.RESEARCH_PATTERNS.items():
-                if re.search(pattern, text):
-                    research_confidence = max(research_confidence, conf)
-        
-        # Check task patterns
-        for pattern, conf in self.TASK_PATTERNS.items():
-            if re.search(pattern, text):
-                task_confidence = max(task_confidence, conf)
-        
-        # Only check chat patterns if no strong research/task confidence
-        if max(research_confidence, task_confidence) < 0.6:
-            for pattern, conf in self.CHAT_PATTERNS.items():
-                if re.search(pattern, text):
-                    chat_confidence = max(chat_confidence, conf)
-        
-        # Determine type based on highest confidence
-        if research_confidence >= 0.6:
-            return InteractionType.RESEARCH, research_confidence
-        elif task_confidence >= 0.6:
-            return InteractionType.TASK, task_confidence
-        elif chat_confidence >= 0.8:  # Higher threshold for chat
-            return InteractionType.CHAT, chat_confidence
+        # Simple greeting check (only obvious greetings)
+        if re.match(r"^(?:hi|hello|hey|thanks?|thank you)(?:\s.*)?$", text, re.I):
+            return InteractionType.CHAT, 0.9
             
-        # Default to RESEARCH if unclear but research is required
-        if requires_research:
+        # Information seeking check
+        if any(word in text.lower() for word in [
+            "what", "how", "why", "when", "where", "who",
+            "find", "search", "look up", "tell me about"
+        ]):
+            return InteractionType.RESEARCH, 0.8
+            
+        # Task execution check
+        if any(word in text.lower() for word in [
+            "write", "create", "make", "generate", "run", "execute"
+        ]):
+            return InteractionType.TASK, 0.8
+            
+        # Default to research for any other question-like input
+        if "?" in text or requires_research:
             return InteractionType.RESEARCH, 0.7
             
-        # Default to UNKNOWN if no clear pattern
+        # Default to unknown for anything else
         return InteractionType.UNKNOWN, 0.3
     
     def _assess_complexity(self, text: str) -> ComplexityLevel:
@@ -280,56 +271,63 @@ class ContextAnalyzer:
     ) -> Set[str]:
         """Identify required tools based on input text and context"""
         required_tools = set()
+        text_lower = text.lower()
         
-        # Only check available tools if provided
-        tools_to_check = (set(available_tools) if available_tools else 
-                         set(self.TOOL_PATTERNS.keys()))
+        # Only process available tools
+        if not available_tools:
+            return required_tools
+            
+        # Research/Information tools
+        if "web_search" in available_tools:
+            # Add web_search for any information seeking or research intent
+            if requires_research or any(word in text_lower for word in [
+                "what", "how", "why", "when", "where", "who",
+                "find", "search", "look up", "tell me about"
+            ]):
+                required_tools.add("web_search")
         
-        # Check explicit tool patterns
-        for tool in tools_to_check:
-            if tool in self.TOOL_PATTERNS:
-                for pattern in self.TOOL_PATTERNS[tool]:
-                    if re.search(pattern, text):
-                        required_tools.add(tool)
-                        break
+        # Code execution tools
+        if "code_interpreter" in available_tools:
+            # Add code_interpreter for any code or execution intent
+            if any(word in text_lower for word in [
+                "code", "script", "program",
+                "run", "execute", "debug"
+            ]):
+                required_tools.add("code_interpreter")
         
-        # Add implicit tool requirements based on context
-        if requires_research and "web_search" in tools_to_check:
-            required_tools.add("web_search")
-        
-        # Check for file operations in research context
-        if requires_research and "file_handler" in tools_to_check:
-            # Look for save/write indicators
-            if any(re.search(pattern, text) for pattern in [
-                r"(?i)save",
-                r"(?i)write",
-                r"(?i)create",
-                r"(?i)store",
-                r"(?i)document"
+        # File handling tools
+        if "file_handler" in available_tools:
+            # Add file_handler for any file operation intent
+            if any(word in text_lower for word in [
+                "file", "document", "save",
+                "write", "read", "store"
             ]):
                 required_tools.add("file_handler")
         
         return required_tools
     
     def _requires_research(self, text: str) -> bool:
-        """Determine if the interaction requires research"""
-        # Check explicit research patterns
-        if any(re.search(pattern, text) 
-              for pattern in self.RESEARCH_PATTERNS.keys()):
+        """Determine if the interaction requires research or information gathering"""
+        text_lower = text.lower()
+        
+        # Check for question words
+        if any(word in text_lower for word in [
+            "what", "how", "why", "when", "where", "who"
+        ]):
             return True
-        
-        # Check for implicit research needs
-        implicit_patterns = [
-            r"(?i)about",
-            r"(?i)explain",
-            r"(?i)tell me",
-            r"(?i)what is",
-            r"(?i)how does",
-            r"(?i)history of",
-            r"(?i)background on"
-        ]
-        
-        return any(re.search(pattern, text) for pattern in implicit_patterns)
+            
+        # Check for research/information verbs
+        if any(word in text_lower for word in [
+            "find", "search", "look up", "research",
+            "learn", "explain", "tell me about"
+        ]):
+            return True
+            
+        # Check for question mark
+        if "?" in text:
+            return True
+            
+        return False
     
     def _requires_memory(self, text: str) -> bool:
         """Determine if the interaction requires memory of past interactions"""

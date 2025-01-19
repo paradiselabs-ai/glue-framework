@@ -10,11 +10,19 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
 from datetime import datetime
+from contextlib import asynccontextmanager
 from ..core.logger import get_logger
+from ..magnetic.field import MagneticField
 
 class WorkspaceError(Exception):
     """Base class for workspace errors"""
     pass
+
+class Workspace:
+    """Represents an active workspace"""
+    def __init__(self, path: str, field: MagneticField):
+        self.path = path
+        self.field = field
 
 class WorkspaceManager:
     """Manages GLUE workspaces with persistence support"""
@@ -179,3 +187,25 @@ class WorkspaceManager:
             age = datetime.now() - last_accessed
             return age.days
         return None
+
+@asynccontextmanager
+async def workspace_context(name: str, registry: Optional['ResourceRegistry'] = None):
+    """Context manager for workspaces"""
+    # Create workspace manager
+    manager = WorkspaceManager()
+    
+    # Get workspace path
+    workspace_path = manager.get_workspace(name)
+    
+    # Create magnetic field for workspace
+    field = MagneticField(name, registry)
+    
+    # Create workspace object
+    workspace = Workspace(workspace_path, field)
+    
+    try:
+        yield workspace
+    finally:
+        # Cleanup non-sticky workspace
+        if not manager.is_sticky(workspace_path):
+            manager.cleanup_workspace(workspace_path)

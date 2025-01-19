@@ -1,8 +1,9 @@
 # src/glue/core/model.py
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Set
 from dataclasses import dataclass, field
 from datetime import datetime
-from .types import Message, MessageType, WorkflowState
+from .types import Message, MessageType, WorkflowState, IntentAnalysis
+from ..tools.base import BaseTool
 
 @dataclass
 class ModelConfig:
@@ -51,16 +52,95 @@ class Model:
         if not self.config.system_prompt:
             self.config.system_prompt = role
 
-    def add_tool(self, name: str, tool: Any) -> None:
-        """Add a tool that this model can use"""
-        self._tools[name] = tool
+    def add_tool(self, name: str, tool: BaseTool, binding_type: str = 'velcro') -> None:
+        """
+        Add a tool that this model can use
+        
+        Args:
+            name: Name of the tool
+            tool: Tool instance
+            binding_type: Type of binding (glue, velcro, tape)
+        """
+        # Set binding type on tool
+        if hasattr(tool, 'binding_type'):
+            tool.binding_type = binding_type
+            
+        # Create tool instance for this model
+        instance = tool.create_instance()
+        
+        # Store tool
+        self._tools[name] = instance
 
     def bind_to(self, model: 'Model', binding_type: str = 'glue') -> None:
         """Create a binding to another model"""
         self._bound_models[model.name] = model
         
+    async def analyze_intent(self, prompt: str, context: Dict[str, Any]) -> IntentAnalysis:
+        """
+        Analyze prompt to determine intent and tool needs
+        
+        Args:
+            prompt: The user's prompt
+            context: Context about available tools and team members
+        """
+        # Let the model analyze the prompt
+        analysis = await self.generate(
+            f"""Analyze this prompt and determine:
+1. What tools might be needed
+2. How relevant this is to our team ({context['field_name']})
+3. Score from 0-1 how strongly we should handle this
+
+Prompt: {prompt}
+
+Available tools:
+{chr(10).join(f'- {t}' for t in context['available_tools'])}
+
+Team members:
+{chr(10).join(f'- {m}' for m in context['team_members'])}
+""")
+        
+        # Parse the analysis (provider-specific)
+        return self._parse_intent_analysis(analysis)
+        
+    async def process(self, prompt: str, context: Optional[List[Dict]] = None) -> str:
+        """
+        Process a prompt with context
+        
+        Args:
+            prompt: The prompt to process
+            context: Optional conversation history
+        """
+        # Format context
+        context_str = ""
+        if context:
+            context_str = "\nPrevious conversation:\n" + "\n".join(
+                f"{m['type']}: {m['content']}" for m in context
+            )
+            
+        # Generate response
+        response = await self.generate(
+            f"{self.config.system_prompt or ''}{context_str}\n\nUser: {prompt}"
+        )
+        
+        return response
+        
+    async def execute_tool(self, tool_name: str, *args, **kwargs) -> Any:
+        """Execute a tool owned by this model"""
+        if tool_name not in self._tools:
+            raise ValueError(f"Tool {tool_name} not found")
+            
+        tool = self._tools[tool_name]
+        result = await tool.safe_execute(*args, **kwargs)
+        
+        # Format result for memory
+        return tool.format_result(result)
+        
     async def generate(self, prompt: str) -> str:
         """Generate a response (to be implemented by provider-specific classes)"""
+        raise NotImplementedError
+        
+    def _parse_intent_analysis(self, analysis: str) -> IntentAnalysis:
+        """Parse intent analysis (to be implemented by provider-specific classes)"""
         raise NotImplementedError
 
     # Communication methods

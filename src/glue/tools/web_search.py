@@ -8,7 +8,7 @@ from .magnetic import MagneticTool
 from .search_providers import get_provider, SearchProvider, GenericSearchProvider
 from ..core.logger import get_logger
 from ..core.resource import ResourceState
-from ..core.binding import AdhesiveType
+from ..core.types import AdhesiveType
 from ..core.registry import ResourceRegistry
 from ..core.state import StateManager
 
@@ -81,7 +81,7 @@ class WebSearchTool(MagneticTool):
         self.logger = get_logger()
         self._session: Optional[aiohttp.ClientSession] = None
 
-    async def initialize(self) -> None:
+    async def initialize(self, *args, **kwargs) -> None:
         """Initialize search provider and session"""
         if not self._session:
             self._session = aiohttp.ClientSession()
@@ -89,7 +89,7 @@ class WebSearchTool(MagneticTool):
             if hasattr(self.provider, 'set_session'):
                 await self.provider.set_session(self._session)
         await self.provider.initialize()
-        await super().initialize()
+        await super().initialize(*args, **kwargs)
 
     async def cleanup(self) -> None:
         """Clean up search provider and session"""

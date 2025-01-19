@@ -8,11 +8,9 @@ from typing import Any, Dict, Set, List, Tuple, Optional, Type
 from pathlib import Path
 from copy import deepcopy
 from .parser import GlueApp, ModelConfig, ToolConfig
-from ..adhesive import (
-    workspace_context,
-    tool as create_tool,
-    AdhesiveType
-)
+from ..core.binding import AdhesiveType
+from ..core.workspace import workspace_context
+from ..tools.base import BaseTool as create_tool
 from ..providers import (
     OpenRouterProvider
 )
@@ -253,86 +251,89 @@ class GlueExecutor:
                 self.logger.info(f"Model {model_name} setup complete")
     
     async def _setup_workflow(self, field: MagneticField):
-        """Setup workflow attractions and repulsions"""
+        """Setup workflow with teams and flows"""
         if not self.app.workflow:
             return
         
         self.logger.info("\nSetting up workflow...")
         
-        # Add models to field first
-        for model_name, model in self.models.items():
-            self.logger.info(f"Adding model to field: {model_name}")
-            await field.add_resource(model)
-            # Also add to group chat manager
-            await self.group_chat.add_model(model)
+        # First setup teams
+        for team_name, team_config in self.app.workflow.teams.items():
+            self.logger.info(f"\nSetting up team: {team_name}")
+            
+            # Create team field with config
+            team_field = field.create_child_field(
+                name=team_name,
+                pull_fallback=team_config.pull_fallback,
+                auto_bind=team_config.auto_bind
+            )
+            
+            # Add lead if specified
+            if team_config.lead and team_config.lead in self.models:
+                self.logger.info(f"Adding lead: {team_config.lead}")
+                lead = self.models[team_config.lead]
+                await team_field.add_resource(lead, is_lead=True)
+                await self.group_chat.add_model(lead)
+            
+            # Add members
+            for member_name in team_config.members:
+                if member_name in self.models:
+                    self.logger.info(f"Adding member: {member_name}")
+                    member = self.models[member_name]
+                    await team_field.add_resource(member)
+                    await self.group_chat.add_model(member)
+            
+            # Add tools
+            for tool_name in team_config.tools:
+                if tool_name in self.tools:
+                    self.logger.info(f"Adding tool: {tool_name}")
+                    tool = self.tools[tool_name]
+                    # Apply stickiness if team is sticky
+                    if team_config.sticky:
+                        tool.sticky = True
+                    await team_field.add_resource(tool)
         
-        # Setup chat relationships
-        if hasattr(self.app.workflow, 'chat'):
-            for model1, model2 in self.app.workflow.chat:
-                self.logger.info(f"Creating chat relationship: {model1} <--> {model2}")
-                # Use group chat manager for bidirectional chat
-                await self.group_chat.start_chat(model1, model2)
-        
-        # Setup magnetic attractions between models and tools
+        # Setup flows between teams
         for source, target in self.app.workflow.attractions:
-            self.logger.info(f"Creating attraction: {source} >< {target}")
+            self.logger.info(f"Setting up flow: {source} -> {target}")
             
-            # Get source (could be model or tool)
-            source_obj = self.models.get(source) or self.tools.get(source)
-            # Get target (could be model or tool)
-            target_obj = self.models.get(target) or self.tools.get(target)
+            # Get team fields
+            source_field = field.get_child_field(source)
+            target_field = field.get_child_field(target)
             
-            if source_obj and target_obj:
-                # Create attraction between model and tool
-                await field.attract(source_obj, target_obj)
-                
-                # If source is a model, give it access to the tool
-                if source in self.models and target in self.tools:
-                    model = self.models[source]
-                    if hasattr(model, "_tools"):
-                        model._tools[target] = self.tools[target]
-                    # Set tool relationship in group chat manager
-                    await self.group_chat.set_tool_relationship(source, target, "><")
-                
-                # If target is a model, give it access to the tool
-                if target in self.models and source in self.tools:
-                    model = self.models[target]
-                    if hasattr(model, "_tools"):
-                        model._tools[source] = self.tools[source]
-                    # Set tool relationship in group chat manager
-                    await self.group_chat.set_tool_relationship(target, source, "><")
+            if source_field and target_field:
+                # Enable push from source to target
+                await source_field.enable_push(target_field)
             else:
-                self.logger.warning(f"Could not find objects for attraction: {source} >< {target}")
+                self.logger.warning(f"Could not find teams for flow: {source} -> {target}")
         
-        # Setup repulsions
+        # Setup repulsions between teams
         for source, target in self.app.workflow.repulsions:
-            self.logger.info(f"Creating repulsion: {source} <> {target}")
+            self.logger.info(f"Setting up repulsion: {source} <> {target}")
             
-            # Get source (could be model or tool)
-            source_obj = self.models.get(source) or self.tools.get(source)
-            # Get target (could be model or tool)
-            target_obj = self.models.get(target) or self.tools.get(target)
+            # Get team fields
+            source_field = field.get_child_field(source)
+            target_field = field.get_child_field(target)
             
-            if source_obj and target_obj:
-                await field.repel(source_obj, target_obj)
-                
-                # If source is a model, remove tool access
-                if source in self.models and target in self.tools:
-                    model = self.models[source]
-                    if hasattr(model, "_tools") and target in model._tools:
-                        del model._tools[target]
-                    # Set tool relationship in group chat manager
-                    await self.group_chat.set_tool_relationship(source, target, "<>")
-                
-                # If target is a model, remove tool access
-                if target in self.models and source in self.tools:
-                    model = self.models[target]
-                    if hasattr(model, "_tools") and source in model._tools:
-                        del model._tools[source]
-                    # Set tool relationship in group chat manager
-                    await self.group_chat.set_tool_relationship(target, source, "<>")
+            if source_field and target_field:
+                # Create repulsion between teams
+                await source_field.repel(target_field)
             else:
-                self.logger.warning(f"Could not find objects for repulsion: {source} <> {target}")
+                self.logger.warning(f"Could not find teams for repulsion: {source} <> {target}")
+                
+        # Setup pull fallbacks
+        for target, source in self.app.workflow.pulls:
+            self.logger.info(f"Setting up pull fallback: {target} <- {source}")
+            
+            # Get team fields
+            target_field = field.get_child_field(target)
+            source_field = field.get_child_field(source)
+            
+            if target_field and source_field:
+                # Enable pull from source to target
+                await target_field.enable_pull(source_field)
+            else:
+                self.logger.warning(f"Could not find teams for pull: {target} <- {source}")
 
     def _get_binding_patterns(self, field: MagneticField) -> Dict[str, Any]:
         """Get binding patterns from workflow"""
@@ -379,12 +380,14 @@ class GlueExecutor:
                     for tool_name, tool in self.tools.items():
                         await self.group_chat.add_tool(tool)
                     
-                    # Link tools to models
+                    # Link tools to models with proper binding types
                     for model_name, model in self.models.items():
                         if hasattr(model, "_tools"):
-                            for tool_name in list(model._tools.keys()):
-                                if tool_name in self.tools:
-                                    model._tools[tool_name] = self.tools[tool_name]
+                            model_config = self.app.model_configs[model_name]
+                            if hasattr(model_config, "tools"):
+                                for tool_name, binding_type in model_config.tools.items():
+                                    if tool_name in self.tools:
+                                        model.add_tool(tool_name, self.tools[tool_name], binding_type)
                     
                     # Setup workflow
                     await self._setup_workflow(active_field)

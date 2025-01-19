@@ -1,11 +1,11 @@
 # src/glue/magnetic/rules.py
 
 # ==================== Imports ====================
-from typing import Any, Callable, Dict, List, Optional, Set, Type, Union, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, Type, Union, Tuple, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
-from ..core.types import ResourceState
+from ..core.types import ResourceState, AdhesiveType, InteractionPattern
 
 if TYPE_CHECKING:
     from .field import MagneticResource
@@ -16,6 +16,8 @@ class AttractionPolicy(Enum):
     ALLOW_ALL = auto()     # Allow all attractions
     DENY_ALL = auto()      # Deny all attractions
     STATE_BASED = auto()   # Allow based on resource states
+    PATTERN_BASED = auto() # Allow based on interaction patterns
+    BINDING_BASED = auto() # Allow based on adhesive bindings
     CUSTOM = auto()        # Use custom validation function
 
 class PolicyPriority(Enum):
@@ -28,6 +30,8 @@ class PolicyPriority(Enum):
 # ==================== Type Definitions ====================
 ValidationFunc = Callable[['MagneticResource', 'MagneticResource'], bool]
 StateValidator = Callable[[ResourceState, ResourceState], bool]
+PatternValidator = Callable[[InteractionPattern, ResourceState, ResourceState], bool]
+BindingValidator = Callable[[AdhesiveType, ResourceState, ResourceState], bool]
 
 # ==================== Data Classes ====================
 @dataclass
@@ -38,15 +42,27 @@ class AttractionRule:
     priority: PolicyPriority = PolicyPriority.MEDIUM
     custom_validator: Optional[ValidationFunc] = None
     state_validator: Optional[StateValidator] = None
+    pattern_validator: Optional[PatternValidator] = None
+    binding_validator: Optional[BindingValidator] = None
     description: str = ""
     enabled: bool = True
 
     def validate(
         self,
         source: 'MagneticResource',
-        target: 'MagneticResource'
+        target: 'MagneticResource',
+        pattern: Optional[InteractionPattern] = None,
+        binding: Optional[AdhesiveType] = None
     ) -> bool:
-        """Validate if two resources can attract based on this rule"""
+        """
+        Validate if two resources can interact based on this rule
+        
+        Args:
+            source: Source resource
+            target: Target resource
+            pattern: Optional interaction pattern
+            binding: Optional adhesive binding type
+        """
         if not self.enabled:
             return True  # Disabled rules don't block
 
@@ -58,6 +74,12 @@ class AttractionRule:
 
         if self.policy == AttractionPolicy.STATE_BASED and self.state_validator:
             return self.state_validator(source._state, target._state)
+
+        if self.policy == AttractionPolicy.PATTERN_BASED and self.pattern_validator and pattern:
+            return self.pattern_validator(pattern, source._state, target._state)
+
+        if self.policy == AttractionPolicy.BINDING_BASED and self.binding_validator and binding:
+            return self.binding_validator(binding, source._state, target._state)
 
         if self.policy == AttractionPolicy.CUSTOM and self.custom_validator:
             return self.custom_validator(source, target)
@@ -82,6 +104,8 @@ class RuleSet:
                 priority=rule.priority,
                 custom_validator=rule.custom_validator,
                 state_validator=rule.state_validator,
+                pattern_validator=rule.pattern_validator,
+                binding_validator=rule.binding_validator,
                 description=rule.description,
                 enabled=rule.enabled
             )
@@ -107,18 +131,28 @@ class RuleSet:
     def validate(
         self,
         source: 'MagneticResource',
-        target: 'MagneticResource'
+        target: 'MagneticResource',
+        pattern: Optional[InteractionPattern] = None,
+        binding: Optional[AdhesiveType] = None
     ) -> bool:
-        """Validate attraction using all rules in the set"""
+        """
+        Validate interaction using all rules in the set
+        
+        Args:
+            source: Source resource
+            target: Target resource
+            pattern: Optional interaction pattern
+            binding: Optional adhesive binding type
+        """
         if not self.enabled:
             return True
 
         for rule in self.rules:
             if rule.priority == PolicyPriority.SYSTEM:
                 # System rules are absolute
-                return rule.validate(source, target)
+                return rule.validate(source, target, pattern, binding)
             
-            if not rule.validate(source, target):
+            if not rule.validate(source, target, pattern, binding):
                 return False
 
         return True
@@ -132,20 +166,110 @@ def create_state_validator(
         return state1 in allowed_states and state2 in allowed_states
     return validator
 
+def create_pattern_validator(
+    allowed_patterns: Dict[InteractionPattern, Tuple[Set[ResourceState], Set[ResourceState]]]
+) -> PatternValidator:
+    """
+    Create a validator that checks if resources can use an interaction pattern
+    
+    Args:
+        allowed_patterns: Dict mapping patterns to (source states, target states)
+    """
+    def validator(
+        pattern: InteractionPattern,
+        source_state: ResourceState,
+        target_state: ResourceState
+    ) -> bool:
+        if pattern not in allowed_patterns:
+            return False
+        source_states, target_states = allowed_patterns[pattern]
+        return source_state in source_states and target_state in target_states
+    return validator
+
+def create_binding_validator(
+    allowed_bindings: Dict[AdhesiveType, Set[ResourceState]]
+) -> BindingValidator:
+    """
+    Create a validator that checks if resources can use a binding type
+    
+    Args:
+        allowed_bindings: Dict mapping binding types to allowed states
+    """
+    def validator(
+        binding: AdhesiveType,
+        source_state: ResourceState,
+        target_state: ResourceState
+    ) -> bool:
+        if binding not in allowed_bindings:
+            return False
+        allowed_states = allowed_bindings[binding]
+        return source_state in allowed_states and target_state in allowed_states
+    return validator
+
 # Common rule sets
 DEFAULT_RULES = RuleSet(
     name="default",
     rules=[
+        # System-level state validation
         AttractionRule(
             name="system_locked",
             policy=AttractionPolicy.STATE_BASED,
             priority=PolicyPriority.SYSTEM,
-            state_validator=create_state_validator({
-                ResourceState.IDLE,
-                ResourceState.SHARED
+            state_validator=lambda s1, s2: (
+                s1 != ResourceState.LOCKED and 
+                s2 != ResourceState.LOCKED
+            ),
+            description="Prevent interaction with locked resources"
+        ),
+        
+        # Pattern-based validation
+        AttractionRule(
+            name="pattern_states",
+            policy=AttractionPolicy.PATTERN_BASED,
+            priority=PolicyPriority.HIGH,
+            pattern_validator=create_pattern_validator({
+                InteractionPattern.ATTRACT: (
+                    {ResourceState.IDLE, ResourceState.SHARED, ResourceState.ACTIVE},
+                    {ResourceState.IDLE, ResourceState.SHARED, ResourceState.ACTIVE}
+                ),
+                InteractionPattern.PUSH: (
+                    {ResourceState.SHARED, ResourceState.ACTIVE},
+                    {ResourceState.IDLE, ResourceState.SHARED}
+                ),
+                InteractionPattern.PULL: (
+                    {ResourceState.IDLE, ResourceState.SHARED},
+                    {ResourceState.SHARED, ResourceState.ACTIVE}
+                ),
+                InteractionPattern.REPEL: (
+                    {ResourceState.SHARED, ResourceState.ACTIVE},
+                    {ResourceState.SHARED, ResourceState.ACTIVE}
+                )
             }),
-            description="Prevent attraction to locked resources"
+            description="Validate states for interaction patterns"
+        ),
+        
+        # Binding-based validation
+        AttractionRule(
+            name="binding_states",
+            policy=AttractionPolicy.BINDING_BASED,
+            priority=PolicyPriority.MEDIUM,
+            binding_validator=create_binding_validator({
+                AdhesiveType.GLUE: {
+                    ResourceState.IDLE,
+                    ResourceState.SHARED,
+                    ResourceState.ACTIVE
+                },
+                AdhesiveType.VELCRO: {
+                    ResourceState.IDLE,
+                    ResourceState.SHARED
+                },
+                AdhesiveType.TAPE: {
+                    ResourceState.IDLE,
+                    ResourceState.SHARED
+                }
+            }),
+            description="Validate states for binding types"
         )
     ],
-    description="Default rules for resource attraction"
+    description="Default rules for resource interaction"
 )

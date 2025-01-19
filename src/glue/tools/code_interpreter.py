@@ -14,7 +14,7 @@ from pathlib import Path
 from .base import ToolConfig, ToolPermission
 from .magnetic import MagneticTool, ResourceStateException
 from ..magnetic.field import ResourceState
-from ..core.binding import AdhesiveType
+from ..core.types import AdhesiveType
 from ..core.context import ContextState, InteractionType, ComplexityLevel
 from ..core.registry import ResourceRegistry
 from ..core.state import StateManager

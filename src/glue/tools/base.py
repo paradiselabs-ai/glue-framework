@@ -69,6 +69,7 @@ class BaseTool(Resource, ABC):
         self.permissions = permissions or set()
         self._error_handlers: Dict[type, callable] = {}
         self._is_initialized = False
+        self._instance_data: Dict[str, Any] = {}
         
         # Magnetic configuration
         self.magnetic = magnetic
@@ -108,9 +109,45 @@ class BaseTool(Resource, ABC):
         finally:
             self._state = ResourceState.IDLE
 
-    async def initialize(self) -> None:
-        """Initialize tool resources"""
+    async def initialize(self, instance_data: Optional[Dict[str, Any]] = None) -> None:
+        """
+        Initialize tool resources
+        
+        Args:
+            instance_data: Optional instance-specific data for tool initialization
+        """
+        if instance_data:
+            self._instance_data.update(instance_data)
         self._is_initialized = True
+        
+    def create_instance(self) -> 'BaseTool':
+        """Create a new instance of this tool with shared configuration"""
+        instance = self.__class__(
+            name=self.name,
+            description=self.description,
+            config=self.config,
+            permissions=self.permissions,
+            magnetic=self.magnetic,
+            sticky=self.sticky,
+            shared_resources=self.shared_resources,
+            binding_type=self.binding_type
+        )
+        return instance
+        
+    def create_isolated_instance(self) -> 'BaseTool':
+        """Create an isolated instance with no shared data"""
+        instance = self.create_instance()
+        instance._instance_data = {}  # Empty instance data
+        return instance
+        
+    def format_result(self, result: Any) -> Dict[str, Any]:
+        """Format tool result for memory storage"""
+        return {
+            'tool': self.name,
+            'result': result,
+            'timestamp': datetime.now(),
+            'instance_data': self._instance_data.copy() if self.sticky else {}
+        }
 
     async def cleanup(self) -> None:
         """Cleanup tool resources"""

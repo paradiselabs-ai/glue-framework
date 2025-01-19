@@ -65,7 +65,7 @@ class CBM:
         Args:
             source: Source model name
             target: Target model name
-            binding_type: Type of binding (tape, velcro, glue, magnet)
+            binding_type: Type of binding (tape, velcro, glue)
             properties: Optional binding properties
         """
         # Convert string type to AdhesiveType
@@ -86,10 +86,6 @@ class CBM:
         elif adhesive_type == AdhesiveType.GLUE:
             strength = properties.get("strength", 1.0)
             config = BindingConfig.glue(source, target, strength)
-            
-        elif adhesive_type == AdhesiveType.MAGNET:
-            polarity = properties.get("polarity", "attract")
-            config = BindingConfig.magnet(source, target, polarity)
             
         # Add binding through orchestrator
         self.orchestrator.add_model(
@@ -210,12 +206,6 @@ class CBM:
                             b['source'],
                             b['target'],
                             b['properties'].get('strength', 1.0)
-                        )
-                    elif adhesive_type == AdhesiveType.MAGNET:
-                        config = BindingConfig.magnet(
-                            b['source'],
-                            b['target'],
-                            b['properties'].get('polarity', 'attract')
                         )
                     model_bindings.append(config)
             

@@ -1,9 +1,17 @@
 """GLUE Core Types"""
 
 from enum import Enum, auto
-from typing import Dict, Set, Optional, Any, List, Protocol, TYPE_CHECKING, Union
+from typing import Dict, Set, Optional, Any, List, Protocol, TYPE_CHECKING, Union, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+
+@dataclass
+class IntentAnalysis:
+    """Analysis of a prompt's intent and requirements"""
+    score: float  # How strongly this team/model should handle the prompt (0-1)
+    needed_tools: Set[str] = field(default_factory=set)  # Tools that might be needed
+    reasoning: str = ""  # Model's explanation of its analysis
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional context
 
 if TYPE_CHECKING:
     from .context import ContextState
@@ -65,6 +73,26 @@ class MagneticResource(Protocol):
     _context: Optional['ContextState']
     _attracted_to: Set['MagneticResource']
     _repelled_by: Set['MagneticResource']
+
+class InteractionPattern(Enum):
+    """Patterns for resource interaction"""
+    ATTRACT = "><"  # Bidirectional attraction
+    PUSH = "->"    # One-way push
+    PULL = "<-"    # One-way pull
+    REPEL = "<>"   # Repulsion
+
+class AdhesiveType(Enum):
+    """Types of adhesive bindings"""
+    TAPE = auto()    # Temporary binding with no persistence
+    VELCRO = auto()  # Flexible binding with partial persistence
+    GLUE = auto()    # Permanent binding with full persistence
+
+class BindingState(Enum):
+    """States a binding can be in"""
+    INACTIVE = auto()  # Not currently active
+    ACTIVE = auto()    # Currently active
+    DEGRADED = auto()  # Active but weakened
+    FAILED = auto()    # Failed and needs cleanup
 
 class ResourceState(Enum):
     """States a resource can be in"""

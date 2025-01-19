@@ -21,14 +21,11 @@ class SerpSearchProvider(SearchProvider):
     
     async def initialize(self) -> None:
         """Initialize aiohttp session"""
-        if not self._session:
-            self._session = aiohttp.ClientSession()
+        await super().initialize()
     
     async def cleanup(self) -> None:
         """Clean up aiohttp session"""
-        if self._session:
-            await self._session.close()
-            self._session = None
+        await super().cleanup()
     
     async def search(
         self,

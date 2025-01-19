@@ -493,18 +493,20 @@ model assistant {
         model = "openai/gpt-4"
         temperature = 0.7
     }
+    tools {
+        // Tool persistence based on binding type:
+        file_handler = velcro     // Keep state until detached
+        code_interpreter = tape   // Fresh state each use
+    }
 }
 
 tool file_handler {
-    config {
-        magnetic = true
-    }
+    // Tool persistence is determined by binding type in model config
 }
 
 tool code_interpreter {
     config {
-        magnetic = true
-        safe_mode = true
+        safe_mode = true  // Optional safety settings
     }
 }
 
@@ -535,6 +537,10 @@ model researcher {
         model = "openai/gpt-4"
         temperature = 0.7
     }
+    tools {
+        // Permanent tool binding - maintain state
+        web_search = glue     // Keep search history persistent
+    }
 }
 
 model analyst {
@@ -544,20 +550,20 @@ model analyst {
         model = "anthropic/claude-3.5-sonnet:beta"
         temperature = 0.2
     }
+    tools {
+        // Flexible tool binding - state persists until detached
+        file_handler = velcro  // Keep files until detached
+    }
 }
 
 tool web_search {
     provider = serp
     os.serp_api_key
-    config {
-        magnetic = true
-    }
 }
 
 tool file_handler {
-    config {
-        magnetic = true
-    }
+    // Each model gets its own instance
+    // Data persistence depends on binding type (glue/velcro/tape)
 }
 
 workflow {
@@ -591,26 +597,26 @@ model chat_assistant {
         model = "openai/gpt-4"
         temperature = 0.7
     }
+    tools {
+        // Tool persistence based on binding type:
+        web_search = glue         // Keep search history persistent
+        file_handler = velcro     // Keep files until detached
+        code_interpreter = tape   // Fresh state each use
+    }
 }
 
 tool web_search {
     provider = serp
     os.serp_api_key
-    config {
-        magnetic = true
-    }
 }
 
 tool file_handler {
-    config {
-        magnetic = true
-    }
+    // Tool state persistence is managed by model bindings
 }
 
 tool code_interpreter {
     config {
-        magnetic = true
-        safe_mode = true
+        safe_mode = true  // Optional safety settings
     }
 }
 
@@ -649,28 +655,27 @@ model assistant {
         model = "openai/gpt-4"
         temperature = 0.7
     }
+    tools {
+        // Tool persistence based on binding type:
+        web_search = glue         // Keep search history persistent
+        file_handler = velcro     // Keep files until detached
+        code_interpreter = tape   // Fresh state each use
+    }
 }
 
 # Built-in tools with configuration
 tool web_search {
     provider = serp
     os.serp_api_key
-    config {
-        magnetic = false ### like the sticky declaration, this is only needed if your tool is magnetic. Otherwise leave this out and the tool will only be able to 
-                        be used by the model it is configured in. Because this example only includes one model, the magnetic declaration is not needed ###
-    }
 }
 
 tool file_handler {
-    config {
-        magnetic = false
-    }
+    // Tool state persistence is managed by model bindings
 }
 
 tool code_interpreter {
     config {
-        magnetic = false
-        languages = ["python", "javascript"]
+        languages = ["python", "javascript"]  // Optional tool settings
     }
 }
 

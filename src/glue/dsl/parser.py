@@ -6,7 +6,7 @@ import re
 from typing import Dict, List, Any, Optional, Tuple, Set
 from dataclasses import dataclass, field
 from ..core.logger import get_logger
-from ..core.binding import AdhesiveType
+from ..core.types import AdhesiveType
 from .keywords import (
     get_keyword_type,
     PROVIDER_KEYWORDS,
@@ -39,10 +39,22 @@ class ToolConfig:
     config: Dict[str, Any]
 
 @dataclass
+class TeamConfig:
+    """Team Configuration"""
+    name: str
+    lead: Optional[str]  # Model name
+    members: List[str]  # Model names
+    tools: List[str]  # Tool names
+    sticky: bool = False
+    pull_fallback: bool = False  # Enable automatic pull when needed
+    auto_bind: bool = True  # Enable automatic tool binding
+
+@dataclass
 class WorkflowConfig:
     """Workflow Configuration"""
-    attractions: List[Tuple[str, str]]  # (source, target) pairs
-    repulsions: List[Tuple[str, str]]   # (source, target) pairs
+    teams: Dict[str, TeamConfig] = field(default_factory=dict)  # name -> config
+    attractions: List[Tuple[str, str]] = field(default_factory=list)  # (source, target) pairs
+    repulsions: List[Tuple[str, str]] = field(default_factory=list)  # (source, target) pairs
     chat: List[Tuple[str, str]] = field(default_factory=list)  # (model1, model2) pairs
     pulls: List[Tuple[str, str]] = field(default_factory=list)  # (target, source) pairs
 
@@ -102,7 +114,7 @@ class GlueParser:
                 self._parse_model(block_name, block_content)
             elif block_type == 'tool':
                 self._parse_tool(block_name, block_content)
-            elif block_type == 'workflow':
+            elif block_type in ['workflow', 'magnetize']:
                 self._parse_workflow(block_content)
         
         # Create app with parsed components
@@ -268,10 +280,8 @@ class GlueParser:
                                         tools[tool_name] = AdhesiveType.VELCRO
                                     elif strength.lower() == 'glue':
                                         tools[tool_name] = AdhesiveType.GLUE
-                                    elif strength.lower() == 'magnet':
-                                        tools[tool_name] = AdhesiveType.MAGNET
                                     else:
-                                        raise ValueError(f"Invalid binding type: {strength}")
+                                        raise ValueError(f"Invalid binding type: {strength} - must be tape, velcro, or glue")
                                 except ValueError:
                                     self.logger.warning(f"Invalid binding strength: {strength}")
                     else:
@@ -348,10 +358,54 @@ class GlueParser:
         """Parse workflow block"""
         self.logger.debug(f"Parsing workflow block:\n{content}")
         
-        attractions = []  # (source, target, binding_strength)
+        teams = {}
+        attractions = []
         repulsions = []
         chat_pairs = []
         pull_pairs = []
+        
+        # First parse team blocks
+        nested_blocks = self._extract_blocks(content)
+        for block_type, block_content in nested_blocks:
+            if block_type.startswith("team"):
+                # Get team name
+                parts = block_type.split(None, 1)
+                team_name = parts[1] if len(parts) > 1 else "default"
+                
+                # Parse team config
+                lead = None
+                members = []
+                tools = []
+                sticky = False
+                pull_fallback = False
+                auto_bind = True
+                
+                for line in block_content.split('\n'):
+                    line = line.strip()
+                    if '=' in line:
+                        key, value = [x.strip() for x in line.split('=', 1)]
+                        if key == 'lead':
+                            lead = value.strip('"')
+                        elif key == 'members':
+                            members = [m.strip() for m in value.strip('[]').split(',')]
+                        elif key == 'tools':
+                            tools = [t.strip() for t in value.strip('[]').split(',')]
+                        elif key == 'sticky':
+                            sticky = self._parse_value(value)
+                        elif key == 'pull_fallback':
+                            pull_fallback = self._parse_value(value)
+                        elif key == 'auto_bind':
+                            auto_bind = self._parse_value(value)
+                            
+                teams[team_name] = TeamConfig(
+                    name=team_name,
+                    lead=lead,
+                    members=members,
+                    tools=tools,
+                    sticky=sticky,
+                    pull_fallback=pull_fallback,
+                    auto_bind=auto_bind
+                )
         
         # Parse lines for direct attractions first
         for line in content.split('\n'):
@@ -371,8 +425,6 @@ class GlueParser:
                                 binding = AdhesiveType.VELCRO
                             elif strength == 'glue':
                                 binding = AdhesiveType.GLUE
-                            elif strength == 'magnet':
-                                binding = AdhesiveType.MAGNET
                             else:
                                 raise ValueError(f"Invalid binding type: {strength}")
                             attractions.append((parts[0], parts[1]))
@@ -435,6 +487,7 @@ class GlueParser:
                             repulsions.append((parts[0], parts[1]))
         
         self.workflow = WorkflowConfig(
+            teams=teams,
             attractions=attractions,
             repulsions=repulsions,
             chat=chat_pairs,

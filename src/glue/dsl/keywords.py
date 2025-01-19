@@ -78,6 +78,7 @@ CONFIG_KEYWORDS = {
 OPERATION_KEYWORDS = {
     # Workflow Operations
     'workflow': 'workflow',
+    'magnetize': 'magnetize',
     'attract': 'attract',
     'repel': 'repel',
     

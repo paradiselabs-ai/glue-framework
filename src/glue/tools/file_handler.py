@@ -11,7 +11,7 @@ import asyncio
 from pathlib import Path
 from .base import ToolConfig, ToolPermission
 from .magnetic import MagneticTool, ResourceStateException
-from ..core.binding import AdhesiveType
+from ..core.types import AdhesiveType
 from ..core.logger import get_logger
 from ..core.registry import ResourceRegistry
 from ..core.state import StateManager

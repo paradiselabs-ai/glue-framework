@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Set, Any, Type, Callable, TYPE_CHECKING
 from datetime import datetime
 
 from .types import ResourceState, ResourceMetadata
-from .binding import AdhesiveType
+from .types import AdhesiveType
 from .tool_binding import ToolBinding
 from ..magnetic.rules import RuleSet, AttractionRule, PolicyPriority, AttractionPolicy
 
@@ -202,8 +202,6 @@ class Resource:
             binding = ToolBinding.velcro()
         elif binding_type == AdhesiveType.GLUE:
             binding = ToolBinding.glue()
-        elif binding_type == AdhesiveType.MAGNET:
-            binding = ToolBinding.magnet()
         else:
             raise ValueError(f"Invalid binding type: {binding_type}")
             
