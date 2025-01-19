@@ -8,7 +8,7 @@ from typing import Any, Dict, Set, List, Tuple, Optional, Type
 from pathlib import Path
 from copy import deepcopy
 from .parser import GlueApp, ModelConfig, ToolConfig
-from ..core.binding import AdhesiveType
+from ..core.types import AdhesiveType
 from ..core.workspace import workspace_context
 from ..tools.base import BaseTool as create_tool
 from ..providers import (

@@ -3,7 +3,7 @@
 from enum import Enum, auto
 from typing import Dict, Set, Optional, Any, List, Protocol, TYPE_CHECKING, Union, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 
 @dataclass
 class IntentAnalysis:
@@ -87,6 +87,13 @@ class AdhesiveType(Enum):
     VELCRO = auto()  # Flexible binding with partial persistence
     GLUE = auto()    # Permanent binding with full persistence
 
+class AdhesiveState(Enum):
+    """States an adhesive can be in"""
+    INACTIVE = auto()  # Not yet activated
+    ACTIVE = auto()    # Ready for use
+    DEGRADED = auto()  # Weakened but usable
+    EXPIRED = auto()   # No longer usable
+
 class BindingState(Enum):
     """States a binding can be in"""
     INACTIVE = auto()  # Not currently active
@@ -112,6 +119,18 @@ class ResourceMetadata:
     tags: Set[str] = field(default_factory=set)
     category: str = "default"
     properties: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class AdhesiveProperties:
+    """Properties of an adhesive binding"""
+    strength: float  # 0.0 to 1.0
+    durability: float  # 0.0 to 1.0
+    flexibility: float  # 0.0 to 1.0
+    duration: Optional[timedelta] = None  # For temporary bindings
+    is_reusable: bool = False
+    max_uses: Optional[int] = None
+    allowed_patterns: Set[InteractionPattern] = field(default_factory=set)
+    resource_pool: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class TransitionLog:

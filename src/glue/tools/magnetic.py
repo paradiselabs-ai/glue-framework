@@ -7,7 +7,7 @@ from .base import BaseTool
 from ..magnetic.field import MagneticResource, ResourceState
 from ..core.registry import ResourceRegistry
 from ..core.context import InteractionType
-from ..core.adhesive import AdhesiveType
+from ..core.types import AdhesiveType
 from ..magnetic.rules import InteractionPattern
 
 class ResourceLockedException(Exception):

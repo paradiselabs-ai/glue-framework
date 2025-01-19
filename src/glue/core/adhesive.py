@@ -1,34 +1,12 @@
 # src/glue/core/adhesive.py
 from typing import Any, Optional, Dict, Set
-from enum import Enum, auto
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from .patterns import InteractionPattern
-
-class AdhesiveType(Enum):
-    """Types of bindings available"""
-    GLUE = "glue"     # Permanent binding with full persistence
-    VELCRO = "velcro" # Flexible binding with partial persistence
-    TAPE = "tape"     # Temporary binding with no persistence
-
-class AdhesiveState(Enum):
-    """States an adhesive can be in"""
-    INACTIVE = auto()  # Not yet activated
-    ACTIVE = auto()    # Ready for use
-    DEGRADED = auto()  # Weakened but usable
-    EXPIRED = auto()   # No longer usable
-
-@dataclass
-class AdhesiveProperties:
-    """Properties of an adhesive binding"""
-    strength: float  # 0.0 to 1.0
-    durability: float  # 0.0 to 1.0
-    flexibility: float  # 0.0 to 1.0
-    duration: Optional[timedelta] = None  # For temporary bindings
-    is_reusable: bool = False
-    max_uses: Optional[int] = None
-    allowed_patterns: Set[InteractionPattern] = field(default_factory=set)
-    resource_pool: Dict[str, Any] = field(default_factory=dict)
+from .types import (
+    AdhesiveType,
+    AdhesiveState,
+    AdhesiveProperties,
+    InteractionPattern
+)
 
 class Adhesive:
     """
