@@ -43,9 +43,12 @@ class ConversationManager:
     - Resource-aware computations
     """
     
-    # Keep existing TOOL_PATTERNS
+    # Tool usage patterns
     TOOL_PATTERNS = {
-        # ... (keep existing patterns)
+        r'<tool>(.*?)</tool>': lambda m: f"Use the {m.group(1)} tool",
+        r'<input>(.*?)</input>': lambda m: f"with input: {m.group(1)}",
+        r'<think>(.*?)</think>': lambda m: f"Reasoning: {m.group(1)}",
+        r'<error>(.*?)</error>': lambda m: f"Error: {m.group(1)}"
     }
     
     # Magnetic field patterns
