@@ -27,7 +27,9 @@ class OpenRouterProvider(BaseProvider, Resource):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/paradiseLabs-ai/glue-framework"
+            "HTTP-Referer": "https://github.com/paradiseLabs-ai/glue-framework",
+            "Accept": "application/json",
+            "X-Title": "GLUE Framework"
         }
         return headers
 
@@ -46,19 +48,28 @@ class OpenRouterProvider(BaseProvider, Resource):
         # Update system prompt with tool info
         if self._tools and self.messages and self.messages[0]["role"] == "system":
             system_prompt = self.messages[0]["content"]
-            tool_info = "\n\nDo not assume you lack access to tools. You can check what tools are available and determine if you need them. Here are your available tools:\n"
+            tool_info = "\n\nYou have access to the following tools based on your role:\n"
             for name, tool in self._tools.items():
-                tool_info += f"- {name}: {tool.description}\n"
+                binding_type = self.tool_bindings.get(self.name, {}).get(name, "unknown")
+                persistence = {
+                    "glue": "(permanent access)",
+                    "velcro": "(flexible access)",
+                    "tape": "(temporary access)",
+                    "unknown": ""
+                }
+                tool_info += f"- {name}: {tool.description} {persistence.get(binding_type, '')}\n"
             
             tool_info += """
-When you need to use a tool:
-1. Think through what you need to do
-2. Use the tool in this format:
+When using tools:
+1. Think about what information you need
+2. Check if you have the right tool access
+3. Use this format:
 <think>your reasoning</think>
 <tool>tool_name</tool>
 <input>your input</input>
 
-Always wait for tool output before continuing."""
+Always wait for tool output before continuing.
+Remember: Your tool access may be permanent, flexible, or temporary."""
             self.messages[0]["content"] = system_prompt + tool_info
 
     def __init__(
@@ -110,15 +121,28 @@ Always wait for tool output before continuing."""
         self._state = ResourceState.IDLE
         
         # Initialize system prompt
-        if system_prompt:
-            self.logger.debug(f"Initializing with system prompt: {system_prompt}")
-            self.messages.append({
-                "role": "system",
-                "content": system_prompt
-            })
-            
+        default_prompt = (
+            "You are a helpful AI assistant. "
+            "You may work independently or as part of a team. "
+            "You have access to specific tools based on your assigned capabilities. "
+            "Always think carefully about what tools you need and how to use them effectively."
+        )
+        
+        system_prompt = system_prompt or default_prompt
+        self.logger.debug(f"Initializing with system prompt: {system_prompt}")
+        self.messages.append({
+            "role": "system",
+            "content": system_prompt
+        })
+        
         # Configure tools (will update system prompt if needed)
         self._configure_tools()
+        
+        # Log final configuration
+        self.logger.debug(f"Provider initialized: {self.name}")
+        self.logger.debug(f"Model: {self.model_id}")
+        self.logger.debug(f"Temperature: {self.config.temperature}")
+        self.logger.debug(f"Max tokens: {self.config.max_tokens}")
     
     async def _prepare_request(self, prompt: str) -> Dict[str, Any]:
         """Prepare request for OpenRouter API"""
@@ -191,8 +215,32 @@ Always wait for tool output before continuing."""
         try:
             self.logger.debug(f"Processing response:\n{json.dumps(response, indent=2)}")
             
-            assistant_message = response["choices"][0]["message"]
-            content = assistant_message["content"]
+            if "error" in response:
+                error_msg = response["error"].get("message", "Unknown API error")
+                self.logger.error(f"OpenRouter API error: {error_msg}")
+                return f"Error: {error_msg}"
+                
+            if "choices" not in response:
+                self.logger.error("No choices in response")
+                self.logger.error(f"Full response: {json.dumps(response, indent=2)}")
+                return "Error: Invalid response format"
+                
+            if not response["choices"]:
+                self.logger.error("Empty choices array")
+                self.logger.error(f"Full response: {json.dumps(response, indent=2)}")
+                return "Error: No completion choices"
+                
+            assistant_message = response["choices"][0].get("message")
+            if not assistant_message:
+                self.logger.error("No message in first choice")
+                self.logger.error(f"First choice: {json.dumps(response['choices'][0], indent=2)}")
+                return "Error: Invalid message format"
+                
+            content = assistant_message.get("content")
+            if not content:
+                self.logger.error("Empty content in message")
+                self.logger.error(f"Message: {json.dumps(assistant_message, indent=2)}")
+                return "Error: Empty response content"
             
             # Look for tool usage
             if "<tool>" in content and "<input>" in content and hasattr(self, "_tools"):
@@ -256,25 +304,54 @@ Always wait for tool output before continuing."""
             self.logger.error(f"Response structure: {json.dumps(response, indent=2)}")
             raise ValueError(f"Unexpected response format: {response}")
     
+    async def _handle_error(self, error: Dict[str, Any]) -> None:
+        """Handle OpenRouter API errors"""
+        error_msg = error.get("error", {}).get("message", "Unknown API error")
+        error_type = error.get("error", {}).get("type", "unknown")
+        
+        if "rate limit" in error_msg.lower():
+            raise RuntimeError(f"Rate limit exceeded: {error_msg}")
+        elif "invalid api key" in error_msg.lower():
+            raise RuntimeError(f"Authentication error: {error_msg}")
+        elif "model" in error_msg.lower():
+            raise RuntimeError(f"Model error: {error_msg}")
+        else:
+            raise RuntimeError(f"API error ({error_type}): {error_msg}")
+    
     async def _make_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
         """Make request to OpenRouter API"""
         headers = self._get_headers()
         
-        async with aiohttp.ClientSession() as session:
-            self.logger.debug(f"Making request to: {self.base_url}/chat/completions")
-            async with session.post(
-                f"{self.base_url}/chat/completions",
-                headers=headers,
-                json=request_data
-            ) as response:
-                result = await response.json()
+        try:
+            async with aiohttp.ClientSession() as session:
+                self.logger.debug(f"Making request to: {self.base_url}/chat/completions")
+                self.logger.debug(f"Request data: {json.dumps(request_data, indent=2)}")
                 
-                if response.status != 200:
-                    self.logger.error(f"API Error (Status {response.status}):")
-                    self.logger.error(json.dumps(result, indent=2))
-                    await self._handle_error(result)
-                
-                return result
+                async with session.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=headers,
+                    json=request_data
+                ) as response:
+                    result = await response.json()
+                    
+                    if response.status != 200:
+                        self.logger.error(f"API Error (Status {response.status}):")
+                        self.logger.error(f"Response headers: {dict(response.headers)}")
+                        self.logger.error(f"Response body: {json.dumps(result, indent=2)}")
+                        self.logger.error(f"Request data: {json.dumps(request_data, indent=2)}")
+                        await self._handle_error(result)
+                    
+                    self.logger.debug(f"API Response: {json.dumps(result, indent=2)}")
+                    return result
+                    
+        except aiohttp.ClientError as e:
+            self.logger.error(f"Network error: {str(e)}")
+            self.logger.error(f"Request data: {json.dumps(request_data, indent=2)}")
+            raise RuntimeError(f"Failed to connect to OpenRouter API: {str(e)}")
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Invalid JSON response: {str(e)}")
+            self.logger.error(f"Request data: {json.dumps(request_data, indent=2)}")
+            raise RuntimeError("Invalid response format from OpenRouter API")
     
     async def generate(self, prompt: str) -> str:
         """Generate a response using OpenRouter API"""

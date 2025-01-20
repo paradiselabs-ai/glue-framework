@@ -419,7 +419,12 @@ class GlueExecutor:
                     # Interactive prompt loop
                     while True:
                         print("\nprompt:", flush=True)
-                        user_input = await asyncio.get_event_loop().run_in_executor(None, input)
+                        # Read input with proper buffering
+                        loop = asyncio.get_event_loop()
+                        user_input = await loop.run_in_executor(
+                            None,
+                            lambda: input().strip()  # Strip whitespace
+                        )
                         
                         if user_input.lower() in ['exit', 'quit']:
                             break

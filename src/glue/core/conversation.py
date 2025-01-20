@@ -420,6 +420,22 @@ class ConversationManager:
                 optimized_tools = self.tool_optimizer.optimize_chain(tool_names, context)
                 self.logger.debug(f"Optimized tools: {optimized_tools}")
             
+            # Clean and normalize input, removing extra spaces and control characters
+            cleaned_input = ' '.join(
+                ''.join(c for c in user_input if c.isprintable() or c.isspace())
+                .split()
+            )
+            
+            # Skip processing if input is too garbled
+            if len(cleaned_input.split()) < 2:
+                return "Please provide a clearer input."
+                
+            # Check if input is mostly gibberish
+            valid_words = sum(1 for word in cleaned_input.split() 
+                            if len(word) > 1 and not all(c.isdigit() for c in word))
+            if valid_words < len(cleaned_input.split()) / 2:
+                return "Your input appears to be unclear. Please retype your request."
+            
             # Process through chain with cleaned input
             current_input = cleaned_input
             responses = []
