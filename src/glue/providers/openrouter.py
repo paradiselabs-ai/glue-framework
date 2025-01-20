@@ -22,6 +22,45 @@ class OpenRouterProvider(BaseProvider, Resource):
     - Resource lifecycle
     """
     
+    def _get_headers(self) -> Dict[str, str]:
+        """Get headers for API request"""
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/paradiseLabs-ai/glue-framework"
+        }
+        return headers
+
+    def _configure_tools(self) -> None:
+        """Configure tools and update system prompt"""
+        if not hasattr(self, "_tools"):
+            self._tools = {}
+            
+        # If inheriting from parent, copy tools and role
+        if hasattr(self, "_parent"):
+            parent = self._parent
+            self._tools = parent._tools.copy()
+            self.role = parent.role
+            self.config.system_prompt = parent.config.system_prompt
+            
+        # Update system prompt with tool info
+        if self._tools and self.messages and self.messages[0]["role"] == "system":
+            system_prompt = self.messages[0]["content"]
+            tool_info = "\n\nDo not assume you lack access to tools. You can check what tools are available and determine if you need them. Here are your available tools:\n"
+            for name, tool in self._tools.items():
+                tool_info += f"- {name}: {tool.description}\n"
+            
+            tool_info += """
+When you need to use a tool:
+1. Think through what you need to do
+2. Use the tool in this format:
+<think>your reasoning</think>
+<tool>tool_name</tool>
+<input>your input</input>
+
+Always wait for tool output before continuing."""
+            self.messages[0]["content"] = system_prompt + tool_info
+
     def __init__(
         self,
         api_key: Optional[str] = None,
@@ -66,37 +105,23 @@ class OpenRouterProvider(BaseProvider, Resource):
         
         # Initialize conversation history
         self.messages: List[Dict[str, str]] = []
+        
+        # Set initial state to IDLE
+        self._state = ResourceState.IDLE
+        
+        # Initialize system prompt
         if system_prompt:
             self.logger.debug(f"Initializing with system prompt: {system_prompt}")
             self.messages.append({
                 "role": "system",
                 "content": system_prompt
             })
+            
+        # Configure tools (will update system prompt if needed)
+        self._configure_tools()
     
     async def _prepare_request(self, prompt: str) -> Dict[str, Any]:
         """Prepare request for OpenRouter API"""
-        # First, enhance the system prompt with tool information if not already done
-        if self.messages and self.messages[0]["role"] == "system":
-            system_prompt = self.messages[0]["content"]
-            if "Available tools:" not in system_prompt and hasattr(self, "_tools"):
-                # Add tool awareness in Anthropic style
-                tool_info = "\n\nDo not assume you lack access to tools. You can check what tools are available and determine if you need them. Here are your available tools:\n"
-                for name, tool in self._tools.items():
-                    tool_info += f"- {name}: {tool.description}\n"
-                
-                # Add natural tool usage hint
-                tool_info += """
-When you need to use a tool:
-1. Think through what you need to do
-2. Use the tool in this format:
-<think>your reasoning</think>
-<tool>tool_name</tool>
-<input>your input</input>
-
-Always wait for tool output before continuing."""
-                # Update system prompt
-                self.messages[0]["content"] = system_prompt + tool_info
-        
         # Add user prompt to conversation
         self.messages.append({
             "role": "user",
@@ -181,22 +206,14 @@ Always wait for tool output before continuing."""
                     tool_input = input_match.group(1).strip()
                     thought = thought_match.group(1).strip() if thought_match else ""
                     
-                    if tool_name in self._tools:
-                        # Execute tool
-                        tool = self._tools[tool_name]
-                        result = await tool.execute(tool_input)
-                        
-                        # Add tool interaction to conversation
-                        self.messages.append({
-                            "role": "assistant",
-                            "content": f"{thought}\n\nUsing {tool_name}...\nInput: {tool_input}"
-                        })
+                    # Handle unknown tools
+                    if tool_name not in self._tools:
+                        error_msg = f"Tool '{tool_name}' is not available. Available tools: {', '.join(self._tools.keys())}"
                         self.messages.append({
                             "role": "system",
-                            "content": f"Tool output: {result}"
+                            "content": f"Error: {error_msg}"
                         })
-                        
-                        # Let model process the result
+                        # Let model try again
                         request_data = {
                             "model": self.model_id,
                             "messages": self.messages,
@@ -205,6 +222,30 @@ Always wait for tool output before continuing."""
                         }
                         response = await self._make_request(request_data)
                         return await self._process_response(response)
+                    
+                    # Execute valid tool
+                    tool = self._tools[tool_name]
+                    result = await tool.execute(tool_input)
+                    
+                    # Add tool interaction to conversation
+                    self.messages.append({
+                        "role": "assistant",
+                        "content": f"{thought}\n\nUsing {tool_name}...\nInput: {tool_input}"
+                    })
+                    self.messages.append({
+                        "role": "system",
+                        "content": f"Tool output: {result}"
+                    })
+                    
+                    # Let model process the result
+                    request_data = {
+                        "model": self.model_id,
+                        "messages": self.messages,
+                        "temperature": self.config.temperature,
+                        "max_tokens": self.config.max_tokens
+                    }
+                    response = await self._make_request(request_data)
+                    return await self._process_response(response)
             
             # No tool usage, treat as regular response
             self.messages.append(assistant_message)
@@ -214,63 +255,62 @@ Always wait for tool output before continuing."""
             self.logger.error(f"Error processing response: {str(e)}")
             self.logger.error(f"Response structure: {json.dumps(response, indent=2)}")
             raise ValueError(f"Unexpected response format: {response}")
-        except KeyError as e:
-            self.logger.error(f"Error processing response: {str(e)}")
-            self.logger.error(f"Response structure: {json.dumps(response, indent=2)}")
-            raise ValueError(f"Unexpected response format: {response}")
     
     async def _make_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Make request to OpenRouter API with state tracking"""
-        # Allow generation in SHARED state for models
-        if (self.state not in {ResourceState.IDLE, ResourceState.SHARED} and 
-            self.metadata.category != "tool"):
-            raise RuntimeError(f"Provider {self.name} is busy (state: {self.state.name})")
+        """Make request to OpenRouter API"""
+        headers = self._get_headers()
         
-        # Temporarily set state to ACTIVE for generation
-        original_state = self._state
-        self._state = ResourceState.ACTIVE
-        try:
-            headers = self._get_headers()
-            
-            async with aiohttp.ClientSession() as session:
-                self.logger.debug(f"Making request to: {self.base_url}/chat/completions")
-                async with session.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=headers,
-                    json=request_data
-                ) as response:
-                    result = await response.json()
-                    
-                    if response.status != 200:
-                        self.logger.error(f"API Error (Status {response.status}):")
-                        self.logger.error(json.dumps(result, indent=2))
-                        await self._handle_error(result)
-                    
-                    return result
-        except aiohttp.ClientError as e:
-            self.logger.error(f"Network error: {str(e)}")
-            raise
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Error decoding response: {str(e)}")
-            raise
-        finally:
-            # Restore original state after generation
-            self._state = original_state
+        async with aiohttp.ClientSession() as session:
+            self.logger.debug(f"Making request to: {self.base_url}/chat/completions")
+            async with session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=request_data
+            ) as response:
+                result = await response.json()
+                
+                if response.status != 200:
+                    self.logger.error(f"API Error (Status {response.status}):")
+                    self.logger.error(json.dumps(result, indent=2))
+                    await self._handle_error(result)
+                
+                return result
     
     async def generate(self, prompt: str) -> str:
         """Generate a response using OpenRouter API"""
-        request_data = await self._prepare_request(prompt)
-        response = await self._make_request(request_data)
-        return await self._process_response(response)
-    
-    def _get_headers(self) -> Dict[str, str]:
-        """Get headers for API request"""
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/paradiseLabs-ai/glue"
-        }
-        return headers
+        # Check state
+        if (self.state not in {ResourceState.IDLE, ResourceState.ACTIVE, ResourceState.SHARED} and 
+            self.metadata.category != "tool"):
+            # Try fallback if available
+            if hasattr(self, "_parent"):
+                self.logger.info(f"Model {self.name} busy, attempting fallback...")
+                fallback = OpenRouterProvider(
+                    api_key=self.api_key,
+                    model=self.model_id,
+                    system_prompt=self.config.system_prompt,
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                    name=f"{self.name}_fallback"
+                )
+                # Set parent for tool and role inheritance
+                fallback._parent = self
+                # Configure tools and update prompt
+                fallback._configure_tools()
+                return await fallback.generate(prompt)
+            raise RuntimeError(f"Provider {self.name} is busy (state: {self.state.name})")
+        
+        # Transition to ACTIVE for generation
+        if self.state == ResourceState.IDLE:
+            self._state = ResourceState.ACTIVE
+        
+        try:
+            request_data = await self._prepare_request(prompt)
+            response = await self._make_request(request_data)
+            return await self._process_response(response)
+        finally:
+            # Return to IDLE if we were IDLE before
+            if self._state == ResourceState.ACTIVE:
+                self._state = ResourceState.IDLE
     
     def clear_history(self) -> None:
         """Clear conversation history"""
@@ -280,6 +320,8 @@ Always wait for tool output before continuing."""
                 "role": "system",
                 "content": self.config.system_prompt
             })
+            # Reconfigure tools to update prompt
+            self._configure_tools()
     
     async def cleanup(self) -> None:
         """Cleanup provider resources"""

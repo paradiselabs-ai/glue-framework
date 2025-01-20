@@ -46,7 +46,7 @@ class TeamConfig:
     members: List[str]  # Model names
     tools: List[str]  # Tool names
     sticky: bool = False
-    pull_fallback: bool = False  # Enable automatic pull when needed
+    is_pull_team: bool = False  # Whether this team is designated as the pull team
     auto_bind: bool = True  # Enable automatic tool binding
 
 @dataclass
@@ -442,8 +442,14 @@ class GlueParser:
             elif "<-" in line:
                 parts = [p.strip() for p in line.split("<-")]
                 if len(parts) == 2:
-                    # Note: parts[0] is target, parts[1] is source
-                    pull_pairs.append((parts[0], parts[1]))
+                    target, source = parts[0].strip(), parts[1].strip()
+                    if source.lower() == "pull":
+                        # Simply mark the team as pull team
+                        if target in teams:
+                            teams[target].is_pull_team = True
+                    else:
+                        # Regular pull between specific teams
+                        pull_pairs.append((target, source))
             elif "<-->" in line:
                 parts = [p.strip() for p in line.split("<-->")]
                 if len(parts) == 2:

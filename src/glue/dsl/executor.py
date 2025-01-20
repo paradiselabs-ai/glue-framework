@@ -257,16 +257,24 @@ class GlueExecutor:
         
         self.logger.info("\nSetting up workflow...")
         
-        # First setup teams
+        # First create all team fields from explicit configs
+        teams = {}
         for team_name, team_config in self.app.workflow.teams.items():
-            self.logger.info(f"\nSetting up team: {team_name}")
-            
-            # Create team field with config
-            team_field = field.create_child_field(
+            teams[team_name] = field.create_child_field(
+                name=team_name,
+                auto_bind=team_config.auto_bind,
+                is_pull_team=team_config.is_pull_team
+            )
+        
+        # Then setup explicit team configs
+        for team_name, team_config in self.app.workflow.teams.items():
+            # Get or create team field
+            team_field = teams.get(team_name) or field.create_child_field(
                 name=team_name,
                 pull_fallback=team_config.pull_fallback,
                 auto_bind=team_config.auto_bind
             )
+            teams[team_name] = team_field
             
             # Add lead if specified
             if team_config.lead and team_config.lead in self.models:
@@ -321,19 +329,32 @@ class GlueExecutor:
             else:
                 self.logger.warning(f"Could not find teams for repulsion: {source} <> {target}")
                 
-        # Setup pull fallbacks
+        # Setup pull teams and fallbacks
         for target, source in self.app.workflow.pulls:
-            self.logger.info(f"Setting up pull fallback: {target} <- {source}")
+            self.logger.info(f"Setting up pull: {target} <- {source}")
             
-            # Get team fields
-            target_field = field.get_child_field(target)
-            source_field = field.get_child_field(source)
-            
-            if target_field and source_field:
-                # Enable pull from source to target
-                await target_field.enable_pull(source_field)
+            # Handle special "pull" keyword
+            if source.lower() == "pull":
+                # Get or create target team field
+                target_field = teams.get(target)
+                if not target_field:
+                    target_field = field.create_child_field(
+                        name=target,
+                        is_pull_team=True  # Mark as pull team
+                    )
+                    teams[target] = target_field
+                else:
+                    # Update existing field to be pull team
+                    target_field.is_pull_team = True
+                self.logger.info(f"Marked {target} as pull team")
             else:
-                self.logger.warning(f"Could not find teams for pull: {target} <- {source}")
+                # Regular pull between teams
+                target_field = teams.get(target)
+                source_field = teams.get(source)
+                
+                if target_field and source_field:
+                    # Enable field-level pull
+                    await target_field.enable_field_pull(source_field)
 
     def _get_binding_patterns(self, field: MagneticField) -> Dict[str, Any]:
         """Get binding patterns from workflow"""

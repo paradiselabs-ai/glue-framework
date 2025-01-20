@@ -1,5 +1,3 @@
-# src/glue/core/context.py
-
 """GLUE Context Analysis System"""
 
 import re
@@ -52,6 +50,8 @@ class ContextState:
     requires_memory: bool
     requires_persistence: bool
     confidence: float  # 0.0 to 1.0
+    requires_pull: bool = False  # Whether this interaction might need pulling
+    pull_confidence: float = 0.0  # Confidence in pull requirement
 
 class ContextAnalyzer:
     """Analyzes user input to determine context and requirements"""
@@ -105,6 +105,23 @@ class ContextAnalyzer:
         r"(?i)how are you": 0.9,
         r"(?i)nice to": 0.8,
         r"(?i)good (?:morning|afternoon|evening)": 0.9
+    }
+    
+    # Patterns indicating pull needs
+    PULL_PATTERNS = {
+        # Uncertainty indicators
+        r"(?i)(?:not sure|uncertain|maybe|possibly)": 0.7,
+        r"(?i)(?:could|might|may) (?:need|require|want)": 0.6,
+        r"(?i)(?:help|assistance) (?:from|with)": 0.7,
+        r"(?i)(?:difficult|complex|challenging)": 0.6,
+        r"(?i)(?:don't|do not|cant|cannot) (?:know|understand|figure)": 0.8,
+        r"(?i)need more (?:information|details|context)": 0.7,
+        
+        # Explicit pull requests
+        r"(?i)(?:get|pull) (?:from|information)": 0.9,
+        r"(?i)(?:ask|consult) (?:other|another)": 0.8,
+        r"(?i)(?:check|verify) with": 0.8,
+        r"(?i)need (?:input|feedback) from": 0.8
     }
     
     # Tool requirement patterns (expanded)
@@ -170,11 +187,17 @@ class ContextAnalyzer:
         Returns:
             ContextState object representing the analysis results
         """
-        # First check for research requirements
+        # First check for research and pull requirements
         requires_research = self._requires_research(input_text)
+        requires_pull, pull_confidence = self._requires_pull(input_text)
         
         # Determine interaction type and confidence
-        interaction_type, confidence = self._determine_type(input_text, requires_research)
+        interaction_type, confidence = self._determine_type(
+            input_text,
+            requires_research=requires_research,
+            requires_pull=requires_pull,
+            pull_confidence=pull_confidence
+        )
         
         # Determine complexity
         complexity = self._assess_complexity(input_text)
@@ -201,6 +224,15 @@ class ContextAnalyzer:
                 # Increase complexity for research tasks
                 if complexity == ComplexityLevel.SIMPLE:
                     complexity = ComplexityLevel.MODERATE
+            
+            # Adjust for pull context
+            if requires_pull:
+                # Complex tasks are more likely to need pull
+                if complexity >= ComplexityLevel.MODERATE:
+                    pull_confidence = max(pull_confidence, 0.7)
+                # Research tasks might need pull for completeness
+                if requires_research:
+                    pull_confidence = max(pull_confidence, 0.6)
         
         # Create context state
         state = ContextState(
@@ -210,7 +242,9 @@ class ContextAnalyzer:
             requires_research=requires_research,
             requires_memory=requires_memory,
             requires_persistence=requires_persistence,
-            confidence=confidence
+            confidence=confidence,
+            requires_pull=requires_pull,
+            pull_confidence=pull_confidence
         )
         
         # Update history
@@ -218,31 +252,84 @@ class ContextAnalyzer:
         
         return state
     
-    def _determine_type(self, text: str, requires_research: bool) -> tuple[InteractionType, float]:
+    def _determine_type(
+        self,
+        text: str,
+        requires_research: bool,
+        requires_pull: bool,
+        pull_confidence: float
+    ) -> tuple[InteractionType, float]:
         """Determine the type of interaction and confidence level"""
+        text_lower = text.lower()
+        
         # Simple greeting check (only obvious greetings)
         if re.match(r"^(?:hi|hello|hey|thanks?|thank you)(?:\s.*)?$", text, re.I):
             return InteractionType.CHAT, 0.9
             
+        # Check for pull requirements first (highest priority)
+        if requires_pull and pull_confidence > 0.7:
+            return InteractionType.PULL, pull_confidence
+            
         # Information seeking check
-        if any(word in text.lower() for word in [
+        if any(word in text_lower for word in [
             "what", "how", "why", "when", "where", "who",
             "find", "search", "look up", "tell me about"
         ]):
+            # If high uncertainty or complexity, might need pull
+            if requires_pull and pull_confidence > 0.6:
+                return InteractionType.PULL, pull_confidence
             return InteractionType.RESEARCH, 0.8
             
         # Task execution check
-        if any(word in text.lower() for word in [
+        if any(word in text_lower for word in [
             "write", "create", "make", "generate", "run", "execute"
         ]):
+            # Complex tasks might need pull
+            if requires_pull and pull_confidence > 0.6:
+                return InteractionType.PULL, pull_confidence
             return InteractionType.TASK, 0.8
             
         # Default to research for any other question-like input
         if "?" in text or requires_research:
+            # Questions with uncertainty might need pull
+            if requires_pull and pull_confidence > 0.5:
+                return InteractionType.PULL, pull_confidence
             return InteractionType.RESEARCH, 0.7
             
         # Default to unknown for anything else
         return InteractionType.UNKNOWN, 0.3
+    
+    def _requires_pull(self, text: str) -> tuple[bool, float]:
+        """
+        Determine if the interaction requires pulling from other teams
+        
+        Returns:
+            Tuple of (requires_pull: bool, confidence: float)
+        """
+        max_confidence = 0.0
+        
+        # Check each pull pattern
+        for pattern, confidence in self.PULL_PATTERNS.items():
+            if re.search(pattern, text):
+                max_confidence = max(max_confidence, confidence)
+        
+        # Consider complexity indicators
+        complexity_indicators = len(re.findall(
+            r"(?i)(?:complex|difficult|challenging|advanced|sophisticated)",
+            text
+        ))
+        if complexity_indicators > 0:
+            max_confidence = max(max_confidence, 0.6)
+        
+        # Consider uncertainty indicators
+        uncertainty_indicators = len(re.findall(
+            r"(?i)(?:maybe|perhaps|possibly|might|could|not sure|uncertain)",
+            text
+        ))
+        if uncertainty_indicators > 0:
+            max_confidence = max(max_confidence, 0.5)
+        
+        return max_confidence > 0.5, max_confidence
     
     def _assess_complexity(self, text: str) -> ComplexityLevel:
         """Assess the complexity of the interaction"""
@@ -257,7 +344,15 @@ class ContextAnalyzer:
         words = len(text.split())
         avg_sentence_length = words / sentences
         
-        if steps > 2 or questions > 2 or avg_sentence_length > 20:
+        # Check for complexity indicators
+        complexity_indicators = len(re.findall(
+            r"(?i)(?:complex|difficult|challenging|advanced|sophisticated)",
+            text
+        ))
+        
+        if (steps > 2 or questions > 2 or 
+            avg_sentence_length > 20 or 
+            complexity_indicators > 0):
             return ComplexityLevel.COMPLEX
         elif steps > 0 or questions > 0 or avg_sentence_length > 15:
             return ComplexityLevel.MODERATE

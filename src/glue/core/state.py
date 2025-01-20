@@ -5,7 +5,8 @@ from typing import Dict, Set, Optional, Callable, Any, TYPE_CHECKING, List, Tupl
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .types import ResourceState, TransitionLog
+from .types import ResourceState, TransitionLog, AdhesiveType
+from .context import ContextState, InteractionType
 
 if TYPE_CHECKING:
     from .resource import Resource
@@ -44,54 +45,179 @@ class StateManager:
         # Setup default rules
         self._setup_default_rules()
     
-    async def validate_transition(
+    async def validate_flow(
+        self,
+        resource: 'Resource',
+        new_state: ResourceState,
+        context: Optional['ContextState'] = None
+    ) -> bool:
+        """Validate state transition based on magnetic flow rules"""
+        current_state = resource.state
+        
+        # Check if transition is registered
+        if (current_state, new_state) not in self._transitions:
+            return False
+            
+        # Get rule and validate
+        rule = self._rules.get(current_state, {}).get(new_state)
+        if rule and rule.validator and not rule.validator(resource, new_state):
+            return False
+            
+        # Check context-based flow restrictions
+        if context and hasattr(context, 'interaction_type'):
+            # Define valid states for each interaction
+            valid_states = {
+                InteractionType.CHAT: {
+                    ResourceState.IDLE, 
+                    ResourceState.CHATTING
+                },
+                InteractionType.RESEARCH: {
+                    ResourceState.IDLE,
+                    ResourceState.ACTIVE,
+                    ResourceState.SHARED,
+                    ResourceState.PULLING
+                },
+                InteractionType.TASK: None  # None means allow all states
+            }
+            
+            # Get valid states for this interaction type
+            allowed_states = valid_states.get(context.interaction_type)
+            
+            # If states are restricted and new state isn't allowed, reject
+            if allowed_states is not None and new_state not in allowed_states:
+                return False
+        
+        return True
+        
+    async def validate_persistence(
         self,
         resource: 'Resource',
         new_state: ResourceState
     ) -> bool:
-        # First check registered transitions
-        if (resource.state, new_state) not in self._transitions:
-            return False
-    
-        if hasattr(resource, 'binding_type'):
-            # GLUE bindings allow any transition
-            if resource.binding_type == AdhesiveType.GLUE:
-                return True
-            # VELCRO allows reconnection
-            if resource.binding_type == AdhesiveType.VELCRO:
-                return new_state in [ResourceState.IDLE, ResourceState.SHARED]
-            # TAPE only allows one transition to SHARED then IDLE
-            if resource.binding_type == AdhesiveType.TAPE:
-                if resource.state == ResourceState.IDLE:
-                    return new_state == ResourceState.SHARED
-                if resource.state == ResourceState.SHARED:
-                    return new_state == ResourceState.IDLE
+        """Validate state transition based on adhesive binding rules"""
+        if not hasattr(resource, 'binding_type'):
+            return True
             
-        return True  # Allow transition if no binding type
+        current_state = resource.state
+        binding = resource.binding_type
+        
+        # Define valid transitions for each binding type
+        binding_rules = {
+            AdhesiveType.GLUE: None,  # None means allow all transitions
+            AdhesiveType.VELCRO: {
+                ResourceState.IDLE: {ResourceState.SHARED},
+                ResourceState.SHARED: {ResourceState.IDLE},
+                ResourceState.PULLING: {ResourceState.IDLE}
+            },
+            AdhesiveType.TAPE: {
+                ResourceState.IDLE: {ResourceState.SHARED},
+                ResourceState.SHARED: {ResourceState.IDLE}
+            }
+        }
+        
+        # Get allowed transitions for this binding
+        allowed_transitions = binding_rules.get(binding)
+        
+        # If no restrictions, allow transition
+        if allowed_transitions is None:
+            return True
+            
+        # Check if transition is allowed for this binding
+        allowed_states = allowed_transitions.get(current_state, set())
+        return new_state in allowed_states
+        
+    async def validate_transition(
+        self,
+        resource: 'Resource',
+        new_state: ResourceState,
+        context: Optional['ContextState'] = None
+    ) -> bool:
+        """Validate state transition with separated concerns"""
+        # First check magnetic flow rules
+        if not await self.validate_flow(resource, new_state, context):
+            return False
+            
+        # Then check persistence rules
+        if not await self.validate_persistence(resource, new_state):
+            return False
+            
+        return True
     
     def add_transition(
         self,
         from_state: ResourceState,
         to_state: ResourceState,
-        cleanup: Optional[Callable] = None
+        cleanup: Optional[Callable] = None,
+        validator: Optional[Callable] = None,
+        description: str = ""
     ) -> None:
-        """Register valid state transition"""
+        """Register valid state transition with optional validation"""
+        # Register transition
         self._transitions[(from_state, to_state)] = True
+        
+        # Create rule if validator provided
+        if validator:
+            rule = TransitionRule(
+                from_states={from_state},
+                to_states={to_state},
+                validator=validator,
+                side_effect=cleanup,
+                description=description
+            )
+            if from_state not in self._rules:
+                self._rules[from_state] = {}
+            self._rules[from_state][to_state] = rule
+        # Otherwise just store cleanup
+        elif cleanup:
+            if from_state not in self._rules:
+                self._rules[from_state] = {}
+            self._rules[from_state][to_state] = TransitionRule(
+                from_states={from_state},
+                to_states={to_state},
+                side_effect=cleanup,
+                description=description
+            )
     
     def _setup_default_rules(self) -> None:
         """Setup default transition rules"""
-        # IDLE -> any state
+        # Define valid states for each interaction type
+        interaction_states = {
+            InteractionType.CHAT: {
+                ResourceState.IDLE,
+                ResourceState.CHATTING
+            },
+            InteractionType.RESEARCH: {
+                ResourceState.IDLE,
+                ResourceState.ACTIVE,
+                ResourceState.SHARED,
+                ResourceState.PULLING
+            },
+            InteractionType.TASK: {
+                ResourceState.IDLE,
+                ResourceState.ACTIVE,
+                ResourceState.SHARED,
+                ResourceState.CHATTING,
+                ResourceState.PULLING
+            }
+        }
+        
+        # Add context-aware validation
+        def validate_with_context(resource: 'Resource', new_state: ResourceState) -> bool:
+            if hasattr(resource, '_context') and resource._context:
+                valid_states = interaction_states.get(
+                    resource._context.interaction_type,
+                    {ResourceState.IDLE}  # Default to IDLE only
+                )
+                return new_state in valid_states
+            return True  # No context restrictions
+        
+        # IDLE -> context-dependent states
         self.add_rule(
             TransitionRule(
                 from_states={ResourceState.IDLE},
-                to_states={
-                    ResourceState.ACTIVE,
-                    ResourceState.LOCKED,
-                    ResourceState.SHARED,
-                    ResourceState.CHATTING,
-                    ResourceState.PULLING
-                },
-                description="IDLE resources can transition to any state"
+                to_states=set.union(*interaction_states.values()),
+                validator=validate_with_context,
+                description="IDLE resources can transition based on context"
             )
         )
         
@@ -106,29 +232,32 @@ class StateManager:
                     )
                 )
         
-        # ACTIVE -> SHARED or CHATTING
+        # ACTIVE -> SHARED or CHATTING (with context validation)
         self.add_rule(
             TransitionRule(
                 from_states={ResourceState.ACTIVE},
                 to_states={ResourceState.SHARED, ResourceState.CHATTING},
+                validator=validate_with_context,
                 description="ACTIVE resources can transition to SHARED or CHATTING"
             )
         )
         
-        # SHARED -> ACTIVE or CHATTING
+        # SHARED -> ACTIVE or CHATTING (with context validation)
         self.add_rule(
             TransitionRule(
                 from_states={ResourceState.SHARED},
                 to_states={ResourceState.ACTIVE, ResourceState.CHATTING},
+                validator=validate_with_context,
                 description="SHARED resources can transition to ACTIVE or CHATTING"
             )
         )
         
-        # CHATTING -> PULLING
+        # CHATTING -> PULLING (with context validation)
         self.add_rule(
             TransitionRule(
                 from_states={ResourceState.CHATTING},
                 to_states={ResourceState.PULLING},
+                validator=validate_with_context,
                 description="CHATTING resources can transition to PULLING"
             )
         )

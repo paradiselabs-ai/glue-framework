@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from ..core.types import ResourceState, AdhesiveType, InteractionPattern
+from ..core.context import InteractionType
 
 if TYPE_CHECKING:
     from .field import MagneticResource
@@ -210,7 +211,7 @@ def create_binding_validator(
 DEFAULT_RULES = RuleSet(
     name="default",
     rules=[
-        # System-level state validation
+        # System-level rules (SYSTEM priority)
         AttractionRule(
             name="system_locked",
             policy=AttractionPolicy.STATE_BASED,
@@ -222,7 +223,21 @@ DEFAULT_RULES = RuleSet(
             description="Prevent interaction with locked resources"
         ),
         
-        # Pattern-based validation
+        AttractionRule(
+            name="pull_team",
+            policy=AttractionPolicy.CUSTOM,
+            priority=PolicyPriority.SYSTEM,
+            custom_validator=lambda source, target: (
+                # Pull teams can pull from any non-repelled resource
+                (hasattr(source, 'is_pull_team') and source.is_pull_team and
+                 not (hasattr(source, '_repelled_by') and target in source._repelled_by)) or
+                # Allow normal interactions for non-pull teams
+                not (hasattr(source, 'is_pull_team') and source.is_pull_team)
+            ),
+            description="Pull team validation"
+        ),
+        
+        # High priority rules (HIGH priority)
         AttractionRule(
             name="pattern_states",
             policy=AttractionPolicy.PATTERN_BASED,
@@ -237,8 +252,9 @@ DEFAULT_RULES = RuleSet(
                     {ResourceState.IDLE, ResourceState.SHARED}
                 ),
                 InteractionPattern.PULL: (
-                    {ResourceState.IDLE, ResourceState.SHARED},
-                    {ResourceState.SHARED, ResourceState.ACTIVE}
+                    # Pull teams can pull from any state except LOCKED
+                    {ResourceState.IDLE, ResourceState.SHARED, ResourceState.ACTIVE, ResourceState.PULLING},
+                    {ResourceState.IDLE, ResourceState.SHARED, ResourceState.ACTIVE}
                 ),
                 InteractionPattern.REPEL: (
                     {ResourceState.SHARED, ResourceState.ACTIVE},
@@ -248,27 +264,20 @@ DEFAULT_RULES = RuleSet(
             description="Validate states for interaction patterns"
         ),
         
-        # Binding-based validation
         AttractionRule(
-            name="binding_states",
-            policy=AttractionPolicy.BINDING_BASED,
-            priority=PolicyPriority.MEDIUM,
-            binding_validator=create_binding_validator({
-                AdhesiveType.GLUE: {
-                    ResourceState.IDLE,
-                    ResourceState.SHARED,
-                    ResourceState.ACTIVE
-                },
-                AdhesiveType.VELCRO: {
-                    ResourceState.IDLE,
-                    ResourceState.SHARED
-                },
-                AdhesiveType.TAPE: {
-                    ResourceState.IDLE,
-                    ResourceState.SHARED
-                }
-            }),
-            description="Validate states for binding types"
+            name="context_states",
+            policy=AttractionPolicy.CUSTOM,
+            priority=PolicyPriority.HIGH,
+            custom_validator=lambda source, target: (
+                # Check if source has context
+                not hasattr(source, '_context') or
+                # If it does, validate based on interaction type
+                (source._context.interaction_type == InteractionType.PULL and
+                 hasattr(source, 'is_pull_team') and source.is_pull_team) or
+                # Allow normal interactions for other types
+                source._context.interaction_type != InteractionType.PULL
+            ),
+            description="Context-aware state validation"
         )
     ],
     description="Default rules for resource interaction"

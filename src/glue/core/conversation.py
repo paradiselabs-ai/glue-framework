@@ -254,6 +254,10 @@ class ConversationManager:
         # Process magnetic patterns
         field = binding_patterns.get('field')
         if field:
+            # Check if field is a pull team
+            is_pull_team = hasattr(field, 'is_pull_team') and field.is_pull_team
+            
+            # First add non-pull patterns
             # Bidirectional (><)
             add_magnetic_chain(
                 binding_patterns.get('attract', []),
@@ -266,17 +270,35 @@ class ConversationManager:
                 InteractionPattern.PUSH
             )
             
-            # Pull (<-)
-            add_magnetic_chain(
-                binding_patterns.get('pull', []),
-                InteractionPattern.PULL
-            )
-            
             # Repel (<>)
             add_magnetic_chain(
                 binding_patterns.get('repel', []),
                 InteractionPattern.REPEL
             )
+            
+            # Add pull patterns last (if pull team)
+            if is_pull_team:
+                add_magnetic_chain(
+                    binding_patterns.get('pull', []),
+                    InteractionPattern.PULL
+                )
+                
+                # If no flow determined and this is a pull team,
+                # add all non-repelled components
+                if not flow:
+                    repelled = set()
+                    for r1, r2 in binding_patterns.get('repel', []):
+                        repelled.add(r1)
+                        repelled.add(r2)
+                    
+                    # Add all components except repelled ones
+                    for component in field.list_resources():
+                        if (component not in repelled and 
+                            component not in visited and 
+                            should_add_component(component)):
+                            flow.append(component)
+                            visited.add(component)
+                            self.model_patterns[component].add(InteractionPattern.PULL)
         
         return flow
 

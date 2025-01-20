@@ -99,8 +99,8 @@ class MagneticField:
         registry: 'ResourceRegistry',
         parent: Optional['MagneticField'] = None,
         rules: Optional[RuleSet] = None,
-        pull_fallback: bool = False,
-        auto_bind: bool = True
+        auto_bind: bool = True,
+        is_pull_team: bool = False
     ):  
         self.name = name
         self.registry = registry
@@ -115,7 +115,7 @@ class MagneticField:
         self._memory = []  # Field memory
         
         # Team configuration
-        self.pull_fallback = pull_fallback  # Enable pull fallback
+        self.is_pull_team = is_pull_team  # Whether this team can pull from others
         self.auto_bind = auto_bind  # Enable automatic binding
         
         # Initialize logger
@@ -493,8 +493,8 @@ class MagneticField:
     def create_child_field(
         self,
         name: str,
-        pull_fallback: Optional[bool] = None,
-        auto_bind: Optional[bool] = None
+        auto_bind: Optional[bool] = None,
+        is_pull_team: Optional[bool] = None
     ) -> 'MagneticField':
         """Create a child field that inherits from this field"""
         child = MagneticField(
@@ -502,8 +502,8 @@ class MagneticField:
             registry=self.registry,
             parent=self,
             rules=self._rules.copy(),  # Inherit parent rules
-            pull_fallback=pull_fallback if pull_fallback is not None else self.pull_fallback,
-            auto_bind=auto_bind if auto_bind is not None else self.auto_bind
+            auto_bind=auto_bind if auto_bind is not None else self.auto_bind,
+            is_pull_team=is_pull_team if is_pull_team is not None else False
         )
         child._active = True
         if self._current_context:
@@ -669,17 +669,16 @@ class MagneticField:
             # Log the error
             self.logger.error(f"Error processing prompt: {str(e)}")
             
-            # If processing fails and pull_fallback is enabled,
-            # try to pull from other teams
-            if hasattr(self, 'pull_fallback') and self.pull_fallback:
-                self.logger.info(f"Processing failed, attempting pull fallback: {str(e)}")
+            # If this is the designated pull team, try pulling from other teams
+            if hasattr(self, 'is_pull_team') and self.is_pull_team:
+                self.logger.info(f"Pull team {self.name} attempting to pull from other teams")
                 
                 # Try to pull from each non-repelled team
                 for other_field in self.parent._child_fields if self.parent else []:
                     if other_field != self and not self._is_repelled(other_field):
                         try:
                             # Enable pull and try processing
-                            await self.enable_pull(other_field)
+                            await self.enable_field_pull(other_field)
                             response = await other_field.process_prompt(prompt)
                             
                             # Store pulled response
@@ -691,10 +690,11 @@ class MagneticField:
                             })
                             
                             return response
-                        except:
+                        except Exception as pull_error:
+                            self.logger.debug(f"Pull from {other_field.name} failed: {str(pull_error)}")
                             continue
             
-            # If pull fallback fails or is disabled, re-raise original error
+            # If pull fails or not pull team, raise original error
             raise
         
     def get_memory(
@@ -788,6 +788,35 @@ class MagneticField:
             # Restore original activation state
             self._active = was_active
 
+    async def enable_field_pull(
+        self,
+        source_field: 'MagneticField'
+    ) -> bool:
+        """Enable pulling from another field"""
+        # Save current activation state
+        was_active = self._active
+        
+        try:
+            # Ensure field is active during pull setup
+            if not self._active:
+                self._active = True
+            
+            # Enable pull fallback
+            self.pull_fallback = True
+            
+            # Get chat handlers from both fields
+            target_handler = self._chat_handler
+            source_handler = source_field._chat_handler
+            
+            if not target_handler or not source_handler:
+                return False
+            
+            # Enable pull between chat handlers
+            return await self.enable_pull(target_handler, source_handler)
+        finally:
+            # Restore original activation state
+            self._active = was_active
+            
     async def enable_pull(
         self,
         target: MagneticResource,
