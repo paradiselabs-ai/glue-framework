@@ -382,9 +382,36 @@ class ConversationManager:
             flow = self._determine_flow(binding_patterns, context)
             self.logger.debug(f"Flow: {flow}")
             
-            # Default to first model if no flow
-            if not flow and models:
-                flow = [next(iter(models.keys()))]
+            # Clean and normalize input
+            cleaned_input = ' '.join(user_input.split())  # Remove extra spaces
+            
+            # Determine interaction type from context
+            interaction_type = context.interaction_type if context else InteractionType.UNKNOWN
+            
+            # Get team structure from field
+            field = binding_patterns.get('field')
+            teams = {}
+            if field and hasattr(field, '_child_fields'):
+                for child in field._child_fields:
+                    teams[child.name] = {
+                        'lead': next((r for r in child._resources.values() 
+                                    if hasattr(r, '_is_lead') and r._is_lead), None),
+                        'members': [r for r in child._resources.values() 
+                                  if isinstance(r, Model)]
+                    }
+            
+            # Default flow based on interaction type and team structure
+            if not flow:
+                if interaction_type == InteractionType.RESEARCH:
+                    # Start with research team if available
+                    research_team = next((name for name, team in teams.items() 
+                                       if 'research' in name.lower()), None)
+                    if research_team and research_team in teams:
+                        flow = [teams[research_team]['lead'].name] if teams[research_team]['lead'] else []
+                        flow.extend(m.name for m in teams[research_team]['members'])
+                else:
+                    # Default to first model as before
+                    flow = [next(iter(models.keys()))] if models else []
             
             # Optimize tool chain
             optimized_tools = []
@@ -393,8 +420,8 @@ class ConversationManager:
                 optimized_tools = self.tool_optimizer.optimize_chain(tool_names, context)
                 self.logger.debug(f"Optimized tools: {optimized_tools}")
             
-            # Process through chain
-            current_input = user_input
+            # Process through chain with cleaned input
+            current_input = cleaned_input
             responses = []
             start_time = datetime.now()
             
