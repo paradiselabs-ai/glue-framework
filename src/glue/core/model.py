@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from .types import Message, MessageType, WorkflowState, IntentAnalysis
 from ..tools.base import BaseTool
+from .tool_binding import ToolBinding, AdhesiveType, ToolBindingState
 
 @dataclass
 class ModelConfig:
@@ -61,15 +62,44 @@ class Model:
             tool: Tool instance
             binding_type: Type of binding (glue, velcro, tape)
         """
-        # Set binding type on tool
-        if hasattr(tool, 'binding_type'):
-            tool.binding_type = binding_type
+        # Create appropriate binding based on persistence needs
+        if binding_type == 'glue':
+            # Permanent binding with full persistence
+            binding = ToolBinding.glue(
+                properties={
+                    "maintains_context": True,
+                    "context_duration": "permanent"
+                }
+            )
+        elif binding_type == 'velcro':
+            # Flexible binding with session persistence
+            binding = ToolBinding.velcro(
+                properties={
+                    "maintains_context": True,
+                    "context_duration": "session",
+                    "reconnect_attempts": 3
+                }
+            )
+        else:  # tape
+            # Temporary binding with no persistence
+            binding = ToolBinding.tape(
+                properties={
+                    "maintains_context": False,
+                    "duration_ms": 1800000  # 30 minutes
+                }
+            )
             
-        # Create tool instance for this model
-        instance = tool.create_instance()
+        # Initialize binding
+        binding.bind()
         
-        # Store tool
+        # Create tool instance with binding
+        instance = tool.create_instance(binding=binding)
+        
+        # Store tool and binding
         self._tools[name] = instance
+        if not hasattr(self, 'tool_bindings'):
+            self.tool_bindings = {}
+        self.tool_bindings[name] = binding
 
     def bind_to(self, model: 'Model', binding_type: str = 'glue') -> None:
         """Create a binding to another model"""

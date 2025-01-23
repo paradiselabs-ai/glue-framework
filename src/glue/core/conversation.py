@@ -404,13 +404,61 @@ class ConversationManager:
             if not flow:
                 if interaction_type == InteractionType.RESEARCH:
                     # Start with research team if available
-                    research_team = next((name for name, team in teams.items() 
-                                       if 'research' in name.lower()), None)
-                    if research_team and research_team in teams:
-                        flow = [teams[research_team]['lead'].name] if teams[research_team]['lead'] else []
-                        flow.extend(m.name for m in teams[research_team]['members'])
+                    research_teams = [
+                        (name, team) for name, team in teams.items()
+                        if 'research' in name.lower()
+                    ]
+                    
+                    if research_teams:
+                        # Get first research team
+                        team_name, team = research_teams[0]
+                        self.logger.debug(f"Using research team: {team_name}")
+                        
+                        # Initialize team flow
+                        flow = []
+                        
+                        # Add lead first if available
+                        if team['lead']:
+                            self.logger.debug(f"Adding lead: {team['lead'].name}")
+                            flow.append(team['lead'].name)
+                            
+                            # Initialize lead's tools
+                            if hasattr(team['lead'], "_tools"):
+                                for tool_name, tool in team['lead']._tools.items():
+                                    if tools and tool_name in tools:
+                                        binding_type = self._get_binding_type(tools[tool_name])
+                                        await self._initialize_tool(
+                                            tool=tools[tool_name],
+                                            field=field,
+                                            binding_type=binding_type,
+                                            conversation_id=self.active_conversation,
+                                            model_name=team['lead'].name
+                                        )
+                        
+                        # Add members
+                        for member in team['members']:
+                            self.logger.debug(f"Adding member: {member.name}")
+                            flow.append(member.name)
+                            
+                            # Initialize member's tools
+                            if hasattr(member, "_tools"):
+                                for tool_name, tool in member._tools.items():
+                                    if tools and tool_name in tools:
+                                        binding_type = self._get_binding_type(tools[tool_name])
+                                        await self._initialize_tool(
+                                            tool=tools[tool_name],
+                                            field=field,
+                                            binding_type=binding_type,
+                                            conversation_id=self.active_conversation,
+                                            model_name=member.name
+                                        )
+                    else:
+                        # No research team, use first model
+                        self.logger.debug("No research team found, using first model")
+                        flow = [next(iter(models.keys()))] if models else []
                 else:
-                    # Default to first model as before
+                    # Default to first model
+                    self.logger.debug("Using default flow with first model")
                     flow = [next(iter(models.keys()))] if models else []
             
             # Optimize tool chain
@@ -426,15 +474,27 @@ class ConversationManager:
                 .split()
             )
             
-            # Skip processing if input is too garbled
-            if len(cleaned_input.split()) < 2:
-                return "Please provide a clearer input."
+            # Skip empty input
+            if not cleaned_input:
+                return "Please provide some input."
+                
+            # Check for excessive spaces or control characters
+            raw_chars = len(user_input)
+            clean_chars = len(cleaned_input)
+            if raw_chars > 0 and clean_chars / raw_chars < 0.7:  # More than 30% of input was spaces/control chars
+                return "Your input contains too many extra spaces or special characters. Please retype your request clearly."
                 
             # Check if input is mostly gibberish
-            valid_words = sum(1 for word in cleaned_input.split() 
-                            if len(word) > 1 and not all(c.isdigit() for c in word))
-            if valid_words < len(cleaned_input.split()) / 2:
-                return "Your input appears to be unclear. Please retype your request."
+            words = cleaned_input.split()
+            if len(words) > 1:  # Only check multi-word inputs
+                # Count valid words (at least 2 chars, not all digits, no repeated chars)
+                valid_words = sum(1 for word in words 
+                                if len(word) > 1 and 
+                                not all(c.isdigit() for c in word) and
+                                len(set(word)) > len(word) * 0.4)  # At least 40% unique chars
+                
+                if valid_words < len(words) * 0.7:  # Less than 70% valid words
+                    return "Your input appears to be unclear. Please retype your request."
             
             # Process through chain with cleaned input
             current_input = cleaned_input

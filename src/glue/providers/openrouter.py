@@ -37,11 +37,13 @@ class OpenRouterProvider(BaseProvider, Resource):
         """Configure tools and update system prompt"""
         if not hasattr(self, "_tools"):
             self._tools = {}
+            self.tool_bindings = {}  # Initialize tool bindings dict
             
         # If inheriting from parent, copy tools and role
         if hasattr(self, "_parent"):
             parent = self._parent
             self._tools = parent._tools.copy()
+            self.tool_bindings = parent.tool_bindings.copy()  # Copy bindings
             self.role = parent.role
             self.config.system_prompt = parent.config.system_prompt
             
@@ -213,34 +215,41 @@ Remember: Your tool access may be permanent, flexible, or temporary."""
     async def _process_response(self, response: Dict[str, Any]) -> str:
         """Process response from OpenRouter API"""
         try:
-            self.logger.debug(f"Processing response:\n{json.dumps(response, indent=2)}")
+            # Log full response for debugging
+            self.logger.debug("Full API Response:")
+            self.logger.debug(json.dumps(response, indent=2))
             
+            # Handle API errors first
             if "error" in response:
-                error_msg = response["error"].get("message", "Unknown API error")
-                self.logger.error(f"OpenRouter API error: {error_msg}")
-                return f"Error: {error_msg}"
-                
+                await self._handle_error(response)
+            
+            # Validate response structure
             if "choices" not in response:
                 self.logger.error("No choices in response")
-                self.logger.error(f"Full response: {json.dumps(response, indent=2)}")
-                return "Error: Invalid response format"
+                self.logger.error(f"Response structure: {json.dumps(response, indent=2)}")
+                raise RuntimeError("Invalid response format from OpenRouter API")
                 
             if not response["choices"]:
                 self.logger.error("Empty choices array")
-                self.logger.error(f"Full response: {json.dumps(response, indent=2)}")
-                return "Error: No completion choices"
+                self.logger.error(f"Response structure: {json.dumps(response, indent=2)}")
+                raise RuntimeError("No completion choices from OpenRouter API")
                 
+            # Extract message and content
             assistant_message = response["choices"][0].get("message")
             if not assistant_message:
                 self.logger.error("No message in first choice")
                 self.logger.error(f"First choice: {json.dumps(response['choices'][0], indent=2)}")
-                return "Error: Invalid message format"
+                raise RuntimeError("Invalid message format from OpenRouter API")
                 
             content = assistant_message.get("content")
             if not content:
                 self.logger.error("Empty content in message")
                 self.logger.error(f"Message: {json.dumps(assistant_message, indent=2)}")
-                return "Error: Empty response content"
+                raise RuntimeError("Empty response content from OpenRouter API")
+            
+            # Log successful content
+            self.logger.debug("Received content:")
+            self.logger.debug(content)
             
             # Look for tool usage
             if "<tool>" in content and "<input>" in content and hasattr(self, "_tools"):
@@ -309,12 +318,20 @@ Remember: Your tool access may be permanent, flexible, or temporary."""
         error_msg = error.get("error", {}).get("message", "Unknown API error")
         error_type = error.get("error", {}).get("type", "unknown")
         
+        # Log full error details
+        self.logger.error("OpenRouter API Error:")
+        self.logger.error(f"Type: {error_type}")
+        self.logger.error(f"Message: {error_msg}")
+        self.logger.error(f"Full error: {json.dumps(error, indent=2)}")
+        
         if "rate limit" in error_msg.lower():
             raise RuntimeError(f"Rate limit exceeded: {error_msg}")
         elif "invalid api key" in error_msg.lower():
             raise RuntimeError(f"Authentication error: {error_msg}")
         elif "model" in error_msg.lower():
             raise RuntimeError(f"Model error: {error_msg}")
+        elif "invalid request" in error_msg.lower():
+            raise RuntimeError(f"Invalid request: {error_msg}")
         else:
             raise RuntimeError(f"API error ({error_type}): {error_msg}")
     

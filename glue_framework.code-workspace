@@ -13,6 +13,8 @@
 		"terminal.integrated.env.osx": {
 			"VIRTUAL_ENV": "${workspaceFolder}/venv",
 			"PATH": "${workspaceFolder}/venv/bin:${env:PATH}"
-		}
+		},
+		"terminal.explorerKind": "external",
+		"terminal.integrated.shellIntegration.enabled": true
 	}
 }

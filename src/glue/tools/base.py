@@ -96,15 +96,35 @@ class BaseTool(Resource, ABC):
         pass
 
     async def execute(self, *args, **kwargs) -> Any:
-        """Execute tool with resource state tracking"""
+        """Execute tool with resource state tracking and binding validation"""
         if self.state != ResourceState.IDLE:
             raise RuntimeError(f"Tool {self.name} is busy (state: {self.state.name})")
+            
+        # Check binding if tool is bound
+        if hasattr(self, '_binding'):
+            if self._binding.state == ToolBindingState.FAILED:
+                raise RuntimeError(f"Tool {self.name} binding has failed")
+            if self._binding.should_break():
+                raise RuntimeError(f"Tool {self.name} binding has expired")
+            
+            # Record tool usage in binding
+            self._binding.use()
+            
+            # Check if binding broke after use
+            if self._binding.state == ToolBindingState.FAILED:
+                self._state = ResourceState.IDLE
+                raise RuntimeError(f"Tool {self.name} binding broke during use")
             
         self._state = ResourceState.ACTIVE
         try:
             if not self._is_initialized:
                 await self.initialize()
             result = await self._execute(*args, **kwargs)
+            
+            # Store result in binding if it maintains context
+            if hasattr(self, '_binding') and self._binding.maintains_context():
+                self._binding.store_resource('last_result', result)
+                
             return result
         finally:
             self._state = ResourceState.IDLE
@@ -120,8 +140,13 @@ class BaseTool(Resource, ABC):
             self._instance_data.update(instance_data)
         self._is_initialized = True
         
-    def create_instance(self) -> 'BaseTool':
-        """Create a new instance of this tool with shared configuration"""
+    def create_instance(self, binding: Optional['ToolBinding'] = None) -> 'BaseTool':
+        """
+        Create a new instance of this tool with shared configuration
+        
+        Args:
+            binding: Optional tool binding to attach to the instance
+        """
         instance = self.__class__(
             name=self.name,
             description=self.description,
@@ -132,6 +157,11 @@ class BaseTool(Resource, ABC):
             shared_resources=self.shared_resources,
             binding_type=self.binding_type
         )
+        
+        # Set binding if provided
+        if binding:
+            instance._binding = binding
+            
         return instance
         
     def create_isolated_instance(self) -> 'BaseTool':

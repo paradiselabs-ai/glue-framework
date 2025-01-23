@@ -652,8 +652,19 @@ class MagneticField:
         context = self._memory[-5:] if self._memory else []
         
         try:
-            # Let chat handler process
-            response = await self._chat_handler.process(prompt, context=context)
+            # Let chat handler process with tool access
+            response = await self._chat_handler.process(
+                prompt,
+                context={
+                    **context,
+                    'tools': {
+                        name: tool for name, tool in self._resources.items()
+                        if isinstance(tool, BaseTool) and
+                        hasattr(self._chat_handler, '_tools') and
+                        name in self._chat_handler._tools
+                    }
+                }
+            )
             
             # Store response
             self._memory.append({
