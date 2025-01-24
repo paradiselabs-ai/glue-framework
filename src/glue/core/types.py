@@ -30,28 +30,6 @@ class MessageType(Enum):
     WORKFLOW = auto()     # Workflow messages
     SYNC = auto()        # Synchronization messages
 
-class WorkflowStateEnum(Enum):
-    """States of a workflow"""
-    IDLE = auto()      # Not running
-    RUNNING = auto()   # Currently executing
-    PAUSED = auto()    # Temporarily paused
-    COMPLETED = auto() # Successfully finished
-    FAILED = auto()    # Failed to complete
-    CANCELLED = auto() # Manually cancelled
-    
-@dataclass
-class WorkflowState:
-    """State of a workflow instance"""
-    workflow_id: str
-    initiator: str
-    participants: Set[str]
-    current_stage: str
-    context: Optional['ContextState']
-    started_at: datetime
-    updated_at: datetime
-    state: WorkflowStateEnum = WorkflowStateEnum.IDLE
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
 @dataclass
 class Message:
     """Message in a conversation"""
@@ -69,75 +47,73 @@ class Message:
 class MagneticResource(Protocol):
     """Protocol for resources that can participate in magnetic fields"""
     name: str
-    _state: 'ResourceState'
-    _context: Optional['ContextState']
+    team: str
     _attracted_to: Set['MagneticResource']
     _repelled_by: Set['MagneticResource']
 
 class InteractionPattern(Enum):
     """Patterns for resource interaction"""
-    ATTRACT = "><"  # Bidirectional attraction
-    PUSH = "->"    # One-way push
-    PULL = "<-"    # One-way pull
-    REPEL = "<>"   # Repulsion
+    ATTRACT = "><"  # Bidirectional attraction (full coupling)
+    PUSH = "->"    # One-way push (directed flux)
+    PULL = "<-"    # Fallback pull (only if push fails or more data needed)
+    REPEL = "<>"   # Repulsion (enforced boundary)
+
+    @property
+    def is_pull_allowed(self) -> bool:
+        """Check if pull is allowed based on pattern"""
+        return self in {self.ATTRACT, self.PULL}  # Pull allowed for ATTRACT and PULL patterns
+
+    @property
+    def is_push_allowed(self) -> bool:
+        """Check if push is allowed based on pattern"""
+        return self in {self.ATTRACT, self.PUSH}  # Push allowed for ATTRACT and PUSH patterns
+
+class ResourceState(Enum):
+    """States for resources"""
+    IDLE = auto()     # Resource is available
+    ACTIVE = auto()   # Resource is being used
 
 class AdhesiveType(Enum):
     """Types of adhesive bindings"""
-    TAPE = auto()    # Temporary binding with no persistence
-    VELCRO = auto()  # Flexible binding with partial persistence
-    GLUE = auto()    # Permanent binding with full persistence
-
-class AdhesiveState(Enum):
-    """States an adhesive can be in"""
-    INACTIVE = auto()  # Not yet activated
-    ACTIVE = auto()    # Ready for use
-    DEGRADED = auto()  # Weakened but usable
-    EXPIRED = auto()   # No longer usable
-
-class BindingState(Enum):
-    """States a binding can be in"""
-    INACTIVE = auto()  # Not currently active
-    ACTIVE = auto()    # Currently active
-    DEGRADED = auto()  # Active but weakened
-    FAILED = auto()    # Failed and needs cleanup
-
-class ResourceState(Enum):
-    """States a resource can be in"""
-    IDLE = auto()      # Not currently in use
-    ACTIVE = auto()    # Currently in use
-    LOCKED = auto()    # Cannot be used by others
-    SHARED = auto()    # Being shared between resources
-    CHATTING = auto()  # In direct model-to-model communication
-    PULLING = auto()   # Receiving data only
+    TAPE = auto()    # One-time use, no persistence
+    VELCRO = auto()  # Session-based persistence
+    GLUE = auto()    # Team-wide persistence
 
 @dataclass
-class ResourceMetadata:
-    """Metadata for a resource"""
-    created_at: datetime = field(default_factory=datetime.now)
-    last_used: Optional[datetime] = None
-    use_count: int = 0
-    tags: Set[str] = field(default_factory=set)
-    category: str = "default"
-    properties: Dict[str, Any] = field(default_factory=dict)
-
-@dataclass
-class AdhesiveProperties:
-    """Properties of an adhesive binding"""
-    strength: float  # 0.0 to 1.0
-    durability: float  # 0.0 to 1.0
-    flexibility: float  # 0.0 to 1.0
-    duration: Optional[timedelta] = None  # For temporary bindings
-    is_reusable: bool = False
-    max_uses: Optional[int] = None
-    allowed_patterns: Set[InteractionPattern] = field(default_factory=set)
-    resource_pool: Dict[str, Any] = field(default_factory=dict)
+class ToolResult:
+    """Result from a tool execution"""
+    tool_name: str
+    result: Any
+    adhesive: AdhesiveType
+    timestamp: datetime = field(default_factory=datetime.now)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class TransitionLog:
-    """Log entry for state transition"""
+    """Log entry for a state transition"""
     resource: str
     from_state: ResourceState
     to_state: ResourceState
     timestamp: datetime = field(default_factory=datetime.now)
     success: bool = True
     error: Optional[str] = None
+
+@dataclass
+class WorkflowState:
+    """State of a multi-model workflow"""
+    workflow_id: str
+    initiator: str
+    participants: Set[str]
+    current_stage: str
+    context: Optional['ContextState']
+    started_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
+
+@dataclass
+class Team:
+    """Team of models that can collaborate"""
+    name: str
+    members: Set[str]
+    tools: Set[str]
+    shared_results: Dict[str, ToolResult]  # GLUE results shared by team
+    session_results: Dict[str, Dict[str, ToolResult]]  # VELCRO results by model

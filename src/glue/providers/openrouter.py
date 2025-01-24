@@ -8,10 +8,11 @@ from typing import Dict, List, Any, Optional, Set
 from .base import BaseProvider
 from ..core.model import ModelConfig
 from ..core.logger import get_logger
-from ..core.resource import Resource, ResourceState
+from ..core.simple_resource import SimpleResource
+from ..core.state import ResourceState, StateManager
 from ..core.types import IntentAnalysis
 
-class OpenRouterProvider(BaseProvider, Resource):
+class OpenRouterProvider(BaseProvider, SimpleResource):
     """
     Provider for OpenRouter API.
     
@@ -50,9 +51,9 @@ class OpenRouterProvider(BaseProvider, Resource):
         # Update system prompt with tool info
         if self._tools and self.messages and self.messages[0]["role"] == "system":
             system_prompt = self.messages[0]["content"]
-            tool_info = "\n\nYou have access to the following tools based on your role:\n"
+            tool_info = "\n\nYou have access to the following tools:\n"
             for name, tool in self._tools.items():
-                binding_type = self.tool_bindings.get(self.name, {}).get(name, "unknown")
+                binding_type = self.tool_bindings.get(name, "unknown")
                 persistence = {
                     "glue": "(permanent access)",
                     "velcro": "(flexible access)",
@@ -62,16 +63,40 @@ class OpenRouterProvider(BaseProvider, Resource):
                 tool_info += f"- {name}: {tool.description} {persistence.get(binding_type, '')}\n"
             
             tool_info += """
-When using tools:
-1. Think about what information you need
-2. Check if you have the right tool access
-3. Use this format:
-<think>your reasoning</think>
+To use a tool:
+<think>Explain why you need this tool</think>
 <tool>tool_name</tool>
-<input>your input</input>
+<input>what you want the tool to do</input>
 
-Always wait for tool output before continuing.
-Remember: Your tool access may be permanent, flexible, or temporary."""
+Examples:
+
+1. Web Search:
+<think>I need to search for recent news about AI</think>
+<tool>web_search</tool>
+<input>latest developments in open source AI models</input>
+
+2. File Handling:
+<think>I need to save this information</think>
+<tool>file_handler</tool>
+<input>Title: AI News Summary
+Latest developments in open source AI:
+1. ...
+2. ...</input>
+
+3. Code Execution:
+<think>I need to analyze some data with Python</think>
+<tool>code_interpreter</tool>
+<input>
+import pandas as pd
+
+# Create sample data
+data = {'Model': ['GPT-4', 'Claude', 'Llama'],
+        'Score': [95, 92, 88]}
+df = pd.DataFrame(data)
+
+# Calculate average
+print(f"Average score: {df['Score'].mean()}")
+</input>"""
             self.messages[0]["content"] = system_prompt + tool_info
 
     def __init__(
@@ -99,8 +124,8 @@ Remember: Your tool access may be permanent, flexible, or temporary."""
             base_url="https://openrouter.ai/api/v1"
         )
         
-        # Initialize resource
-        Resource.__init__(
+        # Initialize simple resource
+        SimpleResource.__init__(
             self,
             name=name or model,
             category="provider",
@@ -119,15 +144,28 @@ Remember: Your tool access may be permanent, flexible, or temporary."""
         # Initialize conversation history
         self.messages: List[Dict[str, str]] = []
         
-        # Set initial state to IDLE
-        self._state = ResourceState.IDLE
+        # Initialize with state management
+        self._state_manager = StateManager()
         
         # Initialize system prompt
         default_prompt = (
             "You are a helpful AI assistant. "
             "You may work independently or as part of a team. "
             "You have access to specific tools based on your assigned capabilities. "
-            "Always think carefully about what tools you need and how to use them effectively."
+            "Always think carefully about what tools you need and how to use them effectively.\n\n"
+            "To use a tool, format your response like this:\n"
+            "<think>Explain why you need to use this tool</think>\n"
+            "<tool>tool_name</tool>\n"
+            "<input>what you want the tool to do</input>\n\n"
+            "For example:\n"
+            "1. To search the web:\n"
+            "<think>I need to find recent information about AI developments</think>\n"
+            "<tool>web_search</tool>\n"
+            "<input>latest developments in open source AI models</input>\n\n"
+            "2. To save information to a file:\n"
+            "<think>I need to save this research summary</think>\n"
+            "<tool>file_handler</tool>\n"
+            "<input>Title: AI Research Summary\nContent: ...</input>"
         )
         
         system_prompt = system_prompt or default_prompt
@@ -372,39 +410,16 @@ Remember: Your tool access may be permanent, flexible, or temporary."""
     
     async def generate(self, prompt: str) -> str:
         """Generate a response using OpenRouter API"""
-        # Check state
-        if (self.state not in {ResourceState.IDLE, ResourceState.ACTIVE, ResourceState.SHARED} and 
-            self.metadata.category != "tool"):
-            # Try fallback if available
-            if hasattr(self, "_parent"):
-                self.logger.info(f"Model {self.name} busy, attempting fallback...")
-                fallback = OpenRouterProvider(
-                    api_key=self.api_key,
-                    model=self.model_id,
-                    system_prompt=self.config.system_prompt,
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
-                    name=f"{self.name}_fallback"
-                )
-                # Set parent for tool and role inheritance
-                fallback._parent = self
-                # Configure tools and update prompt
-                fallback._configure_tools()
-                return await fallback.generate(prompt)
-            raise RuntimeError(f"Provider {self.name} is busy (state: {self.state.name})")
-        
-        # Transition to ACTIVE for generation
-        if self.state == ResourceState.IDLE:
-            self._state = ResourceState.ACTIVE
+        # Simple state transition
+        await self.transition_to_active()
         
         try:
             request_data = await self._prepare_request(prompt)
             response = await self._make_request(request_data)
             return await self._process_response(response)
         finally:
-            # Return to IDLE if we were IDLE before
-            if self._state == ResourceState.ACTIVE:
-                self._state = ResourceState.IDLE
+            # Always return to IDLE
+            await self.transition_to_idle()
     
     def clear_history(self) -> None:
         """Clear conversation history"""

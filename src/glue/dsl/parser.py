@@ -45,9 +45,6 @@ class TeamConfig:
     lead: Optional[str]  # Model name
     members: List[str]  # Model names
     tools: List[str]  # Tool names
-    sticky: bool = False
-    is_pull_team: bool = False  # Whether this team is designated as the pull team
-    auto_bind: bool = True  # Enable automatic tool binding
 
 @dataclass
 class WorkflowConfig:
@@ -241,6 +238,11 @@ class GlueParser:
         tools = {}  # tool_name -> binding_strength
         role = None
         
+        # SmoLAgents specific config
+        agent_type = None
+        model_type = None
+        model_name = None
+        
         # Parse nested blocks
         nested_blocks = self._extract_blocks(content)
         for block_type, block_content in nested_blocks:
@@ -263,6 +265,12 @@ class GlueParser:
                     _, normalized = get_keyword_type(value.lower())
                     provider = normalized
                     self.logger.debug(f"Found provider: {provider}")
+                    
+                    # If it's smolagents, look for specific config
+                    if provider == 'smolagents':
+                        # Set defaults
+                        agent_type = 'code'  # Default to CodeAgent
+                        model_type = 'hf'    # Default to HuggingFace
                 elif key == 'tools':
                     # Parse tools block
                     tools_block = self._extract_blocks(value)
@@ -293,10 +301,26 @@ class GlueParser:
                 elif key.startswith('os.'):
                     api_key = f"env:{key[3:].upper()}"
                 else:
+                    # Handle SmoLAgents specific config
+                    if key == 'agent_type':
+                        agent_type = SMOLAGENTS_KEYWORDS.get(value.lower(), 'code')
+                    elif key == 'model_type':
+                        model_type = SMOLAGENTS_KEYWORDS.get(value.lower(), 'hf')
+                    elif key == 'model_name':
+                        model_name = value.strip('"')
                     # Add to config if not a special key
-                    if key not in ['provider', 'tools', 'role']:
+                    elif key not in ['provider', 'tools', 'role']:
                         config[key] = self._parse_value(value)
         
+        # Create model config
+        if provider == 'smolagents':
+            # Add SmoLAgents specific config
+            config.update({
+                'agent_type': agent_type,
+                'model_type': model_type,
+                'model_name': model_name
+            })
+            
         self.models[name] = ModelConfig(
             provider=provider,
             api_key=api_key,
@@ -361,142 +385,60 @@ class GlueParser:
         teams = {}
         attractions = []
         repulsions = []
-        chat_pairs = []
         pull_pairs = []
         
-        # First parse team blocks
+        # Parse team blocks
         nested_blocks = self._extract_blocks(content)
         for block_type, block_content in nested_blocks:
-            if block_type.startswith("team"):
-                # Get team name
-                parts = block_type.split(None, 1)
-                team_name = parts[1] if len(parts) > 1 else "default"
-                
-                # Parse team config
-                lead = None
-                members = []
-                tools = []
-                sticky = False
-                pull_fallback = False
-                auto_bind = True
-                
-                for line in block_content.split('\n'):
-                    line = line.strip()
-                    if '=' in line:
-                        key, value = [x.strip() for x in line.split('=', 1)]
-                        if key == 'lead':
-                            lead = value.strip('"')
-                        elif key == 'members':
-                            members = [m.strip() for m in value.strip('[]').split(',')]
-                        elif key == 'tools':
-                            tools = [t.strip() for t in value.strip('[]').split(',')]
-                        elif key == 'sticky':
-                            sticky = self._parse_value(value)
-                        elif key == 'pull_fallback':
-                            pull_fallback = self._parse_value(value)
-                        elif key == 'auto_bind':
-                            auto_bind = self._parse_value(value)
-                            
-                teams[team_name] = TeamConfig(
-                    name=team_name,
-                    lead=lead,
-                    members=members,
-                    tools=tools,
-                    sticky=sticky,
-                    pull_fallback=pull_fallback,
-                    auto_bind=auto_bind
-                )
+            # Get team name
+            parts = block_type.split(None, 1)
+            team_name = parts[1] if len(parts) > 1 else "default"
+            
+            # Parse team config
+            lead = None
+            members = []
+            tools = []
+            
+            for line in block_content.split('\n'):
+                line = line.strip()
+                if '=' in line:
+                    key, value = [x.strip() for x in line.split('=', 1)]
+                    if key == 'lead':
+                        lead = value.strip('"')
+                    elif key == 'members':
+                        members = [m.strip() for m in value.strip('[]').split(',')]
+                    elif key == 'tools':
+                        tools = [t.strip() for t in value.strip('[]').split(',')]
+                        
+            teams[team_name] = TeamConfig(
+                name=team_name,
+                lead=lead,
+                members=members,
+                tools=tools
+            )
         
-        # Parse lines for direct attractions first
+        # Parse flow lines
         for line in content.split('\n'):
             line = line.strip()
-            if "><" in line:
-                # Check for binding strength
-                if "|" in line:
-                    attraction, strength = line.split("|")
-                    parts = [p.strip() for p in attraction.split("><")]
-                    if len(parts) == 2:
-                        try:
-                            # Convert string to AdhesiveType
-                            strength = strength.strip().lower()
-                            if strength == 'tape':
-                                binding = AdhesiveType.TAPE
-                            elif strength == 'velcro':
-                                binding = AdhesiveType.VELCRO
-                            elif strength == 'glue':
-                                binding = AdhesiveType.GLUE
-                            else:
-                                raise ValueError(f"Invalid binding type: {strength}")
-                            attractions.append((parts[0], parts[1]))
-                        except ValueError:
-                            self.logger.warning(f"Invalid binding strength: {strength}")
-                else:
-                    parts = [p.strip() for p in line.split("><")]
-                    if len(parts) == 2:
-                        # Default to VELCRO if no binding specified
-                        attractions.append((parts[0], parts[1]))
-            elif "<>" in line:
+            if "->" in line:  # Push flow
+                parts = [p.strip() for p in line.split("->")]
+                if len(parts) == 2:
+                    attractions.append((parts[0], parts[1]))
+            elif "<-" in line and "pull" in line.lower():  # Pull flow
+                parts = [p.strip() for p in line.split("<-")]
+                if len(parts) == 2:
+                    target = parts[0].strip()
+                    source = parts[1].strip()
+                    pull_pairs.append((target, source))
+            elif "<>" in line:  # Repulsion
                 parts = [p.strip() for p in line.split("<>")]
                 if len(parts) == 2:
                     repulsions.append((parts[0], parts[1]))
-            elif "<-" in line:
-                parts = [p.strip() for p in line.split("<-")]
-                if len(parts) == 2:
-                    target, source = parts[0].strip(), parts[1].strip()
-                    if source.lower() == "pull":
-                        # Simply mark the team as pull team
-                        if target in teams:
-                            teams[target].is_pull_team = True
-                    else:
-                        # Regular pull between specific teams
-                        pull_pairs.append((target, source))
-            elif "<-->" in line:
-                parts = [p.strip() for p in line.split("<-->")]
-                if len(parts) == 2:
-                    chat_pairs.append((parts[0], parts[1]))
-        
-        # Then parse nested blocks for any additional configurations
-        nested_blocks = self._extract_blocks(content)
-        for block_type, block_content in nested_blocks:
-            if block_type == "magnetic attraction":
-                # Parse attraction rules from block
-                for line in block_content.split('\n'):
-                    line = line.strip()
-                    if "><" in line:
-                        parts = [p.strip() for p in line.split("><")]
-                        if len(parts) == 2:
-                            attractions.append((parts[0], parts[1]))
-            elif block_type == "magnetic pull":
-                # Parse pull rules
-                for line in block_content.split('\n'):
-                    line = line.strip()
-                    if "<-" in line:
-                        parts = [p.strip() for p in line.split("<-")]
-                        if len(parts) == 2:
-                            # Note: parts[0] is target, parts[1] is source
-                            pull_pairs.append((parts[0], parts[1]))
-            elif block_type == "chat":
-                # Parse chat relationships
-                for line in block_content.split('\n'):
-                    line = line.strip()
-                    if "<-->" in line:
-                        parts = [p.strip() for p in line.split("<-->")]
-                        if len(parts) == 2:
-                            chat_pairs.append((parts[0], parts[1]))
-            elif block_type == "repel":
-                # Parse repulsion rules
-                for line in block_content.split('\n'):
-                    line = line.strip()
-                    if "<>" in line:
-                        parts = [p.strip() for p in line.split("<>")]
-                        if len(parts) == 2:
-                            repulsions.append((parts[0], parts[1]))
         
         self.workflow = WorkflowConfig(
             teams=teams,
             attractions=attractions,
             repulsions=repulsions,
-            chat=chat_pairs,
             pulls=pull_pairs
         )
 

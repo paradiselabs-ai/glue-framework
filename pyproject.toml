@@ -6,9 +6,9 @@ build-backend = "hatchling.build"
 name = "glue"
 version = "0.1.0"
 authors = [
-  { name="Your Name", email="your.email@example.com" },
+  { name="ParadiseLabs", email="paradiselabs.ai@gmail.com" },
 ]
-description = "GLUE Framework for AI Development"
+description = "GLUE Framework for AI Development - Built with SmolAgents (https://github.com/huggingface/smolagents)"
 readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [
@@ -19,12 +19,17 @@ classifiers = [
 dependencies = [
     "aiohttp>=3.8.0",
     "pydantic>=2.0.0",
-    "python-dotenv>=1.0.0"
+    "python-dotenv>=1.0.0",
+    "smolagents>=1.4.1",  # Core agent framework - https://github.com/huggingface/smolagents
+    "transformers>=4.0.0",  # For local model support
+    "litellm>=1.0.0",      # For multiple model providers
+    "mcp>=0.1.0"           # For MCP integration
 ]
 
 [project.urls]
 "Homepage" = "https://github.com/paradiselabs-ai/glue-framework"
 "Bug Tracker" = "https://github.com/paradiselabs-ai/glue-framework/issues"
+"SmolAgents" = "https://github.com/huggingface/smolagents"  # Credit to core framework
 
 [project.scripts]
 glue = "glue.cli:main"

@@ -1,252 +1,156 @@
+# GLUE Framework
 
-# GLUE Framework & Expression Language
+GLUE (GenAI Linking & Unification Engine) is a powerful framework for building multi-model AI applications with natural communication patterns and intuitive tool usage.
 
-## Overview
+Built with [SmolAgents](https://github.com/smol-ai/smolagents) - A lightweight framework for building AI agents with tool use and memory.
 
-GLUE consists of two powerful components:
+## Features
 
-1. **GLUE Framework** ((G)enerativeAI (L)inking & (U)nification (E)ngine):
-   - Advanced multi-model orchestration 
-   - Magnetic field-based resource management
-   - Intelligent tool sharing and binding
-   - Built-in conversation and memory management
-
-2. **GLUE Expression Language** ((G)enerativeAI (L)anguage (U)sing (E)xpressions):
-   - Intuitive, declarative syntax for AI app development
-   - Reduces boilerplate through magnetic bindings
-   - Natural workflow definitions
-   - Powerful chain operations
+- **Natural Team Structure**: Organize AI models into teams with clear roles and responsibilities
+- **Intuitive Tool Usage**: Use tools with different adhesive bindings (GLUE, VELCRO, TAPE) for flexible persistence
+- **Magnetic Information Flow**: Control how information flows between teams with push and pull patterns
+- **Simple Expression Language**: Write clear, declarative AI applications with the GLUE DSL
+- **Built-in Tools**: Web search, file handling, and code interpretation out of the box
+- **Extensible Design**: Create custom tools and add new model providers easily
 
 ## Quick Start
 
 1. Install GLUE:
-
-> NOTE: CURRENTLY UNRELEASED. V1.0.0 WILL BE RELEASED VERY SOON THROUGH PYPI AND INSTALLED WITH PIP OR YOUR PREFERRED INSTALLER
-
-2. Set up your environment (.env):
-
-```env
-OPENROUTER_API_KEY=your_key_here 
-SERP_API_KEY=your_key_here  # For web search capabilities
+```bash
+pip install glue-framework
 ```
 
-## Simple Examples Using (G)enerativeAI (L)anguage (U)sing (E)xpressions (Or just, GLUE. You write GLUE apps in the GLUE Framework, using GLUE):
+2. Set up your API keys:
+```bash
+# Required
+export OPENROUTER_API_KEY=your_key_here
 
-### Basic Chatbot (simple.glue)
+# Optional (for web search)
+export SERP_API_KEY=your_key_here
+export TAVILY_API_KEY=your_key_here
+```
 
+3. Create a GLUE application (e.g., `app.glue`):
 ```glue
-// GLUE APPS ARE WRITTEN BY STACKING SIMPLE CODE BLOCKS AND THEN GLUE THEM TOGETHER WITH 'apply glue'
-glue app {   // FIRST CODE BLOCK DEFINES THE APPLICATION NAME AND CONFIGURATIONS
-    name = "Simple Chat"
+glue app {
+    name = "My First App"
     config {
         development = true
     }
 }
 
-// NEXT WOULD BE TOOL CONFIGURATION BLOCKS (NOT NEEDED HERE)
+// Define tools
+tool web_search {
+    provider = serp  // Uses SERP_API_KEY from environment
+}
 
-model chatbot { // NEXT CODE BLOCK DEFINES THE MODELS (ALSO CALLED ASSISTANTS) BY NAME (model <name>)
-    provider = openrouter // MODELS (ASSISTANTS) DO NOT NEED TO DEFINE THE API KEY USING THE EXPRESSION LANGUAGE, ONLY THE PROVIDER
-    role = "You are a helpful AI assistant" // SYSTEM PROMPT FOR THIS MODEL (ASSISTANT)
+// Define models
+model researcher {
+    provider = openrouter
+    role = "Research topics online"
+    adhesives = [glue, velcro]
     config {
-        model = "anthropic/claude-3-sonnet"
+        model = "meta-llama/llama-3.1-70b-instruct:free"
         temperature = 0.7
     }
 }
 
-// LAST CODE BLOCK DEFINES THE WORKFLOW AND CONFIGURES THE MAGNETIC FIELD (NOT NEEDED HERE)
-
-// No tools or complex bindings needed for basic chat, thus no workflow needed
-
-apply glue // TELLS THE CLI TO EXECUTE THE .glue APPLICATION
-```
-
-### Research Assistant (research.glue)
-
-```glue
-glue app { // APP CONFIG BLOCK
-    name = "Research Assistant"
-    config {
-        development = true
-        sticky = true // THE STICKY FLAG CONFIGURES THE APP TO PERSIST CONTEXT AND MEMORY BETWEEN RUNS
+// Define teams
+magnetize {
+    research {
+        lead = researcher
+        tools = [web_search]
     }
-}
-
-// TOOL CONFIG BLOCKS
-
-tool web_search { // TOOL CONFIG BLOCK
-    provider = serp 
-    os.serp_api_key // WEB SEARCH TOOL DEFINES THE PROVIDER AND API KEY. THIS IS TEMPORARY AND WILL ONLY NEED THE PROVIDER IN THE FUTURE
-    config {
-        magnetic = true  // MAGNETIC TOOLS CAN BE SHARED BETWEEN MODELS WHILE RETAINING THEIR INTERNAL PERSISTENCE IF DESIRED
-    }                    // TOOL PERSISTENCE IS CONFIGURED WITH THE MODEL'S (ASSISTANT'S) DECLARED ADHESIVE STRENGTH
-}
-
-tool code_interpreter { // SECOND TOOL
-    config {
-        magnetic = true 
-    }
-}
-
-tool file_handler { // THIRD TOOL
-    config {
-        magnetic = true
-    }
-}
-
-// MODEL CONFIG BLOCKS - MODEL CONFIGS DECLARE RULES FOR TOOL USE BASED ON ADHESIVE STRENGTH
-
-model researcher { // FIRST MODEL BLOCK
-    provider = openrouter
-    role = "Primary researcher who conducts different code and programming and computer science research to help the user answer find ways to implement specific operations into their projects, and supports the coder by checking its code in the code_interpreter tool for accuracy and provides feedback. Researcher may be told that a fact check showed it's original results were inaccurate or out-of-date, and if so, the researcher begins the process again. Can ask coder1 for research assistance."
-    config {
-        model = "anthropic/claude-3-sonnet"
-        temperature = 0.7
-    }
-    // TOOLS CAN BE SHARED MAGNETICALLY, BUT EACH ASSISTANT USES A TOOL ACCORDING TO ITS ADHESIVE STRENGTH
-    tools {
-        web_search = glue      // Permanent binding (CONTEXT REMAINS BETWEEN USES)
-        code_interpreter = velcro  // Flexible binding (RECIEVES CONTEXT FROM PREVIOUS MODEL USE, BUT THOSE CHANGES DO NOT PERSIST AS A GLUE BINDING WOULD)
-    }
-}
-
-model coder1 { // SECOND MODEL BLOCK
-    provider = openrouter
-    role = "Processes and assists researcher in researching, and generates code to test the found solutions. Collaborates with coder2 in generating effective and accurate code."
-    config {
-        model = "anthropic/claude-3-sonnet"
-        temperature = 0.2
-    }
-    tools {
-        web_search = velcro // CAN SEE RESEARCHERS SEARCH QUERIES, AND CAN SEARCH OTHER THINGS BUT THIS MODELS SEARCHES DONT PERSIST 
-        code_interpreter = glue  // CODE INTERPRETER IS GLUED, ALL CHANGES PERSIST. THE RESEARCHER (velcro) CAN USE THE TOOL AND SEE THE PERSISTANCE FROM THIS MODEL, 
-                                 // BUT RESEARCHER'S CHANGES WILL NOT PERSIST IF ASSISTANT
-    }
-}
-
-model coder2 {
-    provider = openrouter
-    role = "Collaborates with coder1 by evaluating its code. Suggests improvements, bounces ideas back and forth with coder1, works iteratively to ensure final code is accurate and effective." 
-    config {
-        model = "anthropic/claude-3-sonnet"
-        temperature = 0.1
-    }
-    tools {
-        code_interpreter = glue
-    }
-}
-
-model writer {
-    provider = openrouter
-    role = "Documentation writer receives data from the researcher and the coder, organizes the findings, and performs a quick fact check. If the fact check fails, it informs the researcher. If it passes, it documents the data from the researcher and coder by creating a new file and saving it to the current directory. Files should be created in a new directory named 'Data/'. If Data/ does not exist first create it inside the current working directory. Files should always be written in a <pdf, txt, etc. - unspecified defaults to markdown>.
-    config {
-        model = "anthropic/claude-3-sonnet"
-        temperature = 0.3
-    }
-    tools {
-        web_search = tape  // Temporary binding - NO PERSISTENCE, RECEIVES THE TOOL IN A BLANK SLATE, RETURNS THE TOOL IN A BLANK SLATE
-        file_handler = glue  // 
-    }
-}
-
-// Define model interactions
-workflow {
-    // Two-way collaboration. "><" represents two objects being attracted magnetically 
-    researcher >< coder1  // Bidirectional binding - THESE ASSISTANTS CAN INTERACT BACK AND FORTH AUTONOMOUSLY
-    coder1 >< coder2
-    
-    // One-way information flow. "->" represents a magnetic push, or a one-way attraction. 
-    coder1 -> writer     // Push data - THE ASSISTANT PUSHES DATA TO THE WRITER, THE WRITER CANNOT RESPOND
-    writer -> researcher // (see writer "role" above) IF WRITERS FACT CHECK PROVES FALSE, IT PUSHES THAT DATA TO THE RESEARCHER TO TRY AGAIN
-    // Pull access - WHEN THE MODEL CANNOT INTERACT DIRECTLY WITH A MODEL IT NEEDS DATA FROM FOR ITS TASK, PULL INITIATES A PUSH FROM THE  
-    // OTHER MODEL. PULLING STILL DOES NOT ALLOW INTERACTION WITH THE OTHER MODEL, IT SIMPLY "POKES" THE MODEL TO PERFORM A PUSH OF THE DATA IT HAS. 
-    writer <- coder1   // Pull data - IF THE WRITER HASNT RECIEVED DATA FROM THE OTHER MODELS, IT CAN REQUEST A PUSH BY PULLING THE APPROPRIATE MODEL.
-    
-    // Prevent direct interaction 
-    writer <> coder2   // Repulsion - THESE ASSISTANTS CANNOT EVER INTERACT DIRECTLY WITH EACH OTHER
 }
 
 apply glue
 ```
 
-## CLI Usage
-
-GLUE provides a powerful CLI for managing your AI applications:
-
+4. Run your application:
 ```bash
-# Run a GLUE application
 glue run app.glue
-
-# Create a new GLUE project
-glue new myproject
-
-# List available models
-glue list-models
-
-# List available tools
-glue list-tools
-
-# Create a new component
-glue create --type tool mytool
-glue create --type agent myagent
 ```
 
-## Key Features
+## Core Concepts
 
-### Adhesive Binding System
+### 1. Models and Adhesive Tool Usage
 
-- `glue`: Permanent bindings with full context sharing
-- `velcro`: Flexible bindings that can be reconnected
-- `tape`: Temporary bindings for one-time operations
-- `magnetic`: Dynamic bindings with resource sharing
+Models are AI agents that can use tools with different adhesive bindings:
 
-### Magnetic Field System
+- **GLUE**: Team-wide persistent results
+- **VELCRO**: Session-based persistence
+- **TAPE**: One-time use, no persistence
 
-- Resource organization through magnetic fields
-- Dynamic tool sharing and access
-- Context-aware resource management
-- Intelligent cleanup and state management
+```glue
+model researcher {
+    adhesives = [glue, velcro]  // Available binding types
+}
+```
 
-### Expression Language
+### 2. Teams and Communication
 
-- Intuitive model-tool bindings
-- Natural workflow definitions
-- Resource sharing patterns
-- Chain operations
+Teams organize models and their tools:
 
-## Upcoming Features
+```glue
+magnetize {
+    research {
+        lead = researcher
+        members = [assistant]
+        tools = [web_search]
+    }
+}
+```
 
-Currently in development:
+### 3. Information Flow
 
-1. Advanced Pattern Recognition
-   - Intelligent workflow optimization
-   - Dynamic binding strength adjustment
-   - Context-aware resource allocation
+Control how teams share information:
 
-2. Enhanced Tool System
-   - Expanded tool ecosystem
-   - Custom tool development framework
-   - Advanced permission management
-   - Full integration with Anthropic's [Model Context Protocol](https://github.com/modelcontextprotocol)
+```glue
+magnetize {
+    research {
+        lead = researcher
+    }
+    
+    docs {
+        lead = writer
+    }
+    
+    flow {
+        research -> docs  // Push results
+        docs <- pull     // Pull when needed
+    }
+}
+```
 
-3. Memory Management
-   - Sophisticated context preservation
-   - Cross-model memory sharing
-   - Enhanced conversation history
+## Example Applications
 
-4. Advanced Expression Language Features
-   - Complex binding patterns
-   - Dynamic workflow adaptation
-   - Enhanced error handling
+### 1. Research Assistant
+- Multi-model research system
+- Fact-checking and verification
+- Documentation generation
+
+### 2. Code Generator
+- Architecture design
+- Code generation and review
+- Testing and validation
+
+### 3. Content Pipeline
+- Content research and creation
+- Editing and improvement
+- Fact verification
+
+## Documentation
+
+- [Core Concepts](docs/framework/01_core_concepts.md)
+- [Expression Language](docs/framework/02_expression_language.md)
+- [Tool System](docs/framework/03_tool_system.md)
+- [Example Applications](docs/framework/04_examples.md)
+- [Best Practices](docs/framework/05_best_practices.md)
 
 ## Contributing
 
-Contributions will be welcome immediately after our first official release!
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Documentation
-
-[FULL DOCS COMING SOON]

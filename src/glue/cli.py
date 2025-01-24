@@ -1,6 +1,12 @@
 # src/glue/cli.py
 
-"""GLUE Command Line Interface"""
+"""GLUE Command Line Interface
+GenerativeAI Linking & Unification Engine (GLUE) CLI commands.
+GLUE (https://github.com/paradiselabs-ai/glue-framework) is a lightweight, 
+powerful framework for developing multi-agentic AI workflows and applications.
+
+Built with SmolAgents (https://github.com/huggingface/smolagents) 
+"""
 
 import sys
 import click
@@ -11,7 +17,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from .dsl import parse_glue_file, execute_glue_app, load_env
 from .providers.openrouter import OpenRouterProvider
-from .tools import web_search, file_handler, code_interpreter, magnetic
+from .tools import web_search, file_handler, code_interpreter
 from .core.resource import Resource, ResourceState
 from .core.state import StateManager
 from .core.registry import ResourceRegistry
@@ -30,6 +36,7 @@ def print_version(ctx, param, value):
     if not value or ctx.resilient_parsing:
         return
     click.echo('GLUE Framework v0.1.0')
+    click.echo('Built with SmolAgents - https://github.com/huggingface/smolagents')
     ctx.exit()
 
 def format_component_name(name: str) -> Tuple[str, str, str]:
@@ -81,6 +88,7 @@ def create_project_structure(project_dir: Path) -> None:
 def cli(debug):
     """GLUE Framework - GenAI Linking & Unification Engine
 
+    Built with SmolAgents (https://github.com/huggingface/smolagents)
     Run GLUE applications and manage GLUE projects.
     """
     if debug:
@@ -303,23 +311,32 @@ def create(name, type):
             tool_content = '''"""GLUE Tool Implementation"""
 
 from typing import Any, Dict, Optional
-from glue.tools.base import BaseTool
+from glue.tools.simple_base import SimpleBaseTool, ToolConfig, ToolPermission
 
-class {class_name}Tool(Resource):
+class {class_name}Tool(SimpleBaseTool):
     """Implementation of {name} tool"""
     
-    def __init__(self):
+    def __init__(
+        self,
+        name: str = "{name}",
+        description: str = "{name} tool",
+        **config
+    ):
         super().__init__(
-            name="{name}",
-            category="tool",
-            tags={{"tool", "{name}"}}
+            name=name,
+            description=description,
+            config=ToolConfig(
+                required_permissions=[ToolPermission.READ],
+                timeout=30.0
+            )
         )
+        self.config = config
     
-    async def execute(self, **kwargs) -> Dict[str, Any]:
+    async def _execute(self, *args, **kwargs) -> Any:
         """Execute the tool
         
         Returns:
-            Dict[str, Any]: Tool execution results
+            Any: Tool execution results
         """
         # Implement tool logic here
         pass
@@ -478,6 +495,7 @@ def new(name, template):
         app_file = project_dir / f"{name}.glue"
         if template == 'basic':
             app_content = '''# Basic GLUE Application
+// A basic assistant that helps users with various tasks using tools
 
 glue app {
     name = "Basic Assistant"
@@ -489,14 +507,10 @@ glue app {
 model assistant {
     provider = openrouter
     role = "You are a helpful AI assistant that uses tools to help users"
+    adhesives = [glue, tape] // Define the adhesives the model can access tools with
     config {
         model = "openai/gpt-4"
         temperature = 0.7
-    }
-    tools {
-        // Tool persistence based on binding type:
-        file_handler = velcro     // Keep state until detached
-        code_interpreter = tape   // Fresh state each use
     }
 }
 
@@ -510,10 +524,12 @@ tool code_interpreter {
     }
 }
 
-workflow {
-    magnetic attraction {
-        assistant >< file_handler
-        assistant >< code_interpreter
+// Workflow defines model interactions and memory
+magnetize {
+    research {
+        lead = assistant
+        members = []  // Optional team members
+        tools = [file_handler, code_interpreter]  // Tools available to the team
     }
 }
 
@@ -521,6 +537,8 @@ apply glue
 '''
         elif template == 'research':
             app_content = '''# Research Assistant GLUE Application
+// A research assistant that helps with online research and analysis
+// Uses multiple models to research topics and synthesize findings
 
 glue app {
     name = "Research Assistant"
@@ -531,56 +549,58 @@ glue app {
 }
 
 model researcher {
-    provider = openrouter
+    provider = openrouter  // API key loaded from OPENROUTER_API_KEY environment variable
     role = "You are a research expert who finds and explains information"
+    adhesives = [glue]  // Can use GLUE for persistent results
     config {
         model = "openai/gpt-4"
         temperature = 0.7
     }
-    tools {
-        // Permanent tool binding - maintain state
-        web_search = glue     // Keep search history persistent
-    }
 }
 
 model analyst {
-    provider = openrouter
+    provider = openrouter  // API key loaded from OPENROUTER_API_KEY environment variable
     role = "You are a data analyst who synthesizes research findings"
+    adhesives = [velcro]  // Can use VELCRO for session persistence
     config {
         model = "anthropic/claude-3.5-sonnet:beta"
         temperature = 0.2
     }
-    tools {
-        // Flexible tool binding - state persists until detached
-        file_handler = velcro  // Keep files until detached
-    }
 }
 
 tool web_search {
-    provider = serp
-    os.serp_api_key
+    provider = serp  // API key loaded from SERP_API_KEY environment variable
 }
 
 tool file_handler {
-    // Each model gets its own instance
-    // Data persistence depends on binding type (glue/velcro/tape)
+    // Each model gets its own instance of the tool
 }
 
-workflow {
-    chat {
-        researcher <--> analyst  // Models can communicate
+// Workflow defines model interactions and memory
+magnetize {
+    research {
+        lead = researcher
+        members = []  // Optional team members
+        tools = [web_search]  // Tools available to the team
     }
-
-    magnetic attraction {
-        researcher >< web_search  // Researcher can search
-        analyst >< file_handler   // Analyst can save findings
+    
+    analysis {
+        lead = analyst
+        members = []  // Optional team members
+        tools = [file_handler]  // Tools available to the team
     }
+    
+    // Define information flow between teams
+    research -> analysis  // Research team pushes to analysis
+    analysis <- pull     // Analysis team can pull from research when needed
 }
 
 apply glue
 '''
         elif template == 'chat':
             app_content = '''# Chat Application GLUE Application
+// A conversational assistant with access to various tools
+// Demonstrates using multiple adhesive types for different persistence needs
 
 glue app {
     name = "Chat Assistant"
@@ -591,23 +611,17 @@ glue app {
 }
 
 model chat_assistant {
-    provider = openrouter
+    provider = openrouter  // API key loaded from OPENROUTER_API_KEY environment variable
     role = "You are a conversational AI assistant with tool access"
+    adhesives = [glue, velcro, tape]  // Can use all adhesive types
     config {
         model = "openai/gpt-4"
         temperature = 0.7
     }
-    tools {
-        // Tool persistence based on binding type:
-        web_search = glue         // Keep search history persistent
-        file_handler = velcro     // Keep files until detached
-        code_interpreter = tape   // Fresh state each use
-    }
 }
 
 tool web_search {
-    provider = serp
-    os.serp_api_key
+    provider = serp  // API key loaded from SERP_API_KEY environment variable
 }
 
 tool file_handler {
@@ -620,11 +634,12 @@ tool code_interpreter {
     }
 }
 
-workflow {
-    magnetic attraction {
-        chat_assistant >< web_search
-        chat_assistant >< file_handler
-        chat_assistant >< code_interpreter
+// Workflow defines model interactions and memory
+magnetize {
+    chat {
+        lead = chat_assistant
+        members = []  // Optional team members
+        tools = [web_search, file_handler, code_interpreter]  // Tools available to the team
     }
 }
 
@@ -638,6 +653,8 @@ apply glue
         
         example_file = examples_dir / 'tool_usage.glue'
         example_content = '''# Tool Usage Examples
+// Demonstrates using different tools and adhesive types
+// Shows how to configure tools and manage their persistence
 
 glue app {
     name = "Tool Examples"
@@ -649,24 +666,18 @@ glue app {
 }
 
 model assistant {
-    provider = openrouter
+    provider = openrouter  // API key loaded from OPENROUTER_API_KEY environment variable
     role = "You are a tool-using assistant that demonstrates GLUE capabilities"
+    adhesives = [glue, velcro, tape]  // Define which adhesive types this model can use
     config {
         model = "openai/gpt-4"
         temperature = 0.7
-    }
-    tools {
-        // Tool persistence based on binding type:
-        web_search = glue         // Keep search history persistent
-        file_handler = velcro     // Keep files until detached
-        code_interpreter = tape   // Fresh state each use
     }
 }
 
 # Built-in tools with configuration
 tool web_search {
-    provider = serp
-    os.serp_api_key
+    provider = serp  // API key loaded from SERP_API_KEY environment variable
 }
 
 tool file_handler {
@@ -679,21 +690,20 @@ tool code_interpreter {
     }
 }
 
-workflow {
-    magnetic attraction {
-        assistant >< web_search
-        assistant >< file_handler
-        assistant >< code_interpreter
+magnetize {
+    research {
+        lead = assistant
+        tools = [web_search, file_handler, code_interpreter]
     }
 }
 
 apply glue
 
-# Example prompts:
-# - "Search for recent news about AI"
-# - "Save the search results to ai_news.txt"
-# - "Run this Python code: print('Hello from GLUE!')"
-# - "Create a magnetic binding between two models"
+// Example prompts:
+// - "Search for recent news about AI"
+// - "Save the search results to ai_news.txt"
+// - "Run this Python code: print('Hello from GLUE!')"
+// - "Create a magnetic binding between two models"
 '''
 
         example_file.write_text(example_content)
@@ -773,25 +783,19 @@ def list_tools():
             "name": "web_search",
             "module": "glue.tools.web_search",
             "description": "Perform web searches and retrieve information",
-            "example": 'use tool web_search\n\n# Then in your agent:\nresult = await tools.web_search.search("your query")'
+            "example": 'tool web_search {\n    provider = serp  // API key loaded from SERP_API_KEY environment variable\n}'
         },
         {
             "name": "file_handler",
             "module": "glue.tools.file_handler",
             "description": "Read and write files",
-            "example": 'use tool file_handler\n\n# Then in your agent:\nresult = await tools.file_handler.read("path/to/file")'
+            "example": 'tool file_handler {}'
         },
         {
             "name": "code_interpreter",
             "module": "glue.tools.code_interpreter",
             "description": "Execute and analyze code",
-            "example": 'use tool code_interpreter\n\n# Then in your agent:\nresult = await tools.code_interpreter.execute("print(\'Hello\')")'
-        },
-        {
-            "name": "magnetic",
-            "module": "glue.tools.magnetic",
-            "description": "Manage magnetic binding patterns",
-            "example": 'use tool magnetic\n\n# Then in your agent:\nresult = await tools.magnetic.bind(model1, model2)'
+            "example": 'tool code_interpreter {\n    config {\n        languages = ["python", "javascript"]\n    }\n}'
         }
     ]
     
@@ -804,7 +808,7 @@ def list_tools():
                     "name": tool_dir.name,
                     "module": f"tools.{tool_dir.name}",
                     "description": "Custom tool",
-                    "example": f'use tool {tool_dir.name}\n\n# Then in your agent:\nresult = await tools.{tool_dir.name}.execute()'
+                    "example": f'tool {tool_dir.name} {{}}'
                 })
     
     # Display built-in tools

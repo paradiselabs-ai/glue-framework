@@ -10,6 +10,9 @@ PROVIDER_KEYWORDS = {
     'groq': 'groq',
     'mistral': 'mistral',
     'llama': 'llama',
+    'huggingface': 'huggingface',
+    'hf': 'huggingface',
+    'transformers': 'transformers',
     
     # Search Providers
     'serp': 'serp',
@@ -19,8 +22,28 @@ PROVIDER_KEYWORDS = {
     'you': 'you'
 }
 
+# Agent Configuration Keywords
+AGENT_KEYWORDS = {
+    # Feature Flags
+    'smolagent': 'smolagent',    # Enable SmoLAgents
+    'smol': 'smolagent',         # Shorthand
+    'litellm': 'litellm',        # Use LiteLLM
+    
+    # Agent Types
+    'agent': 'agent_type',       # Agent type setting
+    'code': 'code',              # CodeAgent
+    'tool': 'tool',              # ToolCallingAgent
+    'code_agent': 'code',
+    'tool_agent': 'tool'
+}
+
 # Configuration Keywords
 CONFIG_KEYWORDS = {
+    # Agent Configuration
+    'smolagent': 'smolagent',    # Enable SmoLAgents
+    'agent': 'agent_type',       # Agent type
+    'litellm': 'litellm',        # Use LiteLLM
+    
     # API Configuration
     'api': 'api_key',
     'key': 'api_key',

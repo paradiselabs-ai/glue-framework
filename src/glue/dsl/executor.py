@@ -8,16 +8,12 @@ from typing import Any, Dict, Set, List, Tuple, Optional, Type
 from pathlib import Path
 from copy import deepcopy
 from .parser import GlueApp, ModelConfig, ToolConfig
-from ..core.types import AdhesiveType
-from ..core.workspace import workspace_context
-from ..tools.base import BaseTool as create_tool
-from ..providers import (
-    OpenRouterProvider
-)
-from ..magnetic.field import MagneticField
-from ..core.conversation import ConversationManager
-from ..core.group_chat_flow import GroupChatManager
+from ..core.types import AdhesiveType, Team
 from ..core.workspace import WorkspaceManager
+from ..tools.base import BaseTool as create_tool
+from ..providers import OpenRouterProvider
+from ..core.simple_conversation import SimpleConversationManager
+from ..core.group_chat_flow import GroupChatManager
 from ..core.logger import init_logger, get_logger
 
 class GlueExecutor:
@@ -37,7 +33,7 @@ class GlueExecutor:
         self.workspace_manager = WorkspaceManager()
         
         # Initialize managers
-        self.conversation = ConversationManager(
+        self.conversation = SimpleConversationManager(
             sticky=app.config.get("sticky", False)
         )
         self.group_chat = GroupChatManager(app.name)
@@ -115,7 +111,7 @@ class GlueExecutor:
         # Default to app stickiness
         return app_sticky
     
-    async def _setup_tools(self, field: MagneticField, workspace_path: str):
+    async def _setup_tools(self, workspace_path: str):
         """Setup tools"""
         self.logger.info("\nSetting up tools...")
         self.logger.info(f"Available tools: {list(self.app.tool_configs.keys())}")
@@ -127,7 +123,7 @@ class GlueExecutor:
         }
         self.logger.debug(f"Tool configs: {masked_configs}")
         
-        # Create tools with appropriate configuration
+        # Create base tools
         for tool_name, tool_config in self.app.tool_configs.items():
             self.logger.info(f"\nSetting up tool: {tool_name}")
             
@@ -147,48 +143,40 @@ class GlueExecutor:
                 self.logger.info(f"Using API key from environment: {env_var}")
             
             try:
-                # Create tool with config
+                # Create base tool with config
                 self.logger.info(f"Creating tool with provider: {tool_config.provider}")
-                
-                # Determine tool stickiness
-                sticky = self._determine_tool_stickiness(tool_config)
                 
                 # Get tool type
                 tool_type = _infer_tool_type(tool_name)
                 if not tool_type:
                     raise ValueError(f"Unknown tool type: {tool_name}")
                 
-                # Create tool based on its type
+                # Create base tool configuration
                 if tool_name == "code_interpreter":
-                    tool = tool_type(
-                        name=tool_name,
-                        description="Executes code in a sandboxed environment",
-                        workspace_dir=workspace_path,
-                        magnetic=tool_config.config.get("magnetic", False),
-                        sticky=sticky,
-                        supported_languages=tool_config.config.get("languages", None)
-                    )
+                    base_config = {
+                        "name": tool_name,
+                        "description": "Executes code in a sandboxed environment",
+                        "workspace_dir": workspace_path,
+                        "supported_languages": tool_config.config.get("languages", None)
+                    }
                 else:
-                    # Set workspace path for file operations
-                    config = {
-                        **tool_config.config,
-                        "sticky": sticky,
-                        "workspace_dir": workspace_path
+                    base_config = {
+                        "name": tool_name,
+                        "workspace_dir": workspace_path,
+                        **tool_config.config
                     }
                     
-                    tool = tool_type(
-                        name=tool_name,
-                        api_key=api_key,
-                        provider=tool_config.provider,
-                        **config
-                    )
+                    # Only add api_key and provider if tool accepts them
+                    if 'api_key' in tool_type.__init__.__code__.co_varnames:
+                        base_config['api_key'] = api_key
+                    if 'provider' in tool_type.__init__.__code__.co_varnames:
+                        base_config['provider'] = tool_config.provider
                 
-                # Add tool to field
-                self.logger.info("Adding tool to field")
-                await field.add_resource(tool)
+                # Create base tool (models will get their own instances)
+                base_tool = tool_type(**base_config)
+                self.tools[tool_name] = base_tool
+                self.logger.info(f"Base tool {tool_name} setup complete")
                 
-                self.tools[tool_name] = tool
-                self.logger.info(f"Tool {tool_name} setup complete (sticky={sticky})")
             except Exception as e:
                 self.logger.error(f"Error setting up tool {tool_name}: {str(e)}")
                 raise
@@ -250,68 +238,58 @@ class GlueExecutor:
                 self.models[model_name] = model
                 self.logger.info(f"Model {model_name} setup complete")
     
-    async def _setup_workflow(self, field: MagneticField):
+    async def _setup_workflow(self):
         """Setup workflow with teams and flows"""
         if not self.app.workflow:
             return
         
         self.logger.info("\nSetting up workflow...")
         
-        # First create all team fields from explicit configs
-        teams = {}
+        # Create teams
+        self.teams = {}
         for team_name, team_config in self.app.workflow.teams.items():
-            teams[team_name] = field.create_child_field(
-                name=team_name,
-                auto_bind=team_config.auto_bind,
-                is_pull_team=team_config.is_pull_team
-            )
-        
-        # Then setup explicit team configs
-        for team_name, team_config in self.app.workflow.teams.items():
-            # Get or create team field
-            team_field = teams.get(team_name) or field.create_child_field(
-                name=team_name,
-                pull_fallback=team_config.pull_fallback,
-                auto_bind=team_config.auto_bind
-            )
-            teams[team_name] = team_field
+            self.logger.info(f"\nSetting up team: {team_name}")
+            
+            # Create team
+            team = Team(team_name)
+            self.teams[team_name] = team
             
             # Add lead if specified
             if team_config.lead and team_config.lead in self.models:
                 self.logger.info(f"Adding lead: {team_config.lead}")
                 lead = self.models[team_config.lead]
-                await team_field.add_resource(lead, is_lead=True)
-                await self.group_chat.add_model(lead)
+                lead.team = team_name
+                await team.add_member(team_config.lead)
             
             # Add members
             for member_name in team_config.members:
                 if member_name in self.models:
                     self.logger.info(f"Adding member: {member_name}")
                     member = self.models[member_name]
-                    await team_field.add_resource(member)
-                    await self.group_chat.add_model(member)
+                    member.team = team_name
+                    await team.add_member(member_name)
             
-            # Add tools
+            # Add tools - each model gets its own instance
             for tool_name in team_config.tools:
                 if tool_name in self.tools:
                     self.logger.info(f"Adding tool: {tool_name}")
-                    tool = self.tools[tool_name]
-                    # Apply stickiness if team is sticky
-                    if team_config.sticky:
-                        tool.sticky = True
-                    await team_field.add_resource(tool)
+                    await team.add_tool(tool_name)
+                    
+                    # Create tool instance for each team member
+                    base_tool = self.tools[tool_name]
+                    for member_name in team.members:
+                        member = self.models[member_name]
+                        member._tools[tool_name] = base_tool.create_instance()
         
         # Setup flows between teams
         for source, target in self.app.workflow.attractions:
             self.logger.info(f"Setting up flow: {source} -> {target}")
             
-            # Get team fields
-            source_field = field.get_child_field(source)
-            target_field = field.get_child_field(target)
-            
-            if source_field and target_field:
-                # Enable push from source to target
-                await source_field.enable_push(target_field)
+            if source in self.teams and target in self.teams:
+                source_team = self.teams[source]
+                target_team = self.teams[target]
+                source_team.allow_push_to(target)
+                target_team.allow_pull_from(source)
             else:
                 self.logger.warning(f"Could not find teams for flow: {source} -> {target}")
         
@@ -319,151 +297,95 @@ class GlueExecutor:
         for source, target in self.app.workflow.repulsions:
             self.logger.info(f"Setting up repulsion: {source} <> {target}")
             
-            # Get team fields
-            source_field = field.get_child_field(source)
-            target_field = field.get_child_field(target)
-            
-            if source_field and target_field:
-                # Create repulsion between teams
-                await source_field.repel(target_field)
+            if source in self.teams and target in self.teams:
+                source_team = self.teams[source]
+                target_team = self.teams[target]
+                source_team.repel(target)
+                target_team.repel(source)
             else:
                 self.logger.warning(f"Could not find teams for repulsion: {source} <> {target}")
                 
-        # Setup pull teams and fallbacks
+        # Setup pull teams
         for target, source in self.app.workflow.pulls:
             self.logger.info(f"Setting up pull: {target} <- {source}")
             
-            # Handle special "pull" keyword
-            if source.lower() == "pull":
-                # Get or create target team field
-                target_field = teams.get(target)
-                if not target_field:
-                    target_field = field.create_child_field(
-                        name=target,
-                        is_pull_team=True  # Mark as pull team
-                    )
-                    teams[target] = target_field
-                else:
-                    # Update existing field to be pull team
-                    target_field.is_pull_team = True
-                self.logger.info(f"Marked {target} as pull team")
-            else:
-                # Regular pull between teams
-                target_field = teams.get(target)
-                source_field = teams.get(source)
+            if target in self.teams:
+                target_team = self.teams[target]
                 
-                if target_field and source_field:
-                    # Enable field-level pull
-                    await target_field.enable_field_pull(source_field)
+                # Handle special "pull" keyword
+                if source.lower() == "pull":
+                    # Can pull from any non-repelled team
+                    for other_name, other_team in self.teams.items():
+                        if other_name != target and other_name not in target_team._repelled_by:
+                            target_team.allow_pull_from(other_name)
+                elif source in self.teams:
+                    # Regular pull from specific team
+                    target_team.allow_pull_from(source)
 
-    def _get_binding_patterns(self, field: MagneticField) -> Dict[str, Any]:
-        """Get binding patterns from workflow"""
-        patterns = {
-            # Tool bindings by adhesive type
-            AdhesiveType.GLUE: [],
-            AdhesiveType.VELCRO: [],
-            AdhesiveType.TAPE: [],
-            # Include the field for context
-            'field': field
-        }
-        
-        if self.app.workflow:
-            # Only add model-tool attractions
-            for source, target in self.app.workflow.attractions:
-                # Check if this is a model-tool attraction
-                if (source in self.models and target in self.tools) or \
-                   (target in self.models and source in self.tools):
-                    # Use GLUE for model-tool bindings by default
-                    patterns[AdhesiveType.GLUE].append((source, target))
-        
-        return patterns
     
     async def execute(self) -> Any:
         """Execute GLUE application"""
-        # Setup models first (they don't need the field)
-        await self._setup_models()
-        
         try:
-            # Get workspace based on app stickiness
+            # Get workspace path
             workspace_path = self.workspace_manager.get_workspace(
                 self.app.name,
                 sticky=self.app.config.get("sticky", False)
             )
             
-            # Create workspace with existing registry
-            async with workspace_context(self.app.name, self.registry) as ws:
-                # Use workspace's field
-                field = ws.field
+            # Setup components
+            await self._setup_models()
+            await self._setup_tools(workspace_path)
+            await self._setup_workflow()
+            
+            # Interactive prompt loop
+            while True:
+                print("\nprompt:", flush=True)
+                # Read input with proper buffering
+                loop = asyncio.get_event_loop()
+                user_input = await loop.run_in_executor(
+                    None,
+                    lambda: input().strip()  # Strip whitespace
+                )
                 
-                # Use field's context manager to ensure it stays active
-                async with field as active_field:
-                    # Setup tools in field
-                    await self._setup_tools(active_field, workspace_path)
-                    
-                    # Add tools to group chat manager
-                    for tool_name, tool in self.tools.items():
-                        await self.group_chat.add_tool(tool)
-                    
-                    # Link tools to models with proper binding types
-                    for model_name, model in self.models.items():
-                        if hasattr(model, "_tools"):
-                            model_config = self.app.model_configs[model_name]
-                            if hasattr(model_config, "tools"):
-                                for tool_name, binding_type in model_config.tools.items():
-                                    if tool_name in self.tools:
-                                        model.add_tool(tool_name, self.tools[tool_name], binding_type)
-                    
-                    # Setup workflow
-                    await self._setup_workflow(active_field)
-                    
-                    # Interactive prompt loop
-                    while True:
-                        print("\nprompt:", flush=True)
-                        # Read input with proper buffering
-                        loop = asyncio.get_event_loop()
-                        user_input = await loop.run_in_executor(
-                            None,
-                            lambda: input().strip()  # Strip whitespace
-                        )
-                        
-                        if user_input.lower() in ['exit', 'quit']:
-                            break
-                        
-                        # Get model's response using appropriate manager
-                        print("\nthinking...", flush=True)
-                        
-                        # Check if we have any active chats
-                        active_chats = self.group_chat.get_active_conversations()
-                        if active_chats:
-                            # Use group chat manager for chat interactions
-                            chat_id = next(iter(active_chats))
-                            response = await self.group_chat.process_message(
-                                chat_id,
-                                user_input
-                            )
-                        else:
-                            # Use regular conversation manager for non-chat interactions
-                            binding_patterns = self._get_binding_patterns(active_field)
-                            response = await self.conversation.process(
-                                models=self.models,
-                                binding_patterns=binding_patterns,
-                                user_input=user_input,
-                                tools=self.tools
-                            )
-                        
-                        print(f"\nresponse: {response}", flush=True)
+                if user_input.lower() in ['exit', 'quit']:
+                    break
+                
+                # Process input
+                print("\nthinking...", flush=True)
+                
+                # Get model's team
+                team_name = None
+                for t_name, team in self.teams.items():
+                    if any(m in team.members for m in self.models.keys()):
+                        team_name = t_name
+                        break
+                
+                if team_name:
+                    # Use team's lead model
+                    team = self.teams[team_name]
+                    lead_model = next(
+                        self.models[m] for m in team.members 
+                        if m in self.models
+                    )
+                    response = await lead_model.generate(user_input)
+                else:
+                    # Use first available model
+                    model = next(iter(self.models.values()))
+                    response = await model.generate(user_input)
+                
+                print(f"\nresponse: {response}", flush=True)
+                
         finally:
-            # Save conversation state if sticky
+            # Save state if sticky
             if self.app.config.get("sticky", False):
-                self.conversation.save_state()
+                for team in self.teams.values():
+                    state = team.save_state()
+                    # Save team state (implementation needed)
             
-            # Cleanup any remaining sessions
-            for tool in self.tools.values():
-                if hasattr(tool, 'cleanup'):
-                    await tool.cleanup()
-            
-            # Cleanup group chat
-            await self.group_chat.cleanup()
+            # Cleanup
+            for model in self.models.values():
+                if hasattr(model, 'cleanup'):
+                    await model.cleanup()
             
             # Cleanup workspace if not sticky
             if not self.app.config.get("sticky", False):
@@ -471,12 +393,14 @@ class GlueExecutor:
 
 def _infer_tool_type(name: str) -> Optional[Type[Any]]:
     """Infer tool type from name"""
+    from ..tools.simple_web_search import SimpleWebSearchTool
+    from ..tools.simple_file_handler import SimpleFileHandlerTool
     from ..tools.code_interpreter import CodeInterpreterTool
-    from ..tools.web_search import WebSearchTool
     
     TOOL_TYPES = {
+        'web_search': SimpleWebSearchTool,
+        'file_handler': SimpleFileHandlerTool,
         'code_interpreter': CodeInterpreterTool,
-        'web_search': WebSearchTool,
     }
     
     return TOOL_TYPES.get(name.lower())
