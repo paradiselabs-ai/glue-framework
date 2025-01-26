@@ -7,6 +7,7 @@ from typing import Dict, List, Any, Optional, Tuple, Set
 from dataclasses import dataclass, field
 from ..core.logger import get_logger
 from ..core.types import AdhesiveType
+from ..core.app import GlueApp
 from .keywords import (
     get_keyword_type,
     PROVIDER_KEYWORDS,
@@ -56,7 +57,7 @@ class WorkflowConfig:
     pulls: List[Tuple[str, str]] = field(default_factory=list)  # (target, source) pairs
 
 @dataclass
-class GlueApp:
+class GlueAppConfig:
     """GLUE Application Configuration"""
     name: str
     config: Dict[str, Any]
@@ -68,13 +69,13 @@ class GlueParser:
     """Parser for GLUE DSL"""
     
     def __init__(self):
-        self.app: Optional[GlueApp] = None
+        self.app: Optional[GlueAppConfig] = None
         self.models: Dict[str, ModelConfig] = {}
         self.tools: Dict[str, ToolConfig] = {}
         self.workflow: Optional[WorkflowConfig] = None
         self.logger = get_logger()
     
-    def parse(self, content: str) -> GlueApp:
+    def parse(self, content: str) -> GlueAppConfig:
         """Parse GLUE DSL content"""
         # Remove comments
         content = re.sub(r'//.*$', '', content, flags=re.MULTILINE)
@@ -116,7 +117,7 @@ class GlueParser:
         
         # Create app with parsed components
         if not self.app:
-            self.app = GlueApp(
+            self.app = GlueAppConfig(
                 name="glue_app",
                 config={},
                 model_configs=self.models,
@@ -213,7 +214,7 @@ class GlueParser:
                 else:
                     config[key] = self._parse_value(value)
         
-        self.app = GlueApp(
+        self.app = GlueAppConfig(
             name=name,
             config=config
         )
@@ -391,8 +392,7 @@ class GlueParser:
         nested_blocks = self._extract_blocks(content)
         for block_type, block_content in nested_blocks:
             # Get team name
-            parts = block_type.split(None, 1)
-            team_name = parts[1] if len(parts) > 1 else "default"
+            team_name = block_type
             
             # Parse team config
             lead = None
@@ -442,7 +442,7 @@ class GlueParser:
             pulls=pull_pairs
         )
 
-def parse_glue_file(path: str) -> GlueApp:
+def parse_glue_file(path: str) -> GlueAppConfig:
     """Parse GLUE file"""
     with open(path) as f:
         content = f.read()

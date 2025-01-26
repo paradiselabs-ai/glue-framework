@@ -3,7 +3,6 @@
 #============ Imports ====================
 
 from typing import Any, Dict, List, Optional
-from dataclasses import dataclass
 import subprocess
 import asyncio
 import tempfile
@@ -13,10 +12,12 @@ import importlib.util
 import traceback
 from pathlib import Path
 from .base import ToolConfig, ToolPermission
-from .base import BaseTool
+from .simple_magnetic import SimpleMagneticTool
+from ..magnetic.field import ResourceState
 from ..core.types import AdhesiveType
-from ..core.context import ContextState, ComplexityLevel
-from ..core.state import ResourceState
+from ..core.context import ContextState, InteractionType, ComplexityLevel
+from ..core.registry import ResourceRegistry
+from ..core.state import StateManager
 
 # ==================== Constants ====================
 SUPPORTED_LANGUAGES = {
@@ -67,231 +68,204 @@ DANGEROUS_IMPORTS = {
     "socket": {"name": "socket", "description": "Network operations", "level": "suspicious"}
 }
 
-# ==================== Code Result ====================
-@dataclass
-class CodeResult:
-    """Result from code execution"""
-    output: str
-    error: Optional[str] = None
-    files: List[str] = None
-    success: bool = True
-    error_type: Optional[str] = None
-    error_context: Optional[Dict[str, Any]] = None
-    suggestions: Optional[List[str]] = None
-    analysis: Optional[Dict[str, Any]] = None
-    resource_usage: Optional[Dict[str, Any]] = None
-
-    def __post_init__(self):
-        if self.files is None:
-            self.files = []
-        if self.error_context is None:
-            self.error_context = {}
-        if self.suggestions is None:
-            self.suggestions = []
-        if self.analysis is None:
-            self.analysis = {}
-        if self.resource_usage is None:
-            self.resource_usage = {}
-
-# ==================== Code Interpreter Configuration ====================
-@dataclass
-class CodeInterpreterConfig:
-    """Configuration for code interpreter tool"""
-    # Feature flags
-    enable_security_checks: bool = True
-    enable_code_analysis: bool = True
-    enable_error_suggestions: bool = True
-    enable_code_persistence: bool = True
-    
-    # Security limits
-    max_memory_mb: int = 500
-    max_execution_time: int = 30
-    max_file_size_kb: int = 10240
-    max_subprocess_count: int = 2
-    
-    # Analysis settings
-    complexity_threshold: str = "MODERATE"
-    security_level: str = "suspicious"
-    
-    # Error handling
-    max_retries: int = 3
-    show_traceback: bool = True
-    detailed_errors: bool = True
-    
-    # Tool settings
-    supported_languages: Optional[List[str]] = None
-    workspace_dir: Optional[str] = None
-    binding_type: Optional[AdhesiveType] = None
-
-    def __post_init__(self):
-        """Validate configuration after initialization"""
-        # Validate numeric limits
-        if self.max_memory_mb < 0:
-            raise ValueError("max_memory_mb must be positive")
-        if self.max_execution_time < 0:
-            raise ValueError("max_execution_time must be positive")
-        if self.max_file_size_kb < 0:
-            raise ValueError("max_file_size_kb must be positive")
-        if self.max_subprocess_count < 0:
-            raise ValueError("max_subprocess_count must be positive")
-            
-        # Validate complexity threshold
-        valid_complexities = ["SIMPLE", "MODERATE", "COMPLEX"]
-        if self.complexity_threshold not in valid_complexities:
-            raise ValueError(f"complexity_threshold must be one of {valid_complexities}")
-            
-        # Validate security level
-        valid_security = ["safe", "suspicious", "dangerous"]
-        if self.security_level not in valid_security:
-            raise ValueError(f"security_level must be one of {valid_security}")
-
 # ==================== Code Interpreter Tool ====================
 
-class CodeInterpreterTool(BaseTool):
-    """Tool for executing code in various languages with advanced features"""
+class CodeInterpreterTool(SimpleMagneticTool):
+    """Tool for executing code in various languages with magnetic capabilities"""
     
     def __init__(
         self,
         name: str = "code_interpreter",
         description: str = "Executes code in a sandboxed environment",
-        config: Optional[CodeInterpreterConfig] = None
+        supported_languages: Optional[List[str]] = None,
+        workspace_dir: Optional[str] = None,
+        magnetic: bool = True,
+        sticky: bool = False,
+        binding_type: Optional[AdhesiveType] = None,
+        # Advanced feature configuration
+        config: Optional[Dict[str, Any]] = None,
+        # Default configuration
+        default_config: Dict[str, Any] = {
+            # Feature flags
+            "enable_security_checks": True,
+            "enable_code_analysis": True,
+            "enable_error_suggestions": True,
+            "enable_code_persistence": True,
+            # Security limits
+            "max_memory_mb": 500,
+            "max_execution_time": 30,
+            "max_file_size_kb": 10240,
+            "max_subprocess_count": 2,
+            # Analysis settings
+            "complexity_threshold": "MODERATE",
+            "security_level": "suspicious",
+            # Error handling
+            "max_retries": 3,
+            "show_traceback": True,
+            "detailed_errors": True
+        }
     ):
-        # Use default config if none provided
-        self.tool_config = config or CodeInterpreterConfig()
-        
         super().__init__(
             name=name,
             description=description,
-            binding_type=self.tool_config.binding_type,
+            shared_resources=["code", "output", "language", "execution_result"],
+            sticky=sticky,
+            binding_type=binding_type or AdhesiveType.GLUE if magnetic else None,
             config=ToolConfig(
                 required_permissions=[
                     ToolPermission.EXECUTE,
-                    ToolPermission.FILE_SYSTEM
+                    ToolPermission.FILE_SYSTEM,
+                    ToolPermission.MAGNETIC
                 ],
-                timeout=self.tool_config.max_execution_time,
+                timeout=max_execution_time,
                 cache_results=False
             )
         )
         
-        # Store feature flags and limits
-        self.enable_security_checks = self.tool_config.enable_security_checks
-        self.enable_code_analysis = self.tool_config.enable_code_analysis
-        self.enable_error_suggestions = self.tool_config.enable_error_suggestions
-        self.enable_code_persistence = self.tool_config.enable_code_persistence
+        # Merge provided config with defaults
+        self.config = {**default_config, **(config or {})}
         
-        # Store resource limits
-        self.max_memory_mb = self.tool_config.max_memory_mb
-        self.max_execution_time = self.tool_config.max_execution_time
-        self.max_file_size_kb = self.tool_config.max_file_size_kb
-        self.max_subprocess_count = self.tool_config.max_subprocess_count
-        # Initialize languages and workspace
+        # Store feature flags and limits from config
+        self.enable_security_checks = self.config["enable_security_checks"]
+        self.enable_code_analysis = self.config["enable_code_analysis"]
+        self.enable_error_suggestions = self.config["enable_error_suggestions"]
+        self.enable_code_persistence = self.config["enable_code_persistence"]
+        
+        # Store resource limits from config
+        self.max_memory_mb = self.config["max_memory_mb"]
+        self.max_execution_time = self.config["max_execution_time"]
+        self.max_file_size_kb = self.config["max_file_size_kb"]
+        self.max_subprocess_count = self.config["max_subprocess_count"]
         self.supported_languages = (
             {lang: SUPPORTED_LANGUAGES[lang] 
-             for lang in self.tool_config.supported_languages if lang in SUPPORTED_LANGUAGES}
-            if self.tool_config.supported_languages
+             for lang in supported_languages if lang in SUPPORTED_LANGUAGES}
+            if supported_languages
             else SUPPORTED_LANGUAGES
         )
-        self.workspace_dir = os.path.abspath(self.tool_config.workspace_dir or "workspace")
+        self.workspace_dir = os.path.abspath(workspace_dir or "workspace")
         self._temp_files: List[str] = []
 
-    async def _transition_state(self, new_state: ResourceState) -> None:
-        """Simple state transition between IDLE and ACTIVE"""
+    async def _transition_state(self, new_state: ResourceState, context: Optional[ContextState] = None) -> None:
+        """Handle state transitions with proper cleanup"""
         if self._state == new_state:
             return
             
         try:
-            if new_state == ResourceState.IDLE:
+            if new_state == ResourceState.ACTIVE:
+                # Ensure workspace is available for magnetic tools
+                if self.magnetic and not self._workspace:
+                    raise RuntimeError("Cannot transition to ACTIVE without workspace")
+                    
+                # Update context if provided
+                if context:
+                    if context.interaction_type == InteractionType.CHAT:
+                        self._state = ResourceState.CHATTING
+                        return
+                    elif context.interaction_type == InteractionType.PULL:
+                        self._state = ResourceState.PULLING
+                        return
+                        
+            elif new_state == ResourceState.IDLE:
+                # Clean up any temporary resources
                 await self.cleanup()
-            elif new_state == ResourceState.ACTIVE:
-                if not os.path.exists(self.workspace_dir):
-                    os.makedirs(self.workspace_dir, exist_ok=True)
-            
+                
             self._state = new_state
             
         except Exception as e:
             raise RuntimeError(f"Failed to transition to {new_state.name}: {str(e)}")
 
-    async def execute(self, *args, **kwargs) -> CodeResult:
-        """Execute with enhanced error handling and validation"""
-        context = kwargs.get("context")
-        retries = 0
-        max_retries = self.tool_config.max_retries
+    async def execute(self, *args, **kwargs) -> Any:
+        """Execute with enhanced error handling and state validation"""
+        try:
+            context = kwargs.get("context")
+            await self._transition_state(ResourceState.ACTIVE, context)
         
-        while retries <= max_retries:
+
             try:
-                # Set state to ACTIVE
-                await self._transition_state(ResourceState.ACTIVE)
-                
-                # Execute code with validation
                 result = await self._execute(*args, **kwargs)
                 
-                # Return to IDLE
-                await self._transition_state(ResourceState.IDLE)
+                # Transition back to IDLE unless in a special state
+                if self._state not in [ResourceState.CHATTING, ResourceState.PULLING]:
+                    await self._transition_state(ResourceState.IDLE)
+                    
                 return result
-                
+            
             except TimeoutError as e:
                 await self._transition_state(ResourceState.IDLE)
-                return CodeResult(
-                    output="",
-                    error=str(e),
-                    success=False,
-                    error_type="timeout_error",
-                    error_context={
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "error_type": "timeout_error",
+                    "error_context": {
                         "timeout": kwargs.get("timeout", self.max_execution_time),
-                        "language": args[1] if len(args) > 1 else kwargs.get("language", "python"),
-                        "attempt": retries + 1,
-                        "max_retries": max_retries
+                        "language": args[1] if len(args) > 1 else kwargs.get("language", "python")
                     },
-                    suggestions=[
+                    "suggestions": [
                         "Consider breaking down the code into smaller parts",
                         "Check for infinite loops or recursion",
                         f"Try increasing the timeout (current: {kwargs.get('timeout', self.max_execution_time)}s)"
                     ]
-                )
-                
+                }
             except Exception as e:
+                await self._transition_state(ResourceState.IDLE)
                 error_type = type(e).__name__
                 error_context = {
                     "language": args[1] if len(args) > 1 else kwargs.get("language", "python"),
                     "error_type": error_type,
-                    "traceback": traceback.format_exc() if self.tool_config.show_traceback else None,
-                    "attempt": retries + 1,
-                    "max_retries": max_retries
+                    "traceback": traceback.format_exc()
                 }
                 
                 # Add context-specific information
                 if error_type == "SyntaxError":
-                    error_context.update({
-                        "line_number": getattr(e, "lineno", None),
-                        "offset": getattr(e, "offset", None),
-                        "text": getattr(e, "text", None)
-                    })
+                    error_context["line_number"] = getattr(e, "lineno", None)
+                    error_context["offset"] = getattr(e, "offset", None)
+                    error_context["text"] = getattr(e, "text", None)
                 elif error_type == "ImportError":
-                    error_context.update({
-                        "module": getattr(e, "name", None),
-                        "path": getattr(e, "path", None)
-                    })
+                    error_context["module"] = getattr(e, "name", None)
+                    error_context["path"] = getattr(e, "path", None)
                 
-                # For retryable errors, attempt again
-                if error_type in ["ConnectionError", "IOError", "OSError"] and retries < max_retries:
-                    retries += 1
-                    await asyncio.sleep(1)  # Wait before retrying
-                    continue
-                
-                await self._transition_state(ResourceState.IDLE)
-                return CodeResult(
-                    output="",
-                    error=str(e),
-                    success=False,
-                    error_type=error_type,
-                    error_context=error_context,
-                    suggestions=self._generate_error_suggestions(str(e))
-                )
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "error_type": error_type,
+                    "error_context": error_context,
+                    "suggestions": self._generate_error_suggestions(str(e))
+                }
+            
+        except Exception as e:
+            error_type = type(e).__name__
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": error_type,
+                "error_context": {
+                    "traceback": traceback.format_exc()
+                },
+                "suggestions": self._generate_error_suggestions(str(e))
+            }
 
-    async def _execute(self, code: str, language: Optional[str] = None, timeout: Optional[float] = None, context: Optional[ContextState] = None) -> Dict[str, Any]:
-        """Execute code with automatic language detection and validation"""
+    async def _execute(self, *args, **kwargs) -> Dict[str, Any]:
+        """Execute code with automatic language detection and magnetic sharing"""
+        # Handle positional arguments
+        code = args[0] if args else kwargs.get("code", "")
+        language = args[1] if len(args) > 1 else kwargs.get("language")
+        timeout = args[2] if len(args) > 2 else kwargs.get("timeout")
+        context = kwargs.get("context")
+    
+        # Update state based on context and field interactions
+        if context:
+            if context.interaction_type == InteractionType.CHAT:
+                self._state = ResourceState.ACTIVE
+            elif context.interaction_type == InteractionType.PULL:
+                self._state = ResourceState.ACTIVE
+    
+        # Check for shared or attracted resources
+        if self._workspace and self._attracted_to:
+            # Share resources with attracted tools
+            await self.share_resource("code", code)
+            await self.share_resource("language", language)
         
-        # Validate code if enabled
+        # Context-aware validation if enabled
         if self.enable_security_checks and context:
             validation = await self.validate_code(code, context)
             if not validation["valid"]:
@@ -300,10 +274,16 @@ class CodeInterpreterTool(BaseTool):
                     "error": "Code validation failed",
                     "validation": validation
                 }
-            
+                
             # Apply resource limits
             limits = await self.get_resource_limits(context)
-            timeout = min(timeout or self.max_execution_time, self.max_execution_time)
+            timeout = min(timeout or float('inf'), self.max_execution_time)
+            if limits["memory_mb"] > self.max_memory_mb:
+                limits["memory_mb"] = self.max_memory_mb
+            if limits["file_size_kb"] > self.max_file_size_kb:
+                limits["file_size_kb"] = self.max_file_size_kb
+            if limits["subprocess_count"] > self.max_subprocess_count:
+                limits["subprocess_count"] = self.max_subprocess_count
 
         # Infer language if not provided
         if not language:
@@ -314,6 +294,49 @@ class CodeInterpreterTool(BaseTool):
         code = self._clean_code(code, language)
         print(f"Cleaned code:\n{code}")
 
+        # Handle sticky code and persistence for Python if enabled
+        if self.enable_code_persistence and language == "python":
+            # Load sticky code
+            sticky_code = self._load_sticky_code()
+            
+            # Extract variable assignments and function definitions from current code
+            var_assignments = []
+            func_defs = []
+            other_code = []
+            
+            for line in code.split('\n'):
+                stripped = line.strip()
+                if '=' in stripped and not stripped.startswith(('def ', 'class ')):
+                    var_assignments.append(line)
+                elif stripped.startswith('def '):
+                    func_defs.append(line)
+                else:
+                    other_code.append(line)
+            
+            # Combine code in the right order:
+            # 1. Previous sticky code (for variable persistence)
+            # 2. New variable assignments
+            # 3. Function definitions
+            # 4. Other code
+            combined_code = []
+            if sticky_code:
+                combined_code.append(sticky_code)
+            if var_assignments:
+                combined_code.append('\n'.join(var_assignments))
+            if func_defs:
+                combined_code.append('\n'.join(func_defs))
+            if other_code:
+                combined_code.append('\n'.join(other_code))
+            
+            code = '\n\n'.join(filter(None, combined_code))
+            
+            # Save variable assignments and function definitions for future use
+            self._save_sticky_code('\n'.join(filter(None, [
+                sticky_code,
+                '\n'.join(var_assignments) if var_assignments else None,
+                '\n'.join(func_defs) if func_defs else None
+            ])))
+
         if language not in self.supported_languages:
             raise ValueError(
                 f"Unsupported language: {language}. "
@@ -322,6 +345,11 @@ class CodeInterpreterTool(BaseTool):
 
         lang_config = self.supported_languages[language]
         timeout = timeout or lang_config["timeout"]
+
+        # Share code magnetically before execution
+        if self.magnetic and self._workspace:
+            await self.share_resource("code", code)
+            await self.share_resource("language", language)
 
         # Create temporary file
         temp_file = None
@@ -411,6 +439,21 @@ class CodeInterpreterTool(BaseTool):
                         "suggestions": self._generate_error_suggestions(stderr_str)
                     })
 
+            # Share execution results magnetically
+            if self.magnetic:
+                await self.share_resource("output", stdout_str)
+                await self.share_resource("execution_result", result)
+                
+                # Share numeric results if found in output
+                try:
+                    if stdout_str:
+                        numeric_match = re.search(r'\b(\d+)\b', stdout_str)
+                        if numeric_match:
+                            numeric_value = int(numeric_match.group(1))
+                            await self.share_resource("result", numeric_value)
+                except (ValueError, AttributeError):
+                    pass  # Ignore if no numeric value found or conversion fails
+
             return result
 
         except TimeoutError:
@@ -433,50 +476,65 @@ class CodeInterpreterTool(BaseTool):
             return error_result
 
     async def cleanup(self) -> None:
-        """Cleanup temporary files"""
-        errors = []
-        
+        """Cleanup temporary files and magnetic resources"""
         try:
-            # Clean up temp files
-            for file_path in list(self._temp_files):
+            # Clean up temp files first
+            for file_path in list(self._temp_files):  # Create a copy of the list
                 try:
                     if os.path.exists(file_path):
                         os.remove(file_path)
-                except OSError as e:
-                    errors.append(f"Failed to remove {file_path}: {str(e)}")
-            
-            # Clean up workspace if using temp dir
-            if self.workspace_dir.startswith(tempfile.gettempdir()):
-                try:
-                    for root, dirs, files in os.walk(self.workspace_dir, topdown=False):
-                        for name in files:
-                            try:
-                                os.remove(os.path.join(root, name))
-                            except OSError as e:
-                                errors.append(f"Failed to remove file {name}: {str(e)}")
-                        for name in dirs:
-                            try:
-                                os.rmdir(os.path.join(root, name))
-                            except OSError as e:
-                                errors.append(f"Failed to remove directory {name}: {str(e)}")
-                    try:
-                        os.rmdir(self.workspace_dir)
-                    except OSError as e:
-                        errors.append(f"Failed to remove workspace directory: {str(e)}")
-                except Exception as e:
-                    errors.append(f"Failed to clean workspace: {str(e)}")
-            
-        finally:
-            # Always clear temp files list
+                except OSError:
+                    pass  # Ignore errors during cleanup
+            # Clear temp files list
             self._temp_files.clear()
             
-            # Report any errors that occurred during cleanup
-            if errors:
-                error_msg = "\n".join(errors)
-                print(f"Cleanup errors:\n{error_msg}")
-                if len(errors) > 1:
-                    raise RuntimeError(f"Multiple cleanup errors occurred:\n{error_msg}")
-                raise RuntimeError(errors[0])
+            # Clean up magnetic resources and field
+            await super().cleanup()
+            
+        except Exception as e:
+            print(f"Error during cleanup: {str(e)}")
+            # Ensure temp files list is cleared even on error
+            self._temp_files.clear()
+            raise
+
+    def _load_sticky_code(self) -> str:
+        """Load code from sticky module"""
+        sticky_path = os.path.join(self.workspace_dir, "sticky.py")
+        if os.path.exists(sticky_path):
+            with open(sticky_path, 'r') as f:
+                return f.read()
+        return ""
+
+    def _save_sticky_code(self, code: str):
+        """Save code to sticky module"""
+        sticky_path = os.path.join(self.workspace_dir, "sticky.py")
+        # Append new code while preserving existing code
+        existing_code = self._load_sticky_code()
+        
+        # Extract variable definitions and function definitions
+        var_defs = []
+        func_defs = []
+        other_code = []
+        
+        for line in code.split('\n'):
+            stripped = line.strip()
+            if '=' in stripped and not stripped.startswith(('def ', 'class ')):
+                var_defs.append(line)
+            elif stripped.startswith('def '):
+                func_defs.append(line)
+            else:
+                other_code.append(line)
+        
+        # Write to file in order: existing code, variable defs, function defs, other code
+        with open(sticky_path, 'w') as f:
+            if existing_code:
+                f.write(existing_code + "\n\n")
+            if var_defs:
+                f.write("\n".join(var_defs) + "\n")
+            if func_defs:
+                f.write("\n".join(func_defs) + "\n")
+            if other_code:
+                f.write("\n".join(other_code) + "\n")
 
     def _generate_error_suggestions(self, error_msg: str) -> List[str]:
         """Generate suggestions for fixing common errors"""
@@ -656,6 +714,12 @@ class CodeInterpreterTool(BaseTool):
 
     async def prepare_input(self, text: str) -> str:
         """Extract code from model's response"""
+        # First check if we have code shared magnetically
+        if self.magnetic:
+            shared_code = self.get_shared_resource("code")
+            if shared_code:
+                return shared_code
+        
         # Look for code between triple backticks
         code_blocks = re.findall(r'```(?:\w+)?\n(.*?)```', text, re.DOTALL)
         if code_blocks:
@@ -699,6 +763,15 @@ class CodeInterpreterTool(BaseTool):
         
         # If no code found, return original text
         return text
+
+    async def _on_resource_shared(self, source: 'MagneticTool', resource_name: str, data: Any) -> None:
+        """Handle shared resources from other tools"""
+        # If we receive file content that looks like code, prepare to execute it
+        if resource_name == "file_content":
+            language = self._infer_language(data)
+            if language in self.supported_languages:
+                await self.share_resource("code", data)
+                await self.share_resource("language", language)
 
     async def analyze_complexity(self, code: str) -> ComplexityLevel:
         """Analyze code complexity based on various metrics"""
@@ -982,10 +1055,16 @@ class CodeInterpreterTool(BaseTool):
             }
         }
 
-
     def __str__(self) -> str:
         """String representation"""
         status = f"{self.name}: {self.description}"
-        if self.binding_type:
-            status += f" (Binding: {self.binding_type.name})"
+        if self.magnetic:
+            status += f" (Magnetic Tool"
+            if self.binding_type:
+                status += f" Binding: {self.binding_type.name}"
+            if self.shared_resources:
+                status += f" Shares: {', '.join(self.shared_resources)}"
+            if self.sticky:
+                status += " Sticky"
+            status += f" State: {self.state.name})"
         return status

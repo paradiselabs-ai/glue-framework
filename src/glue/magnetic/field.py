@@ -7,15 +7,14 @@ from typing import Dict, List, Optional, Set, Type, Callable, Any, TYPE_CHECKING
 from dataclasses import dataclass
 from collections import defaultdict
 from ..core.state import StateManager
-from ..core.types import ResourceState, MagneticResource
-from ..core.model import Model
-from ..tools.base import BaseTool
-from ..core.types import AdhesiveType
+from ..core.types import ResourceState, MagneticResource, AdhesiveType
 from .rules import RuleSet, AttractionRule, PolicyPriority, AttractionPolicy
 
 if TYPE_CHECKING:
     from ..core.context import ContextState, InteractionType
     from ..core.registry import ResourceRegistry
+    from ..core.model import Model
+    from ..tools.simple_base import SimpleBaseTool as BaseTool
 
 # ==================== Event Types ====================
 class FieldEvent:
@@ -131,84 +130,107 @@ class MagneticField:
             policy=AttractionPolicy.STATE_BASED,
             priority=PolicyPriority.SYSTEM,
             state_validator=lambda s1, s2: (
-                s1 != ResourceState.LOCKED and 
-                s2 != ResourceState.LOCKED and
-                (
-                    (s1 == ResourceState.CHATTING and s2 == ResourceState.CHATTING) or
-                    (s1 == ResourceState.PULLING and s2 == ResourceState.SHARED) or
-                    (s1 in {ResourceState.IDLE, ResourceState.SHARED, ResourceState.ACTIVE} and
-                     s2 in {ResourceState.IDLE, ResourceState.SHARED, ResourceState.ACTIVE})
-                )
-            ),  # Validate states based on interaction patterns
+                s1 in {ResourceState.IDLE, ResourceState.ACTIVE} and
+                s2 in {ResourceState.IDLE, ResourceState.ACTIVE}
+            ),  # Only validate IDLE/ACTIVE states
             description="Manage resource interaction boundaries"
         ))
 
     def _setup_transitions(self):
         """Configure valid state transitions"""
-        # IDLE transitions
-        self._state_manager.add_transition(
-            ResourceState.IDLE,
-            ResourceState.SHARED,
-            cleanup=self._cleanup_idle
-        )
-        self._state_manager.add_transition(
-            ResourceState.IDLE,
-            ResourceState.ACTIVE
-        )
+        # Define valid state transitions
+        VALID_TRANSITIONS = {
+            ResourceState.IDLE: {
+                ResourceState.ACTIVE: self._idle_to_active,
+                ResourceState.CHATTING: self._idle_to_chatting,
+                ResourceState.PULLING: self._idle_to_pulling
+            },
+            ResourceState.ACTIVE: {
+                ResourceState.IDLE: self._active_to_idle,
+                ResourceState.CHATTING: self._active_to_chatting,
+                ResourceState.PULLING: self._active_to_pulling
+            },
+            ResourceState.CHATTING: {
+                ResourceState.IDLE: self._chatting_to_idle,
+                ResourceState.ACTIVE: self._chatting_to_active
+            },
+            ResourceState.PULLING: {
+                ResourceState.IDLE: self._pulling_to_idle,
+                ResourceState.ACTIVE: self._pulling_to_active
+            }
+        }
+        
+        # Register transitions with state manager
+        for from_state, transitions in VALID_TRANSITIONS.items():
+            for to_state, handler in transitions.items():
+                self._state_manager.add_transition(from_state, to_state, handler)
 
-        # SHARED transitions
-        self._state_manager.add_transition(
-            ResourceState.SHARED,
-            ResourceState.IDLE,
-            cleanup=self._cleanup_shared
-        )
-        self._state_manager.add_transition(
-            ResourceState.SHARED,
-            ResourceState.CHATTING
-        )
-        self._state_manager.add_transition(
-            ResourceState.SHARED,
-            ResourceState.PULLING
-        )
+    async def _idle_to_active(self, resource: MagneticResource) -> None:
+        """Handle transition from IDLE to ACTIVE"""
+        # Initialize workspace if needed
+        if hasattr(resource, '_workspace') and not resource._workspace:
+            await resource.initialize_workspace()
 
-        # CHATTING transitions
-        self._state_manager.add_transition(
-            ResourceState.CHATTING,
-            ResourceState.IDLE,
-            cleanup=self._cleanup_chatting
-        )
-
-        # PULLING transitions
-        self._state_manager.add_transition(
-            ResourceState.PULLING,
-            ResourceState.IDLE,
-            cleanup=self._cleanup_pulling
-        )
-
-    async def _cleanup_idle(self, resource: MagneticResource) -> None:
-        """Cleanup when leaving IDLE state"""
-        pass  # No cleanup needed from IDLE
-
-    async def _cleanup_shared(self, resource: MagneticResource) -> None:
-        """Cleanup when leaving SHARED state"""
-        # Break attractions if moving to IDLE
-        if resource._next_state == ResourceState.IDLE:
-            for other in list(resource._attracted_to):
-                await self.break_attraction(resource, other)
-
-    async def _cleanup_chatting(self, resource: MagneticResource) -> None:
-        """Cleanup when leaving CHATTING state"""
-        # Break chat connections
+    async def _active_to_idle(self, resource: MagneticResource) -> None:
+        """Handle transition from ACTIVE to IDLE"""
+        # Break all attractions
         for other in list(resource._attracted_to):
-            if other._state == ResourceState.CHATTING:
-                await self.break_attraction(resource, other)
+            await self.break_attraction(resource, other)
+        # Clean up workspace
+        if hasattr(resource, '_workspace'):
+            await resource.cleanup_workspace()
 
-    async def _cleanup_pulling(self, resource: MagneticResource) -> None:
-        """Cleanup when leaving PULLING state"""
-        # Break pull connections
-        for other in list(resource._attracted_to):
-            if other._state == ResourceState.SHARED:
-                await self.break_attraction(resource, other)
+    async def _idle_to_chatting(self, resource: MagneticResource) -> None:
+        """Handle transition from IDLE to CHATTING"""
+        await self._idle_to_active(resource)  # Initialize workspace
+        # Set up chat context
+        if hasattr(resource, 'prepare_chat'):
+            await resource.prepare_chat()
+
+    async def _active_to_chatting(self, resource: MagneticResource) -> None:
+        """Handle transition from ACTIVE to CHATTING"""
+        # Set up chat context
+        if hasattr(resource, 'prepare_chat'):
+            await resource.prepare_chat()
+
+    async def _chatting_to_idle(self, resource: MagneticResource) -> None:
+        """Handle transition from CHATTING to IDLE"""
+        await self._active_to_idle(resource)  # Clean up workspace
+        # Clean up chat context
+        if hasattr(resource, 'cleanup_chat'):
+            await resource.cleanup_chat()
+
+    async def _chatting_to_active(self, resource: MagneticResource) -> None:
+        """Handle transition from CHATTING to ACTIVE"""
+        # Clean up chat context
+        if hasattr(resource, 'cleanup_chat'):
+            await resource.cleanup_chat()
+
+    async def _idle_to_pulling(self, resource: MagneticResource) -> None:
+        """Handle transition from IDLE to PULLING"""
+        await self._idle_to_active(resource)  # Initialize workspace
+        # Set up pull context
+        if hasattr(resource, 'prepare_pull'):
+            await resource.prepare_pull()
+
+    async def _active_to_pulling(self, resource: MagneticResource) -> None:
+        """Handle transition from ACTIVE to PULLING"""
+        # Set up pull context
+        if hasattr(resource, 'prepare_pull'):
+            await resource.prepare_pull()
+
+    async def _pulling_to_idle(self, resource: MagneticResource) -> None:
+        """Handle transition from PULLING to IDLE"""
+        await self._active_to_idle(resource)  # Clean up workspace
+        # Clean up pull context
+        if hasattr(resource, 'cleanup_pull'):
+            await resource.cleanup_pull()
+
+    async def _pulling_to_active(self, resource: MagneticResource) -> None:
+        """Handle transition from PULLING to ACTIVE"""
+        # Clean up pull context
+        if hasattr(resource, 'cleanup_pull'):
+            await resource.cleanup_pull()
 
     async def break_attraction(
         self,
@@ -248,6 +270,8 @@ class MagneticField:
 
     async def cleanup(self) -> None:
         """Clean up the magnetic field"""
+        errors = []
+        
         # Save current activation state
         was_active = self._active
         
@@ -258,20 +282,45 @@ class MagneticField:
             
             # Clean up child fields first
             for child in self._child_fields:
-                await child.cleanup()
+                try:
+                    await child.cleanup()
+                except Exception as e:
+                    errors.append(f"Failed to clean up child field {child.name}: {str(e)}")
             self._child_fields.clear()
             
             # Clean up resources while field is still active
             resources = self.registry.get_resources_by_category("field:" + self.name)
             for resource in resources:
-                await resource.exit_field()
-                self.registry.unregister(resource.name)
+                try:
+                    # Break all attractions first
+                    for other in list(resource._attracted_to):
+                        try:
+                            await self.break_attraction(resource, other)
+                        except Exception as e:
+                            errors.append(f"Failed to break attraction between {resource.name} and {other.name}: {str(e)}")
+                    
+                    # Clean up resource
+                    await resource.exit_field()
+                    self.registry.unregister(resource.name)
+                except Exception as e:
+                    errors.append(f"Failed to clean up resource {resource.name}: {str(e)}")
             
-            # Clear context
+            # Clear context and memory
             self._current_context = None
+            self._memory.clear()
             
-            # Clear resources
+            # Clear resources and event handlers
             self._resources.clear()
+            self._event_handlers.clear()
+            
+            # Report any errors that occurred during cleanup
+            if errors:
+                error_msg = "\n".join(errors)
+                self.logger.error(f"Cleanup errors:\n{error_msg}")
+                if len(errors) > 1:
+                    raise RuntimeError(f"Multiple cleanup errors occurred:\n{error_msg}")
+                raise RuntimeError(errors[0])
+                
         finally:
             # Restore original activation state
             self._active = was_active
@@ -448,8 +497,8 @@ class MagneticField:
                 return False
 
             # Transition states
-            await self._state_manager.transition(source, ResourceState.SHARED, self._current_context)
-            await self._state_manager.transition(target, ResourceState.SHARED, self._current_context)
+            await self._state_manager.transition(source, ResourceState.ACTIVE, self._current_context)
+            await self._state_manager.transition(target, ResourceState.ACTIVE, self._current_context)
 
             # Create attraction
             success = await source.attract_to(target)
@@ -729,36 +778,11 @@ class MagneticField:
             if m.get('type') != 'pulled_response'
         ]
 
-    def is_resource_shared(self, resource: MagneticResource) -> bool:
-        """Check if a resource is in a shared state"""
+    def is_resource_active(self, resource: MagneticResource) -> bool:
+        """Check if a resource is in active state"""
         if resource.name not in self._resources:
             raise ValueError(f"Resource {resource.name} not in field")
-        return resource._state == ResourceState.SHARED or bool(resource._attracted_to)
-
-    async def lock_resource(
-        self,
-        resource: MagneticResource,
-        holder: MagneticResource
-    ) -> bool:
-        """Lock a resource for exclusive use"""
-        if resource.name not in self._resources:
-            raise ValueError(f"Resource {resource.name} not in field")
-        return await resource.lock(holder)
-
-    def is_resource_locked(self, resource: MagneticResource) -> bool:
-        """Check if a resource is currently locked"""
-        if resource.name not in self._resources:
-            raise ValueError(f"Resource {resource.name} not in field")
-        return resource._state == ResourceState.LOCKED
-
-    async def unlock_resource(
-        self,
-        resource: MagneticResource
-    ) -> None:
-        """Unlock a resource"""
-        if resource.name not in self._resources:
-            raise ValueError(f"Resource {resource.name} not in field")
-        await resource.unlock()
+        return resource._state == ResourceState.ACTIVE or bool(resource._attracted_to)
 
     def __str__(self) -> str:
         status = f"MagneticField({self.name}, resources={len(self._resources)}"
@@ -789,8 +813,8 @@ class MagneticField:
             success = await model1.attract_to(model2)
             if success:
                 # Update states for both models
-                model1._state = ResourceState.CHATTING
-                model2._state = ResourceState.CHATTING
+                await self._state_manager.transition(model1, ResourceState.ACTIVE)
+                await self._state_manager.transition(model2, ResourceState.ACTIVE)
                 # Ensure mutual attraction
                 await model2.attract_to(model1)
                 self._emit_event(ChatEvent(model1, model2))
@@ -850,8 +874,8 @@ class MagneticField:
             success = await target.attract_to(source)
             if success:
                 # Update states for both resources
-                target._state = ResourceState.PULLING
-                source._state = ResourceState.SHARED
+                await self._state_manager.transition(target, ResourceState.ACTIVE)
+                await self._state_manager.transition(source, ResourceState.ACTIVE)
                 self._emit_event(PullEvent(target, source))
             return success
         finally:
@@ -880,8 +904,8 @@ class MagneticField:
             success = await source.attract_to(target)
             if success:
                 # Update states for both resources
-                source._state = ResourceState.SHARED
-                target._state = ResourceState.SHARED
+                await self._state_manager.transition(source, ResourceState.ACTIVE)
+                await self._state_manager.transition(target, ResourceState.ACTIVE)
                 self._emit_event(PushEvent(source, target))
             return success
         finally:

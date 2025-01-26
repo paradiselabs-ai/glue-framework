@@ -46,19 +46,18 @@ class FileHandlerTool(MagneticTool):
         magnetic: bool = True,
         sticky: bool = False,
         workspace_dir: Optional[str] = None,
-        binding_type: Optional[AdhesiveType] = None
+        binding_type: Optional[AdhesiveType] = None,
+        shared_resources: Optional[List[str]] = None,
+        registry: Optional[ResourceRegistry] = None,
+        **kwargs
     ):
-        # Create registry with state manager
-        registry = ResourceRegistry(StateManager())
-        
         # Initialize with magnetic tool configuration
         super().__init__(
             name=name,
             description=description,
-            registry=registry,
             magnetic=magnetic,
             sticky=sticky,
-            shared_resources=["file_content", "file_path", "file_format"],
+            shared_resources=shared_resources or ["file_content", "file_path", "file_format"],
             config=ToolConfig(
                 required_permissions=[
                     ToolPermission.FILE_SYSTEM,
@@ -68,7 +67,9 @@ class FileHandlerTool(MagneticTool):
                 ],
                 cache_results=False
             ),
-            binding_type=binding_type or AdhesiveType.GLUE if magnetic else None
+            binding_type=binding_type or AdhesiveType.GLUE if magnetic else None,
+            registry=registry,
+            **kwargs
         )
         # Use workspace_dir if provided, otherwise use base_path or cwd
         self.base_path = os.path.abspath(workspace_dir or base_path or os.getcwd())

@@ -211,18 +211,7 @@ def create_binding_validator(
 DEFAULT_RULES = RuleSet(
     name="default",
     rules=[
-        # System-level rules (SYSTEM priority)
-        AttractionRule(
-            name="system_locked",
-            policy=AttractionPolicy.STATE_BASED,
-            priority=PolicyPriority.SYSTEM,
-            state_validator=lambda s1, s2: (
-                s1 != ResourceState.LOCKED and 
-                s2 != ResourceState.LOCKED
-            ),
-            description="Prevent interaction with locked resources"
-        ),
-        
+        # Pull team validation (SYSTEM priority)
         AttractionRule(
             name="pull_team",
             policy=AttractionPolicy.CUSTOM,
@@ -237,33 +226,33 @@ DEFAULT_RULES = RuleSet(
             description="Pull team validation"
         ),
         
-        # High priority rules (HIGH priority)
+        # Pattern state validation (HIGH priority)
         AttractionRule(
             name="pattern_states",
             policy=AttractionPolicy.PATTERN_BASED,
             priority=PolicyPriority.HIGH,
             pattern_validator=create_pattern_validator({
                 InteractionPattern.ATTRACT: (
-                    {ResourceState.IDLE, ResourceState.SHARED, ResourceState.ACTIVE},
-                    {ResourceState.IDLE, ResourceState.SHARED, ResourceState.ACTIVE}
+                    {ResourceState.IDLE, ResourceState.ACTIVE},  # Both states can attract
+                    {ResourceState.IDLE, ResourceState.ACTIVE}
                 ),
                 InteractionPattern.PUSH: (
-                    {ResourceState.SHARED, ResourceState.ACTIVE},
-                    {ResourceState.IDLE, ResourceState.SHARED}
+                    {ResourceState.ACTIVE},  # Only active resources can push
+                    {ResourceState.IDLE}     # Only idle resources can receive
                 ),
                 InteractionPattern.PULL: (
-                    # Pull teams can pull from any state except LOCKED
-                    {ResourceState.IDLE, ResourceState.SHARED, ResourceState.ACTIVE, ResourceState.PULLING},
-                    {ResourceState.IDLE, ResourceState.SHARED, ResourceState.ACTIVE}
+                    {ResourceState.ACTIVE},  # Only active resources can pull
+                    {ResourceState.IDLE}     # Only idle resources can be pulled from
                 ),
                 InteractionPattern.REPEL: (
-                    {ResourceState.SHARED, ResourceState.ACTIVE},
-                    {ResourceState.SHARED, ResourceState.ACTIVE}
+                    {ResourceState.ACTIVE},  # Only active resources can repel
+                    {ResourceState.ACTIVE}   # Only active resources can be repelled
                 )
             }),
             description="Validate states for interaction patterns"
         ),
         
+        # Context validation (HIGH priority)
         AttractionRule(
             name="context_states",
             policy=AttractionPolicy.CUSTOM,

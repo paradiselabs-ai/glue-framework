@@ -1,5 +1,3 @@
-# src/glue/cli.py
-
 """GLUE Command Line Interface
 GenerativeAI Linking & Unification Engine (GLUE) CLI commands.
 GLUE (https://github.com/paradiselabs-ai/glue-framework) is a lightweight, 
@@ -21,7 +19,7 @@ from .tools import web_search, file_handler, code_interpreter
 from .core.resource import Resource, ResourceState
 from .core.state import StateManager
 from .core.registry import ResourceRegistry
-
+from .tools.base import BaseTool, ToolConfig, ToolPermission
 
 registry = None
 
@@ -311,9 +309,9 @@ def create(name, type):
             tool_content = '''"""GLUE Tool Implementation"""
 
 from typing import Any, Dict, Optional
-from glue.tools.simple_base import SimpleBaseTool, ToolConfig, ToolPermission
+from glue.tools.base import BaseTool, ToolConfig, ToolPermission
 
-class {class_name}Tool(SimpleBaseTool):
+class {class_name}Tool(BaseTool):
     """Implementation of {name} tool"""
     
     def __init__(

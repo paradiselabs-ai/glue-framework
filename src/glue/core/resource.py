@@ -1,31 +1,40 @@
-"""GLUE Resource Base System"""
+"""GLUE Resource Base System with Simple Patterns"""
 
 import asyncio
-from typing import Dict, List, Optional, Set, Any, Type, Callable, TYPE_CHECKING
+from typing import Dict, List, Optional, Set, Any, TYPE_CHECKING
+from dataclasses import dataclass
 from datetime import datetime
 
-from .types import ResourceState, ResourceMetadata
-from .types import AdhesiveType
+from .types import ResourceState, ResourceMetadata, AdhesiveType
+from .state import StateManager
 from .tool_binding import ToolBinding
 from ..magnetic.rules import RuleSet, AttractionRule, PolicyPriority, AttractionPolicy
 
 if TYPE_CHECKING:
-    from .state import StateManager
     from .registry import ResourceRegistry
     from ..magnetic.field import MagneticField
     from .context import ContextState
 
+@dataclass
+class ResourceMetadata:
+    """Resource metadata"""
+    category: str
+    tags: Set[str] = None
+
+    def __post_init__(self):
+        if self.tags is None:
+            self.tags = set()
+
 class Resource:
     """
-    Base class for all GLUE resources.
+    Base class for all GLUE resources with simplified patterns.
     
-    This provides the foundation for:
-    - State management
-    - Field interactions
-    - Context awareness
-    - Resource tracking
+    Features:
+    - Clean state management with StateManager
+    - Simplified field interactions
+    - Tool bindings with adhesive types
+    - Basic event handling
     - Rule validation
-    - Registry integration
     """
     
     def __init__(
@@ -38,9 +47,8 @@ class Resource:
     ):
         """Initialize resource"""
         self.name = name
-        self._state = ResourceState.IDLE
-        self._transition_lock = asyncio.Lock()
-        self._version = 0  # Track state changes
+        # State management
+        self._state_manager = StateManager()
         self._field: Optional['MagneticField'] = None
         self._context: Optional['ContextState'] = None
         self._lock_holder: Optional['Resource'] = None
@@ -63,8 +71,8 @@ class Resource:
             name="default_state",
             policy=AttractionPolicy.STATE_BASED,
             priority=PolicyPriority.SYSTEM,
-            state_validator=lambda s1, s2: s1 in [ResourceState.IDLE, ResourceState.SHARED] and 
-                                         s2 in [ResourceState.IDLE, ResourceState.SHARED],
+            state_validator=lambda s1, s2: s1 in [ResourceState.IDLE, ResourceState.ACTIVE] and 
+                                         s2 in [ResourceState.IDLE, ResourceState.ACTIVE],
             description="Default state-based validation"
         ))
         
@@ -78,31 +86,17 @@ class Resource:
                 self.bind_tool(tool_name, strength)
     
     @property
-    def state(self) -> ResourceState:
+    async def state(self) -> ResourceState:
         """Get current state"""
-        return self._state
+        return await self._state_manager.get_state(self.name)
 
-    async def set_state(self, new_state: ResourceState, expected_version: int) -> bool:
-        """Set resource state with locking"""
-        async with self._transition_lock:
-            # Only allow state change if version matches
-            if self._version != expected_version:
-                return False
-            
-            # Prevent unnecessary state changes
-            if self._state == new_state:
-                return True
-            
-            # Allow transitions between IDLE and SHARED for models
-            if self.metadata.category != "tool" and new_state in {ResourceState.IDLE, ResourceState.SHARED}:
-                self._state = new_state
-                self._version += 1
-                return True
-            
-            # For other cases, follow standard state transition
-            self._state = new_state
-            self._version += 1
-            return True
+    async def transition_to_active(self) -> bool:
+        """Transition to ACTIVE state"""
+        return await self._state_manager.transition_to_active(self.name)
+
+    async def transition_to_idle(self) -> bool:
+        """Transition to IDLE state"""
+        return await self._state_manager.transition_to_idle(self.name)
     
     @property
     def field(self) -> Optional['MagneticField']:
@@ -149,12 +143,11 @@ class Resource:
             self._field = None
             
             # Reset state and cleanup attributes
-            async with self._state_change_lock:
-                self._state = ResourceState.IDLE
-                self._lock_holder = None
-                self._context = None
-                if hasattr(self, "_attract_mode"):
-                    delattr(self, "_attract_mode")
+            await self.transition_to_idle()
+            self._lock_holder = None
+            self._context = None
+            if hasattr(self, "_attract_mode"):
+                delattr(self, "_attract_mode")
             
             await self._emit_event("field_exit", old_field)
             
@@ -224,48 +217,17 @@ class Resource:
         if not tool:
             raise ValueError(f"Tool not found: {tool_name}")
             
-        # Check if tool is attracted
-        if tool not in self._attracted_to:
-            raise ValueError("Tool not found - attraction required before use")
+        # Execute tool
+        result = await tool.execute(**kwargs)
         
-        # Handle TAPE bindings
+        # Update binding state
+        binding.use()
+        
+        # Break TAPE bindings after use
         if binding.type == AdhesiveType.TAPE:
-            # Break immediately after use
-            defer_break = True
-        else:
-            # Check time-based breaking for other types
-            defer_break = binding.should_break()
+            await self.break_attraction(tool)
         
-        # Add context for GLUE bindings
-        if binding.maintains_context():
-            kwargs["context"] = binding.context
-        
-        try:
-            # Execute tool
-            result = await tool.execute(**kwargs)
-            
-            # Update binding state
-            binding.use_count += 1
-            binding.last_used = datetime.now().timestamp()
-            
-            # Store context for GLUE bindings
-            if binding.maintains_context():
-                binding.context.update(result.get("context", {}))
-            
-            # Break TAPE bindings after use
-            if binding.type == AdhesiveType.TAPE:
-                await self.break_attraction(tool)
-                # Also break from tool's side to ensure clean separation
-                await tool.break_attraction(self)
-            
-            return result
-        
-        except Exception as e:
-            # Handle reconnection for VELCRO bindings
-            if binding.can_reconnect():
-                # Could implement retry logic here
-                pass
-            raise
+        return result
     
     async def attract_to(self, other: 'Resource') -> bool:
         """Create attraction to another resource"""
@@ -274,7 +236,7 @@ class Resource:
             return False
             
         # Then check basic attraction rules
-        if not self.can_attract(other):
+        if not await self.can_attract(other):
             return False
         
         # Check tool bindings
@@ -291,25 +253,11 @@ class Resource:
         self._attracted_to.add(other)
         other._attracted_to.add(self)
         
-        # Update states - tools stay IDLE when attracted
-        # Models can transition between IDLE and SHARED
-        if self._state == ResourceState.IDLE and self.metadata.category != "tool":
-            await self.set_state(ResourceState.SHARED, self._version)
-            if self._registry:
-                self._registry._notify_observers("state_change", {
-                    "resource": self.name,
-                    "old_state": ResourceState.IDLE,
-                    "new_state": ResourceState.SHARED
-                })
-                
-        if other._state == ResourceState.IDLE and other.metadata.category != "tool":
-            await other.set_state(ResourceState.SHARED, other._version)
-            if other._registry:
-                other._registry._notify_observers("state_change", {
-                    "resource": other.name,
-                    "old_state": ResourceState.IDLE,
-                    "new_state": ResourceState.SHARED
-                })
+        # Update states
+        if self.metadata.category != "tool":
+            await self.transition_to_active()
+        if other.metadata.category != "tool":
+            await other.transition_to_active()
         
         # Emit events
         await self._emit_event("attraction", other)
@@ -350,24 +298,9 @@ class Resource:
         
         # Update states if no more attractions
         if not self._attracted_to:
-            old_state = self._state
-            self._state = ResourceState.IDLE
-            if self._registry:
-                self._registry._notify_observers("state_change", {
-                    "resource": self.name,
-                    "old_state": old_state,
-                    "new_state": ResourceState.IDLE
-                })
-                
+            await self.transition_to_idle()
         if not other._attracted_to:
-            old_state = other._state
-            other._state = ResourceState.IDLE
-            if other._registry:
-                other._registry._notify_observers("state_change", {
-                    "resource": other.name,
-                    "old_state": old_state,
-                    "new_state": ResourceState.IDLE
-                })
+            await other.transition_to_idle()
         
         await self._emit_event("attraction_break", other)
         await other._emit_event("attraction_break", self)
@@ -394,15 +327,17 @@ class Resource:
                 "target": other.name
             })
     
-    def can_attract(self, other: 'Resource') -> bool:
+    async def can_attract(self, other: 'Resource') -> bool:
         """Check if attraction is allowed"""
         # Check repulsions
         if other in self._repelled_by or self in other._repelled_by:
             return False
             
         # Check locks
-        if (self._state == ResourceState.LOCKED and self._lock_holder != other or
-            other._state == ResourceState.LOCKED and other._lock_holder != self):
+        self_state = await self.state
+        other_state = await other.state
+        if (self_state == ResourceState.LOCKED and self._lock_holder != other or
+            other_state == ResourceState.LOCKED and other._lock_holder != self):
             return False
             
         # Check field compatibility
@@ -418,43 +353,44 @@ class Resource:
     
     async def lock(self, holder: 'Resource') -> bool:
         """Lock resource for exclusive use"""
-        if self._state == ResourceState.LOCKED:
+        current_state = await self.state
+        if current_state == ResourceState.LOCKED:
             return False
             
-        async with self._state_change_lock:
-            # Break attractions except with holder
-            for other in list(self._attracted_to):
-                if other != holder:
-                    await self.break_attraction(other)
-                    
-            self._state = ResourceState.LOCKED
-            self._lock_holder = holder
-            await self._emit_event("locked", holder)
-            
-            # Notify registry
-            if self._registry:
-                self._registry._notify_observers("locked", {
-                    "resource": self.name,
-                    "holder": holder.name
-                })
+        # Break attractions except with holder
+        for other in list(self._attracted_to):
+            if other != holder:
+                await self.break_attraction(other)
+                
+        # Lock resource
+        await self._state_manager.transition_to(self.name, ResourceState.LOCKED)
+        self._lock_holder = holder
+        await self._emit_event("locked", holder)
+        
+        # Notify registry
+        if self._registry:
+            self._registry._notify_observers("locked", {
+                "resource": self.name,
+                "holder": holder.name
+            })
             
         return True
     
     async def unlock(self) -> None:
         """Unlock resource"""
-        if self._state == ResourceState.LOCKED:
-            async with self._state_change_lock:
-                old_holder = self._lock_holder
-                self._state = ResourceState.IDLE
-                self._lock_holder = None
-                await self._emit_event("unlocked", old_holder)
-                
-                # Notify registry
-                if self._registry:
-                    self._registry._notify_observers("unlocked", {
-                        "resource": self.name,
-                        "holder": old_holder.name if old_holder else None
-                    })
+        current_state = await self.state
+        if current_state == ResourceState.LOCKED:
+            old_holder = self._lock_holder
+            await self.transition_to_idle()
+            self._lock_holder = None
+            await self._emit_event("unlocked", old_holder)
+            
+            # Notify registry
+            if self._registry:
+                self._registry._notify_observers("unlocked", {
+                    "resource": self.name,
+                    "holder": old_holder.name if old_holder else None
+                })
     
     def on_event(self, event_type: str, handler: callable) -> None:
         """Register event handler"""
@@ -475,22 +411,24 @@ class Resource:
                     # Log error but don't break event chain
                     print(f"Error in event handler: {str(e)}")
     
-    def __str__(self) -> str:
+    async def __str__(self) -> str:
         """String representation"""
+        current_state = await self.state
         status = [
             f"Resource({self.name})",
-            f"State: {self._state.name}",
+            f"State: {current_state.name}",
             f"Field: {self._field.name if self._field else 'None'}",
             f"Attractions: {len(self._attracted_to)}",
             f"Repulsions: {len(self._repelled_by)}"
         ]
         return " | ".join(status)
     
-    def __repr__(self) -> str:
+    async def __repr__(self) -> str:
         """Detailed representation"""
+        current_state = await self.state
         return (
             f"Resource(name='{self.name}', "
-            f"state={self._state.name}, "
+            f"state={current_state.name}, "
             f"field={self._field.name if self._field else 'None'}, "
             f"context={self._context})"
         )

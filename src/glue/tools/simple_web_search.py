@@ -68,10 +68,8 @@ class SimpleWebSearchTool(SimpleBaseTool):
                 provider_config["endpoint"] = provider_endpoints[provider]
         
         # Initialize provider and session
-        self.provider = provider_class(
-            api_key=api_key,
-            **provider_config
-        )
+        provider_config['api_key'] = api_key
+        self.provider = provider_class(**provider_config)
         self.max_results = max_results
         self.logger = get_logger()
         self._session: Optional[aiohttp.ClientSession] = None

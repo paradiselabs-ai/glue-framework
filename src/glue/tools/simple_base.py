@@ -111,6 +111,38 @@ class SimpleBaseTool(SimpleResource, ABC):
                 return handler(e)
             raise
 
+    def create_instance(self, binding: Optional['ToolBinding'] = None) -> 'SimpleBaseTool':
+        """
+        Create a new instance of this tool with shared configuration
+        
+        Args:
+            binding: Optional tool binding to attach to the instance
+        """
+        # Get constructor parameters
+        from inspect import signature
+        sig = signature(self.__class__.__init__)
+        params = {}
+        
+        # Only include parameters that the constructor accepts
+        if 'name' in sig.parameters:
+            params['name'] = self.name
+        if 'description' in sig.parameters:
+            params['description'] = self.description
+        if 'config' in sig.parameters:
+            params['config'] = self.config
+        if 'permissions' in sig.parameters:
+            params['permissions'] = self.permissions
+        if 'sticky' in sig.parameters:
+            params['sticky'] = self.sticky
+            
+        instance = self.__class__(**params)
+        
+        # Set binding if provided
+        if binding:
+            instance._binding = binding
+            
+        return instance
+
     def __str__(self) -> str:
         """String representation"""
         return f"{self.name}: {self.description}"

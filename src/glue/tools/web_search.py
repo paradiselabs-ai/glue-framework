@@ -248,6 +248,21 @@ class WebSearchTool(MagneticTool):
             self.logger.error(f"Search request failed: {str(e)}")
             raise RuntimeError(f"Search request failed: {str(e)}")
 
+    def create_instance(self, api_key: Optional[str] = None, **kwargs) -> 'WebSearchTool':
+        """Create a new instance with the same API key"""
+        # Create new instance with api_key
+        instance = self.__class__(
+            api_key=api_key or self.provider.api_key,
+            name=self.name,
+            description=self.description,
+            registry=self._registry,
+            magnetic=self.magnetic,
+            sticky=self.sticky,
+            shared_resources=self.shared_resources,
+            binding_type=kwargs.get('binding_type', self.binding_type)
+        )
+        return instance
+
     def __str__(self) -> str:
         """String representation"""
         status = f"{self.name}: {self.description}"

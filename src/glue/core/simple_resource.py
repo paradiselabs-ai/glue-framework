@@ -3,7 +3,7 @@
 from typing import Dict, Set, Optional, Any
 from dataclasses import dataclass
 from .state import ResourceState, StateManager
-from .tool_binding import ToolBinding
+from .simple_tool_binding import SimpleToolBinding
 from .types import AdhesiveType
 
 @dataclass
@@ -49,7 +49,7 @@ class SimpleResource:
         
         # Tool binding management
         self._tools: Dict[str, Any] = {}
-        self._tool_bindings: Dict[str, ToolBinding] = {}
+        self._tool_bindings: Dict[str, SimpleToolBinding] = {}
         if tool_bindings:
             for tool_name, strength in tool_bindings.items():
                 self.bind_tool(tool_name, strength)
@@ -70,17 +70,17 @@ class SimpleResource:
     def bind_tool(self, tool_name: str, binding_type: AdhesiveType) -> None:
         """Bind a tool with specified adhesive type"""
         if binding_type == AdhesiveType.TAPE:
-            binding = ToolBinding.tape()
+            binding = SimpleToolBinding.tape()
         elif binding_type == AdhesiveType.VELCRO:
-            binding = ToolBinding.velcro()
+            binding = SimpleToolBinding.velcro()
         elif binding_type == AdhesiveType.GLUE:
-            binding = ToolBinding.glue()
+            binding = SimpleToolBinding.glue()
         else:
             raise ValueError(f"Invalid binding type: {binding_type}")
             
         self._tool_bindings[tool_name] = binding
     
-    def get_tool_binding(self, tool_name: str) -> Optional[ToolBinding]:
+    def get_tool_binding(self, tool_name: str) -> Optional[SimpleToolBinding]:
         """Get binding configuration for a tool"""
         return self._tool_bindings.get(tool_name)
     

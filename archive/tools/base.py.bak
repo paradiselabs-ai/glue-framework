@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from enum import Enum
 from ..core.resource import Resource, ResourceState
 from ..core.registry import ResourceRegistry
-from ..core.types import BindingState
-
 
 # ==================== Enums ====================
 class ToolPermission(Enum):
@@ -43,7 +41,7 @@ class BaseTool(Resource, ABC):
     - Safe execution
     - State tracking
     - Field awareness
-    - Optional magnetic capabilities
+    - Magnetic capabilities
     """
     def __init__(
         self,
@@ -51,10 +49,10 @@ class BaseTool(Resource, ABC):
         description: str,
         config: Optional[ToolConfig] = None,
         permissions: Optional[Set[str]] = None,
-        magnetic: bool = False,
-        sticky: bool = False,
-        shared_resources: Optional[List[str]] = None,
-        binding_type: Optional['AdhesiveType'] = None
+        magnetic: bool = False,  # Keep magnetic flag for API compatibility
+        sticky: bool = False,    # Keep sticky flag for API compatibility
+        shared_resources: Optional[List[str]] = None,  # Resources to share magnetically
+        binding_type: Optional['AdhesiveType'] = None  # Binding type for magnetic tools
     ):
         # Initialize base resource
         tags = {"tool", name}
@@ -73,37 +71,29 @@ class BaseTool(Resource, ABC):
         self._is_initialized = False
         self._instance_data: Dict[str, Any] = {}
         
-        # Magnetic configuration (optional)
+        # Magnetic configuration
         self.magnetic = magnetic
         self.sticky = sticky
         self.shared_resources = shared_resources or []
         
-        # Binding configuration (optional)
-        if magnetic:
-            from ..core.binding import AdhesiveType
-            self.binding_type = binding_type or AdhesiveType.GLUE
-            
-            # Add magnetic permission if needed
-            if ToolPermission.MAGNETIC not in self.config.required_permissions:
-                self.config.required_permissions.append(ToolPermission.MAGNETIC)
+        # Binding configuration
+        from ..core.binding import AdhesiveType
+        self.binding_type = binding_type or AdhesiveType.GLUE if magnetic else None
+        
+        # Magnetic properties
+        self._break_after_use = False
+        self._allow_reconnect = False
+        self._persist_context = False
+        self._attract_mode = "none"
+        
+        # Add magnetic permission if needed
+        if magnetic and ToolPermission.MAGNETIC not in self.config.required_permissions:
+            self.config.required_permissions.append(ToolPermission.MAGNETIC)
 
     @abstractmethod
     async def _execute(self, *args, **kwargs) -> Any:
         """Tool-specific implementation"""
         pass
-
-    async def _validate_binding(self) -> None:
-        """Validate binding state if tool is bound"""
-        if not hasattr(self, '_binding'):
-            return
-            
-        if self._binding.state == BindingState.FAILED:
-            raise RuntimeError(f"Tool {self.name} binding has failed")
-        if self._binding.should_break():
-            raise RuntimeError(f"Tool {self.name} binding has expired")
-        
-        # Record tool usage in binding
-        self._binding.use()
 
     async def execute(self, *args, **kwargs) -> Any:
         """Execute tool with simple state tracking"""
@@ -111,23 +101,29 @@ class BaseTool(Resource, ABC):
         await self.transition_to_active()
         
         try:
-            # Validate binding if magnetic
-            if self.magnetic:
-                await self._validate_binding()
+            # Check binding if tool is bound
+            if hasattr(self, '_binding'):
+                if self._binding.state == ToolBindingState.FAILED:
+                    raise RuntimeError(f"Tool {self.name} binding has failed")
+                if self._binding.should_break():
+                    raise RuntimeError(f"Tool {self.name} binding has expired")
+                
+                # Record tool usage in binding
+                self._binding.use()
             
             # Initialize if needed and execute
             if not self._is_initialized:
                 await self.initialize()
             result = await self._execute(*args, **kwargs)
             
-            # Store result in binding if magnetic
-            if self.magnetic and hasattr(self, '_binding') and self._binding.maintains_context():
+            # Store result in binding if needed
+            if hasattr(self, '_binding') and self._binding.maintains_context():
                 self._binding.store_resource('last_result', result)
             
             return result
         except Exception as e:
-            # Handle binding failure if magnetic
-            if self.magnetic and hasattr(self, '_binding') and self._binding.state == BindingState.FAILED:
+            # Handle binding failure
+            if hasattr(self, '_binding') and self._binding.state == ToolBindingState.FAILED:
                 raise RuntimeError(f"Tool {self.name} binding broke during use") from e
             raise
         finally:
@@ -135,13 +131,23 @@ class BaseTool(Resource, ABC):
             await self.transition_to_idle()
 
     async def initialize(self, instance_data: Optional[Dict[str, Any]] = None) -> None:
-        """Initialize tool resources"""
+        """
+        Initialize tool resources
+        
+        Args:
+            instance_data: Optional instance-specific data for tool initialization
+        """
         if instance_data:
             self._instance_data.update(instance_data)
         self._is_initialized = True
         
     def create_instance(self, binding: Optional['ToolBinding'] = None) -> 'BaseTool':
-        """Create a new instance of this tool with shared configuration"""
+        """
+        Create a new instance of this tool with shared configuration
+        
+        Args:
+            binding: Optional tool binding to attach to the instance
+        """
         instance = self.__class__(
             name=self.name,
             description=self.description,
@@ -164,6 +170,15 @@ class BaseTool(Resource, ABC):
         instance = self.create_instance()
         instance._instance_data = {}  # Empty instance data
         return instance
+        
+    def format_result(self, result: Any) -> Dict[str, Any]:
+        """Format tool result for memory storage"""
+        return {
+            'tool': self.name,
+            'result': result,
+            'timestamp': datetime.now(),
+            'instance_data': self._instance_data.copy() if self.sticky else {}
+        }
 
     async def cleanup(self) -> None:
         """Cleanup tool resources"""
@@ -182,7 +197,7 @@ class BaseTool(Resource, ABC):
         )
 
     async def safe_execute(self, *args, **kwargs) -> Any:
-        """Execute with error handling"""
+        """Execute with error handling and validation"""
         try:
             return await self.execute(*args, **kwargs)
         except Exception as e:
@@ -194,9 +209,9 @@ class BaseTool(Resource, ABC):
                 return handler(e)
             raise
 
-    # Magnetic API methods (only used if magnetic=True)
+    # Magnetic API compatibility methods
     async def share_resource(self, name: str, value: Any) -> None:
-        """Share resource with attracted resources"""
+        """Share resource with attracted resources (magnetic API compatibility)"""
         if not self.magnetic or name not in self.shared_resources:
             return
             
@@ -206,7 +221,7 @@ class BaseTool(Resource, ABC):
                     setattr(resource, name, value)
 
     def get_shared_resource(self, name: str) -> Optional[Any]:
-        """Get shared resource from attracted resources"""
+        """Get shared resource from attracted resources (magnetic API compatibility)"""
         if not self.magnetic or name not in self.shared_resources:
             return None
             
@@ -232,7 +247,15 @@ class BaseTool(Resource, ABC):
 
 # ==================== Tool Registry ====================
 class ToolRegistry(ResourceRegistry):
-    """Registry specialized for tools"""
+    """
+    Registry specialized for tools.
+    
+    Features:
+    - Tool registration and lookup
+    - Permission management
+    - Safe execution
+    - Resource tracking
+    """
     def __init__(self):
         super().__init__()
         self._granted_permissions: Dict[str, List[ToolPermission]] = {}

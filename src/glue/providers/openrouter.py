@@ -5,14 +5,14 @@ import re
 import json
 import aiohttp
 from typing import Dict, List, Any, Optional, Set
-from .base import BaseProvider
+from .simple_base import SimpleBaseProvider
 from ..core.model import ModelConfig
 from ..core.logger import get_logger
 from ..core.simple_resource import SimpleResource
 from ..core.state import ResourceState, StateManager
 from ..core.types import IntentAnalysis
 
-class OpenRouterProvider(BaseProvider, SimpleResource):
+class OpenRouterProvider(SimpleBaseProvider):
     """
     Provider for OpenRouter API.
     
@@ -38,13 +38,13 @@ class OpenRouterProvider(BaseProvider, SimpleResource):
         """Configure tools and update system prompt"""
         if not hasattr(self, "_tools"):
             self._tools = {}
-            self.tool_bindings = {}  # Initialize tool bindings dict
+            self._tool_bindings = {}  # Initialize tool bindings dict
             
         # If inheriting from parent, copy tools and role
         if hasattr(self, "_parent"):
             parent = self._parent
             self._tools = parent._tools.copy()
-            self.tool_bindings = parent.tool_bindings.copy()  # Copy bindings
+            self._tool_bindings = parent._tool_bindings.copy()  # Copy bindings
             self.role = parent.role
             self.config.system_prompt = parent.config.system_prompt
             
@@ -53,7 +53,7 @@ class OpenRouterProvider(BaseProvider, SimpleResource):
             system_prompt = self.messages[0]["content"]
             tool_info = "\n\nYou have access to the following tools:\n"
             for name, tool in self._tools.items():
-                binding_type = self.tool_bindings.get(name, "unknown")
+                binding_type = self._tool_bindings.get(name, "unknown")
                 persistence = {
                     "glue": "(permanent access)",
                     "velcro": "(flexible access)",
@@ -116,20 +116,11 @@ print(f"Average score: {df['Score'].mean()}")
         )
         
         # Initialize base provider
-        BaseProvider.__init__(
-            self,
-            name=model,  # Use model ID for API calls
+        super().__init__(
+            name=name or model,
             api_key=api_key or os.getenv("OPENROUTER_API_KEY"),
             config=config,
             base_url="https://openrouter.ai/api/v1"
-        )
-        
-        # Initialize simple resource
-        SimpleResource.__init__(
-            self,
-            name=name or model,
-            category="provider",
-            tags={"provider", "openrouter", model}
         )
         
         # Store model ID separately
@@ -174,6 +165,10 @@ print(f"Average score: {df['Score'].mean()}")
             "role": "system",
             "content": system_prompt
         })
+        
+        # Initialize tools and bindings
+        self._tools = {}
+        self._tool_bindings = {}
         
         # Configure tools (will update system prompt if needed)
         self._configure_tools()

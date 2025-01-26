@@ -1,10 +1,12 @@
 # src/glue/core/model.py
-from typing import Dict, Any, Optional, List, Set
+from typing import Dict, Any, Optional, List, Set, TYPE_CHECKING
 from dataclasses import dataclass, field
 from datetime import datetime
-from .types import Message, MessageType, WorkflowState, IntentAnalysis
-from ..tools.base import BaseTool
-from .tool_binding import ToolBinding, AdhesiveType, ToolBindingState
+from .types import Message, MessageType, WorkflowState, IntentAnalysis, AdhesiveType, ToolResult
+
+if TYPE_CHECKING:
+    from ..tools.simple_base import SimpleBaseTool
+    from .tool_binding import ToolBinding
 
 @dataclass
 class ModelConfig:

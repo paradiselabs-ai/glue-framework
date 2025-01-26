@@ -25,7 +25,7 @@ TOOL_TYPES = {
     'research': WebSearchTool,
     
     # File Handler Tool keywords
-    'file_handler': FileHandlerTool,  # Added the exact tool name
+    'file_handler': FileHandlerTool,
     'write_file': FileHandlerTool,
     'file': FileHandlerTool,
     'save': FileHandlerTool,
@@ -33,11 +33,11 @@ TOOL_TYPES = {
     'output': FileHandlerTool,
     'store': FileHandlerTool,
     'export': FileHandlerTool,
-    'files': FileHandlerTool,      # Added plural form
-    'read_file': FileHandlerTool,  # Added read operation
-    'read': FileHandlerTool,       # Added read keyword
-    'load': FileHandlerTool,       # Added load keyword
-    'import': FileHandlerTool,     # Added import keyword
+    'files': FileHandlerTool,
+    'read_file': FileHandlerTool,
+    'read': FileHandlerTool,
+    'load': FileHandlerTool,
+    'import': FileHandlerTool,
     
     # Code Interpreter Tool keywords
     'code_interpreter': CodeInterpreterTool,

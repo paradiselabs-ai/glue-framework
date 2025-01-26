@@ -1,13 +1,17 @@
+# src/glue/core/simple_tool_binding.py
+
 """Simplified Tool Binding Implementation"""
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Set
+from enum import Enum, auto
 
-from .types import AdhesiveType, ResourceState
+from .types import AdhesiveType
+from .state import ResourceState
 
 @dataclass
-class ToolBinding:
+class SimpleToolBinding:
     """
     Simplified configuration for binding tools to resources.
     
@@ -25,7 +29,7 @@ class ToolBinding:
     resource_pool: Dict[str, Any] = field(default_factory=dict)
     
     @classmethod
-    def tape(cls, duration_ms: int = 1800000) -> 'ToolBinding':
+    def tape(cls, duration_ms: int = 1800000) -> 'SimpleToolBinding':
         """Create a temporary tape binding with no persistence"""
         return cls(
             type=AdhesiveType.TAPE,
@@ -36,7 +40,7 @@ class ToolBinding:
         )
     
     @classmethod
-    def velcro(cls, reconnect_attempts: int = 3) -> 'ToolBinding':
+    def velcro(cls, reconnect_attempts: int = 3) -> 'SimpleToolBinding':
         """Create a flexible velcro binding with partial persistence"""
         return cls(
             type=AdhesiveType.VELCRO,
@@ -48,7 +52,7 @@ class ToolBinding:
         )
     
     @classmethod
-    def glue(cls, strength: float = 1.0) -> 'ToolBinding':
+    def glue(cls, strength: float = 1.0) -> 'SimpleToolBinding':
         """Create a permanent glue binding with full persistence"""
         return cls(
             type=AdhesiveType.GLUE,
@@ -147,7 +151,7 @@ class ToolBinding:
     
     def __str__(self) -> str:
         return (
-            f"ToolBinding({self.type.name}: "
+            f"SimpleToolBinding({self.type.name}: "
             f"strength={self.get_strength():.2f}, "
             f"state={self.state.name})"
         )

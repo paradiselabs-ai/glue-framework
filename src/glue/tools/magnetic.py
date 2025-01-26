@@ -42,11 +42,11 @@ class MagneticTool(BaseTool, MagneticResource):
         self,
         name: str,
         description: str,
-        registry: ResourceRegistry,
         magnetic: bool = True,
         shared_resources: Optional[List[str]] = None,
         sticky: bool = False,
         binding_type: AdhesiveType = AdhesiveType.VELCRO,
+        registry: Optional[ResourceRegistry] = None,
         **kwargs
     ):
         # Initialize base tool
@@ -85,16 +85,19 @@ class MagneticTool(BaseTool, MagneticResource):
         )
         self._instances[instance_id] = instance
         
-        # Create new tool instance
-        tool = self.__class__(
-            name=instance_id,
-            description=self.description,
-            registry=self._registry,
-            magnetic=self.magnetic,
-            shared_resources=self.shared_resources,
-            sticky=self.sticky,
-            binding_type=instance.binding_type
-        )
+        # Create new tool instance with optional registry
+        kwargs = {
+            "name": instance_id,
+            "description": self.description,
+            "magnetic": self.magnetic,
+            "shared_resources": self.shared_resources,
+            "sticky": self.sticky,
+            "binding_type": instance.binding_type
+        }
+        if hasattr(self, '_registry') and self._registry:
+            kwargs["registry"] = self._registry
+        
+        tool = self.__class__(**kwargs)
         
         # Copy context if available
         if self._context:

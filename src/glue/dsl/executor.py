@@ -1,5 +1,3 @@
-# src/glue/dsl/executor.py
-
 """GLUE DSL Executor"""
 
 import os
@@ -7,14 +5,28 @@ import asyncio
 from typing import Any, Dict, Set, List, Tuple, Optional, Type
 from pathlib import Path
 from copy import deepcopy
-from .parser import GlueApp, ModelConfig, ToolConfig
-from ..core.types import AdhesiveType, Team
+from dataclasses import asdict
+
+# Core imports
+from .parser import GlueAppConfig, ModelConfig, ToolConfig
+from ..core.types import AdhesiveType
+from ..core.app import GlueApp
+from ..core.team import Team
 from ..core.workspace import WorkspaceManager
-from ..tools.base import BaseTool as create_tool
-from ..providers import OpenRouterProvider
-from ..core.simple_conversation import SimpleConversationManager
-from ..core.group_chat_flow import GroupChatManager
+from ..core.conversation import ConversationManager
+from ..core.tool_binding import ToolBinding
+from ..core.simple_group_chat import SimpleGroupChatManager as GroupChatManager
 from ..core.logger import init_logger, get_logger
+
+# Tool system imports
+from ..tools.base import BaseTool, ToolConfig as BaseToolConfig
+from ..tools.code_interpreter import CodeInterpreterTool, CodeInterpreterConfig
+from ..tools.web_search import WebSearchTool
+from ..tools.file_handler import FileHandlerTool
+
+# Provider imports
+from ..providers.base import BaseProvider
+from ..providers.openrouter import OpenRouterProvider
 
 class GlueExecutor:
     """Executor for GLUE Applications"""
@@ -23,6 +35,7 @@ class GlueExecutor:
         self.app = app
         self.tools = {}
         self.models = {}
+        self.teams = {}  # Initialize teams dict
         self._registry = None
         
         # Initialize logger
@@ -33,7 +46,7 @@ class GlueExecutor:
         self.workspace_manager = WorkspaceManager()
         
         # Initialize managers
-        self.conversation = SimpleConversationManager(
+        self.conversation = ConversationManager(
             sticky=app.config.get("sticky", False)
         )
         self.group_chat = GroupChatManager(app.name)
@@ -96,20 +109,33 @@ class GlueExecutor:
             from dotenv import load_dotenv
             load_dotenv()
     
-    def _determine_tool_stickiness(self, tool_config: ToolConfig) -> bool:
-        """Determine tool stickiness based on app and tool config"""
-        app_sticky = self.app.config.get("sticky", False)
+    def _create_tool_config(self, tool_name: str, tool_config: ToolConfig) -> Dict[str, Any]:
+        """Create tool configuration dictionary"""
+        # Start with base configuration
+        config = {
+            "name": tool_name,
+            **tool_config.config
+        }
         
-        # If app isn't sticky, tools can't be sticky
-        if not app_sticky:
-            return False
+        # Add API key if specified
+        if tool_config.api_key:
+            if tool_config.api_key.startswith("env:"):
+                env_var = tool_config.api_key.replace("env:", "")
+                api_key = os.getenv(env_var)
+                if not api_key:
+                    raise ValueError(
+                        f"No API key found in environment variable {env_var} "
+                        f"for tool {tool_name}"
+                    )
+                config["api_key"] = api_key
+            else:
+                config["api_key"] = tool_config.api_key
         
-        # Check if tool explicitly sets sticky
-        if "sticky" in tool_config.config:
-            return tool_config.config["sticky"]
-        
-        # Default to app stickiness
-        return app_sticky
+        # Add provider if specified
+        if tool_config.provider:
+            config["provider"] = tool_config.provider
+            
+        return config
     
     async def _setup_tools(self, workspace_path: str):
         """Setup tools"""
@@ -118,7 +144,7 @@ class GlueExecutor:
         
         # Print masked tool configs
         masked_configs = {
-            name: self._mask_sensitive_data(config.__dict__)
+            name: self._mask_sensitive_data(asdict(config))
             for name, config in self.app.tool_configs.items()
         }
         self.logger.debug(f"Tool configs: {masked_configs}")
@@ -127,53 +153,38 @@ class GlueExecutor:
         for tool_name, tool_config in self.app.tool_configs.items():
             self.logger.info(f"\nSetting up tool: {tool_name}")
             
-            # Print masked tool config
-            self.logger.debug(f"Tool config: {self._mask_sensitive_data(tool_config.__dict__)}")
-            
-            # Get API key from environment if specified
-            api_key = None
-            if tool_config.api_key and tool_config.api_key.startswith("env:"):
-                env_var = tool_config.api_key.replace("env:", "")
-                api_key = os.getenv(env_var)
-                if not api_key:
-                    raise ValueError(
-                        f"No API key found in environment variable {env_var} "
-                        f"for tool {tool_name}"
-                    )
-                self.logger.info(f"Using API key from environment: {env_var}")
-            
             try:
-                # Create base tool with config
-                self.logger.info(f"Creating tool with provider: {tool_config.provider}")
-                
-                # Get tool type
+                # Get tool type and create configuration
                 tool_type = _infer_tool_type(tool_name)
                 if not tool_type:
                     raise ValueError(f"Unknown tool type: {tool_name}")
                 
-                # Create base tool configuration
-                if tool_name == "code_interpreter":
-                    base_config = {
-                        "name": tool_name,
-                        "description": "Executes code in a sandboxed environment",
-                        "workspace_dir": workspace_path,
-                        "supported_languages": tool_config.config.get("languages", None)
-                    }
-                else:
-                    base_config = {
-                        "name": tool_name,
-                        "workspace_dir": workspace_path,
-                        **tool_config.config
-                    }
-                    
-                    # Only add api_key and provider if tool accepts them
-                    if 'api_key' in tool_type.__init__.__code__.co_varnames:
-                        base_config['api_key'] = api_key
-                    if 'provider' in tool_type.__init__.__code__.co_varnames:
-                        base_config['provider'] = tool_config.provider
+                # Create base configuration
+                base_config = self._create_tool_config(tool_name, tool_config)
+                base_config["workspace_dir"] = workspace_path
                 
-                # Create base tool (models will get their own instances)
-                base_tool = tool_type(**base_config)
+                # Handle special tool configurations
+                if tool_type == CodeInterpreterTool:
+                    # Create CodeInterpreterConfig
+                    # Remove workspace_dir from base_config since we pass it explicitly
+                    base_config_copy = base_config.copy()
+                    base_config_copy.pop("workspace_dir", None)
+                    tool_config = CodeInterpreterConfig(
+                        workspace_dir=workspace_path,
+                        supported_languages=base_config.get("languages"),
+                        **{k: v for k, v in base_config_copy.items() 
+                           if k in CodeInterpreterConfig.__annotations__}
+                    )
+                    base_tool = tool_type(config=tool_config)
+                elif tool_name == 'web_search':
+                    provider = tool_config.provider.upper()
+                    api_key = os.getenv(f'{provider}_API_KEY')
+                    if not api_key:
+                        raise ValueError(f"No {provider}_API_KEY found in environment")
+                    base_tool = tool_type(api_key=api_key, **base_config)
+                else:
+                    base_tool = tool_type(**base_config)
+                
                 self.tools[tool_name] = base_tool
                 self.logger.info(f"Base tool {tool_name} setup complete")
                 
@@ -226,7 +237,7 @@ class GlueExecutor:
                 masked_settings = self._mask_sensitive_data(model_settings)
                 self.logger.debug(f"Creating model with settings: {masked_settings}")
                 
-                # Create model with just model settings
+                # Create model with settings
                 model = OpenRouterProvider(**model_settings)
                 
                 # Set role
@@ -251,7 +262,13 @@ class GlueExecutor:
             self.logger.info(f"\nSetting up team: {team_name}")
             
             # Create team
-            team = Team(team_name)
+            team = Team(
+                name=team_name,
+                members=set(),
+                tools=set(),
+                shared_results={},
+                session_results={}
+            )
             self.teams[team_name] = team
             
             # Add lead if specified
@@ -277,9 +294,33 @@ class GlueExecutor:
                     
                     # Create tool instance for each team member
                     base_tool = self.tools[tool_name]
+                    tool_config = self.app.tool_configs[tool_name]
+                    base_config = self._create_tool_config(tool_name, tool_config)
+                    
                     for member_name in team.members:
                         member = self.models[member_name]
-                        member._tools[tool_name] = base_tool.create_instance()
+                        # Create a new instance with the same config
+                        if tool_name == 'web_search':
+                            # Pass api_key when creating web search instance
+                            provider = tool_config.provider.upper()
+                            api_key = os.getenv(f'{provider}_API_KEY')
+                            if not api_key:
+                                raise ValueError(f"No {provider}_API_KEY found in environment")
+                            member._tools[tool_name] = WebSearchTool(api_key=api_key, **base_config)
+                        elif tool_name == 'code_interpreter':
+                            # Create new CodeInterpreterConfig for this instance
+                            instance_config = CodeInterpreterConfig(
+                                workspace_dir=self.workspace_manager.get_workspace(
+                                    f"{self.app.name}-{member_name}",
+                                    sticky=self.app.config.get("sticky", False)
+                                ),
+                                supported_languages=base_config.get("languages"),
+                                **{k: v for k, v in base_config.items() 
+                                   if k in CodeInterpreterConfig.__annotations__}
+                            )
+                            member._tools[tool_name] = CodeInterpreterTool(config=instance_config)
+                        else:
+                            member._tools[tool_name] = type(base_tool)(**base_config)
         
         # Setup flows between teams
         for source, target in self.app.workflow.attractions:
@@ -288,8 +329,9 @@ class GlueExecutor:
             if source in self.teams and target in self.teams:
                 source_team = self.teams[source]
                 target_team = self.teams[target]
-                source_team.allow_push_to(target)
-                target_team.allow_pull_from(source)
+                # Enable bidirectional flow between teams
+                source_team.set_relationship(target, None)  # None = adhesive-agnostic
+                target_team.set_relationship(source, None)  # Let teams handle adhesives internally
             else:
                 self.logger.warning(f"Could not find teams for flow: {source} -> {target}")
         
@@ -300,8 +342,8 @@ class GlueExecutor:
             if source in self.teams and target in self.teams:
                 source_team = self.teams[source]
                 target_team = self.teams[target]
-                source_team.repel(target)
-                target_team.repel(source)
+                # Block all interaction between teams
+                source_team.repel(target, bidirectional=True)
             else:
                 self.logger.warning(f"Could not find teams for repulsion: {source} <> {target}")
                 
@@ -317,10 +359,12 @@ class GlueExecutor:
                     # Can pull from any non-repelled team
                     for other_name, other_team in self.teams.items():
                         if other_name != target and other_name not in target_team._repelled_by:
-                            target_team.allow_pull_from(other_name)
+                            # Enable pulling from non-repelled team
+                            target_team.set_relationship(other_name, None)  # Adhesive-agnostic
                 elif source in self.teams:
                     # Regular pull from specific team
-                    target_team.allow_pull_from(source)
+                    # Enable specific pull relationship
+                    target_team.set_relationship(source, None)  # Adhesive-agnostic
 
     
     async def execute(self) -> Any:
@@ -353,23 +397,14 @@ class GlueExecutor:
                 # Process input
                 print("\nthinking...", flush=True)
                 
-                # Get model's team
-                team_name = None
-                for t_name, team in self.teams.items():
-                    if any(m in team.members for m in self.models.keys()):
-                        team_name = t_name
-                        break
-                
-                if team_name:
-                    # Use team's lead model
-                    team = self.teams[team_name]
-                    lead_model = next(
-                        self.models[m] for m in team.members 
-                        if m in self.models
-                    )
+                # Get first defined team and its lead model
+                first_team = next(iter(self.teams.values()))
+                if first_team and first_team.members:
+                    lead_name = next(iter(first_team.members))
+                    lead_model = self.models[lead_name]
                     response = await lead_model.generate(user_input)
                 else:
-                    # Use first available model
+                    # Fallback to first available model
                     model = next(iter(self.models.values()))
                     response = await model.generate(user_input)
                 
@@ -391,19 +426,21 @@ class GlueExecutor:
             if not self.app.config.get("sticky", False):
                 self.workspace_manager.cleanup_workspace(workspace_path)
 
-def _infer_tool_type(name: str) -> Optional[Type[Any]]:
+def _infer_tool_type(name: str) -> Optional[Type[BaseTool]]:
     """Infer tool type from name"""
-    from ..tools.simple_web_search import SimpleWebSearchTool
-    from ..tools.simple_file_handler import SimpleFileHandlerTool
-    from ..tools.code_interpreter import CodeInterpreterTool
-    
     TOOL_TYPES = {
-        'web_search': SimpleWebSearchTool,
-        'file_handler': SimpleFileHandlerTool,
+        'web_search': WebSearchTool,
+        'file_handler': FileHandlerTool,
         'code_interpreter': CodeInterpreterTool,
     }
     
-    return TOOL_TYPES.get(name.lower())
+    tool_type = TOOL_TYPES.get(name.lower())
+    if not tool_type:
+        raise ValueError(
+            f"Unknown tool type: {name}. "
+            f"Available types: {list(TOOL_TYPES.keys())}"
+        )
+    return tool_type
 
 async def execute_glue_app(app: GlueApp, registry: Optional['ResourceRegistry'] = None) -> Any:
     """Execute GLUE application

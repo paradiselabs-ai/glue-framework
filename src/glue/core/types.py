@@ -73,11 +73,36 @@ class ResourceState(Enum):
     IDLE = auto()     # Resource is available
     ACTIVE = auto()   # Resource is being used
 
+class BindingState(Enum):
+    """States for bindings"""
+    ACTIVE = auto()    # Binding is active and usable
+    DEGRADED = auto()  # Binding is weakened but still usable
+    FAILED = auto()    # Binding has failed and needs to be recreated
+
+class AdhesiveState(Enum):
+    """States for adhesive bindings"""
+    INACTIVE = auto()  # Not yet activated
+    ACTIVE = auto()    # Ready for use
+    DEGRADED = auto()  # Weakened but still usable
+    EXPIRED = auto()   # No longer usable
+
 class AdhesiveType(Enum):
     """Types of adhesive bindings"""
     TAPE = auto()    # One-time use, no persistence
     VELCRO = auto()  # Session-based persistence
     GLUE = auto()    # Team-wide persistence
+
+@dataclass
+class AdhesiveProperties:
+    """Properties for adhesive bindings"""
+    strength: float = 1.0
+    durability: float = 1.0
+    flexibility: float = 1.0
+    duration: Optional[timedelta] = None
+    is_reusable: bool = True
+    max_uses: Optional[int] = None
+    allowed_patterns: Set[InteractionPattern] = field(default_factory=set)
+    resource_pool: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class ToolResult:
@@ -110,10 +135,9 @@ class WorkflowState:
     updated_at: datetime = field(default_factory=datetime.now)
 
 @dataclass
-class Team:
-    """Team of models that can collaborate"""
-    name: str
-    members: Set[str]
-    tools: Set[str]
-    shared_results: Dict[str, ToolResult]  # GLUE results shared by team
-    session_results: Dict[str, Dict[str, ToolResult]]  # VELCRO results by model
+class ResourceMetadata:
+    """Resource metadata"""
+    category: str
+    tags: Set[str] = field(default_factory=set)
+
+# Team is defined in team.py to avoid circular imports

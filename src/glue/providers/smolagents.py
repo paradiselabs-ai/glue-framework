@@ -9,7 +9,7 @@ from ..core.model import ModelConfig
 from ..core.logger import get_logger
 from ..core.types import AdhesiveType, ToolResult
 from .base import BaseProvider
-from ..tools.base import BaseTool
+from ..tools.simple_magnetic import SimpleMagneticTool
 
 class SmoLAgentsProvider(BaseProvider):
     """
@@ -54,7 +54,7 @@ class SmoLAgentsProvider(BaseProvider):
         
         self.logger.debug(f"Initialized SmoLAgents provider: {name}")
         
-    def _convert_tool(self, glue_tool: BaseTool) -> Any:
+    def _convert_tool(self, glue_tool: SimpleMagneticTool) -> Any:
         """Convert a GLUE tool to a SmoLAgents tool"""
         @tool
         async def smol_tool(*args, **kwargs):
