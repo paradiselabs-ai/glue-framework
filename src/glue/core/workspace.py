@@ -189,7 +189,7 @@ class WorkspaceManager:
         return None
 
 @asynccontextmanager
-async def workspace_context(name: str, registry: Optional['ResourceRegistry'] = None):
+async def workspace_context(name: str):
     """Context manager for workspaces"""
     # Create workspace manager
     manager = WorkspaceManager()
@@ -198,7 +198,7 @@ async def workspace_context(name: str, registry: Optional['ResourceRegistry'] = 
     workspace_path = manager.get_workspace(name)
     
     # Create magnetic field for workspace
-    field = MagneticField(name, registry)
+    field = MagneticField(name)
     
     # Create workspace object
     workspace = Workspace(workspace_path, field)

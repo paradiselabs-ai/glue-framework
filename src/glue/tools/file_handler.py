@@ -44,7 +44,6 @@ class FileHandlerTool(BaseTool):
         workspace_dir: Optional[str] = None,
         binding_type: Optional[AdhesiveType] = None,
         shared_resources: Optional[List[str]] = None,
-        registry: Optional[ResourceRegistry] = None,
         **kwargs
     ):
         # Initialize base tool

@@ -77,7 +77,6 @@ class AdhesiveProperties:
     duration: Optional[timedelta] = None
     is_reusable: bool = True
     max_uses: Optional[int] = None
-    allowed_patterns: Set[InteractionPattern] = field(default_factory=set)
     resource_pool: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass

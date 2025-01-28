@@ -1,23 +1,25 @@
 # src/glue/magnetic/rules.py
 
 # ==================== Imports ====================
-from typing import Any, Callable, Dict, List, Optional, Set, Type, Union, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, Type, Union, Tuple
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
-from ..core.types import ResourceState, AdhesiveType, InteractionPattern
+from ..core.types import AdhesiveType
 from ..core.context import InteractionType
+from ..core.team import Team
 
-if TYPE_CHECKING:
-    from .field import MagneticResource
+# ==================== Constants ====================
+ATTRACT = "><"  # Bidirectional attraction
+PUSH = "->"    # One-way push
+PULL = "<-"    # One-way pull
+REPEL = "<>"   # Repulsion
 
 # ==================== Enums ====================
 class AttractionPolicy(Enum):
-    """Policies for handling attraction between resources"""
+    """Policies for handling attraction between teams"""
     ALLOW_ALL = auto()     # Allow all attractions
     DENY_ALL = auto()      # Deny all attractions
-    STATE_BASED = auto()   # Allow based on resource states
-    PATTERN_BASED = auto() # Allow based on interaction patterns
     BINDING_BASED = auto() # Allow based on adhesive bindings
     CUSTOM = auto()        # Use custom validation function
 
@@ -29,38 +31,34 @@ class PolicyPriority(Enum):
     SYSTEM = 4  # Cannot be overridden
 
 # ==================== Type Definitions ====================
-ValidationFunc = Callable[['MagneticResource', 'MagneticResource'], bool]
-StateValidator = Callable[[ResourceState, ResourceState], bool]
-PatternValidator = Callable[[InteractionPattern, ResourceState, ResourceState], bool]
-BindingValidator = Callable[[AdhesiveType, ResourceState, ResourceState], bool]
+ValidationFunc = Callable[[Team, Team], bool]
+BindingValidator = Callable[[AdhesiveType], bool]
 
 # ==================== Data Classes ====================
 @dataclass
 class AttractionRule:
-    """Rule for determining if two resources can attract"""
+    """Rule for determining if two teams can interact"""
     name: str
     policy: AttractionPolicy
     priority: PolicyPriority = PolicyPriority.MEDIUM
     custom_validator: Optional[ValidationFunc] = None
-    state_validator: Optional[StateValidator] = None
-    pattern_validator: Optional[PatternValidator] = None
     binding_validator: Optional[BindingValidator] = None
     description: str = ""
     enabled: bool = True
 
     def validate(
         self,
-        source: 'MagneticResource',
-        target: 'MagneticResource',
-        pattern: Optional[InteractionPattern] = None,
+        source: Team,
+        target: Team,
+        pattern: Optional[str] = None,  # "><", "->", "<-", "<>"
         binding: Optional[AdhesiveType] = None
     ) -> bool:
         """
-        Validate if two resources can interact based on this rule
+        Validate if two teams can interact based on this rule
         
         Args:
-            source: Source resource
-            target: Target resource
+            source: Source team
+            target: Target team
             pattern: Optional interaction pattern
             binding: Optional adhesive binding type
         """
@@ -73,14 +71,8 @@ class AttractionRule:
         if self.policy == AttractionPolicy.ALLOW_ALL:
             return True
 
-        if self.policy == AttractionPolicy.STATE_BASED and self.state_validator:
-            return self.state_validator(source._state, target._state)
-
-        if self.policy == AttractionPolicy.PATTERN_BASED and self.pattern_validator and pattern:
-            return self.pattern_validator(pattern, source._state, target._state)
-
         if self.policy == AttractionPolicy.BINDING_BASED and self.binding_validator and binding:
-            return self.binding_validator(binding, source._state, target._state)
+            return self.binding_validator(binding)
 
         if self.policy == AttractionPolicy.CUSTOM and self.custom_validator:
             return self.custom_validator(source, target)
@@ -104,8 +96,6 @@ class RuleSet:
                 policy=rule.policy,
                 priority=rule.priority,
                 custom_validator=rule.custom_validator,
-                state_validator=rule.state_validator,
-                pattern_validator=rule.pattern_validator,
                 binding_validator=rule.binding_validator,
                 description=rule.description,
                 enabled=rule.enabled
@@ -131,17 +121,17 @@ class RuleSet:
 
     def validate(
         self,
-        source: 'MagneticResource',
-        target: 'MagneticResource',
-        pattern: Optional[InteractionPattern] = None,
+        source: Team,
+        target: Team,
+        pattern: Optional[str] = None,  # "><", "->", "<-", "<>"
         binding: Optional[AdhesiveType] = None
     ) -> bool:
         """
         Validate interaction using all rules in the set
         
         Args:
-            source: Source resource
-            target: Target resource
+            source: Source team
+            target: Target team
             pattern: Optional interaction pattern
             binding: Optional adhesive binding type
         """
@@ -159,52 +149,17 @@ class RuleSet:
         return True
 
 # ==================== Common Rules ====================
-def create_state_validator(
-    allowed_states: Set[ResourceState]
-) -> StateValidator:
-    """Create a validator that checks if resources are in allowed states"""
-    def validator(state1: ResourceState, state2: ResourceState) -> bool:
-        return state1 in allowed_states and state2 in allowed_states
-    return validator
-
-def create_pattern_validator(
-    allowed_patterns: Dict[InteractionPattern, Tuple[Set[ResourceState], Set[ResourceState]]]
-) -> PatternValidator:
-    """
-    Create a validator that checks if resources can use an interaction pattern
-    
-    Args:
-        allowed_patterns: Dict mapping patterns to (source states, target states)
-    """
-    def validator(
-        pattern: InteractionPattern,
-        source_state: ResourceState,
-        target_state: ResourceState
-    ) -> bool:
-        if pattern not in allowed_patterns:
-            return False
-        source_states, target_states = allowed_patterns[pattern]
-        return source_state in source_states and target_state in target_states
-    return validator
-
 def create_binding_validator(
-    allowed_bindings: Dict[AdhesiveType, Set[ResourceState]]
+    allowed_bindings: Set[AdhesiveType]
 ) -> BindingValidator:
     """
-    Create a validator that checks if resources can use a binding type
+    Create a validator that checks if teams can use a binding type
     
     Args:
-        allowed_bindings: Dict mapping binding types to allowed states
+        allowed_bindings: Set of allowed binding types
     """
-    def validator(
-        binding: AdhesiveType,
-        source_state: ResourceState,
-        target_state: ResourceState
-    ) -> bool:
-        if binding not in allowed_bindings:
-            return False
-        allowed_states = allowed_bindings[binding]
-        return source_state in allowed_states and target_state in allowed_states
+    def validator(binding: AdhesiveType) -> bool:
+        return binding in allowed_bindings
     return validator
 
 # Common rule sets
@@ -217,39 +172,13 @@ DEFAULT_RULES = RuleSet(
             policy=AttractionPolicy.CUSTOM,
             priority=PolicyPriority.SYSTEM,
             custom_validator=lambda source, target: (
-                # Pull teams can pull from any non-repelled resource
+                # Pull teams can pull from any non-repelled team
                 (hasattr(source, 'is_pull_team') and source.is_pull_team and
-                 not (hasattr(source, '_repelled_by') and target in source._repelled_by)) or
+                 target.name not in source._repelled_by) or
                 # Allow normal interactions for non-pull teams
                 not (hasattr(source, 'is_pull_team') and source.is_pull_team)
             ),
             description="Pull team validation"
-        ),
-        
-        # Pattern state validation (HIGH priority)
-        AttractionRule(
-            name="pattern_states",
-            policy=AttractionPolicy.PATTERN_BASED,
-            priority=PolicyPriority.HIGH,
-            pattern_validator=create_pattern_validator({
-                InteractionPattern.ATTRACT: (
-                    {ResourceState.IDLE, ResourceState.ACTIVE},  # Both states can attract
-                    {ResourceState.IDLE, ResourceState.ACTIVE}
-                ),
-                InteractionPattern.PUSH: (
-                    {ResourceState.ACTIVE},  # Only active resources can push
-                    {ResourceState.IDLE}     # Only idle resources can receive
-                ),
-                InteractionPattern.PULL: (
-                    {ResourceState.ACTIVE},  # Only active resources can pull
-                    {ResourceState.IDLE}     # Only idle resources can be pulled from
-                ),
-                InteractionPattern.REPEL: (
-                    {ResourceState.ACTIVE},  # Only active resources can repel
-                    {ResourceState.ACTIVE}   # Only active resources can be repelled
-                )
-            }),
-            description="Validate states for interaction patterns"
         ),
         
         # Context validation (HIGH priority)
@@ -266,8 +195,8 @@ DEFAULT_RULES = RuleSet(
                 # Allow normal interactions for other types
                 source._context.interaction_type != InteractionType.PULL
             ),
-            description="Context-aware state validation"
+            description="Context-aware validation"
         )
     ],
-    description="Default rules for resource interaction"
+    description="Default rules for team interaction"
 )

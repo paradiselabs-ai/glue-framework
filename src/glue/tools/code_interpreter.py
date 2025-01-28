@@ -11,10 +11,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 from dataclasses import dataclass
 
-from .simple_base import SimpleBaseTool
+from .base import BaseTool
 from ..core.types import AdhesiveType
 from ..core.context import ContextState, ComplexityLevel
-from ..core.state import ResourceState
 from ..core.logger import get_logger
 
 # ==================== Constants ====================
@@ -93,7 +92,7 @@ class CodeResult:
             self.resource_usage = {}
 
 # ==================== Code Interpreter Tool ====================
-class CodeInterpreterTool(SimpleBaseTool):
+class CodeInterpreterTool(BaseTool):
     """
     Advanced code interpreter tool with security and analysis features.
     
@@ -151,19 +150,11 @@ class CodeInterpreterTool(SimpleBaseTool):
         self._temp_files: List[str] = []
         
         # Ensure workspace exists
-        os.makedirs(self.workspace_dir, exist_ok=True)
-
-                    continue
-                
-                await self._transition_state(ResourceState.IDLE)
-                return CodeResult(
-                    output="",
-                    error=str(e),
-                    success=False,
-                    error_type=error_type,
-                    error_context=error_context,
-                    suggestions=self._generate_error_suggestions(str(e))
-                )
+        try:
+            os.makedirs(self.workspace_dir, exist_ok=True)
+        except Exception as e:
+            self.logger.error(f"Failed to create workspace directory: {str(e)}")
+            raise RuntimeError(f"Failed to initialize code interpreter: {str(e)}")
 
     async def _execute(self, code: str, language: Optional[str] = None, timeout: Optional[float] = None, context: Optional[ContextState] = None) -> Dict[str, Any]:
         """Execute code with automatic language detection and validation"""
@@ -863,6 +854,6 @@ class CodeInterpreterTool(SimpleBaseTool):
     def __str__(self) -> str:
         """String representation"""
         status = f"{self.name}: {self.description}"
-        if self.binding_type:
-            status += f" (Binding: {self.binding_type.name})"
+        if self.adhesive_type:
+            status += f" (Adhesive: {self.adhesive_type.name})"
         return status

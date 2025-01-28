@@ -50,16 +50,16 @@ We use GitHub issues to track public bugs. Report a bug by [opening a new issue]
 ## Adding New Tools
 
 1. Create a new tool class in `src/glue/tools/`
-2. Inherit from `SimpleBaseTool`
+2. Inherit from `BaseTool`
 3. Implement required methods
 4. Add tests in `tests/tools/`
 5. Update documentation
 
 Example:
 ```python
-from glue.tools.simple_base import SimpleBaseTool, ToolConfig, ToolPermission
+from glue.tools.base import BaseTool, ToolConfig, ToolPermission
 
-class CustomTool(SimpleBaseTool):
+class CustomTool(BaseTool):
     def __init__(
         self,
         name: str = "custom_tool",

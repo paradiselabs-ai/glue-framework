@@ -15,7 +15,7 @@ from pathlib import Path
 from .model import Model
 from .memory import MemoryManager
 from .logger import get_logger
-from .context import ContextAnalyzer, ContextState, InteractionType, InteractionPattern
+from .context import ContextAnalyzer, ContextState, InteractionType
 from .role import DynamicRole, RoleState
 from ..tools.chain import ToolChainOptimizer
 from .types import AdhesiveType
@@ -269,19 +269,11 @@ class ConversationManager:
                 # Get model context
                 model_context = self._get_model_context(model.name)
                 
-                # Determine interaction patterns from context
-                patterns = {InteractionPattern.CHAT}  # Default to chat
-                if context:
-                    if context.interaction_type == InteractionType.RESEARCH:
-                        patterns = {InteractionPattern.RESEARCH}
-                    elif context.interaction_type == InteractionType.TASK:
-                        patterns = {InteractionPattern.TASK}
-                
-                # Enhance input with context and patterns
+                # Enhance input with context and interaction type
                 enhanced_input = self._enhance_input_with_context(
                     current_input=current_input,
                     context=model_context,
-                    patterns=patterns
+                    interaction_type=context.interaction_type if context else InteractionType.CHAT
                 )
                 
                 # Get model's response
@@ -423,7 +415,7 @@ class ConversationManager:
         self,
         current_input: str,
         context: Dict[str, Any],
-        patterns: Optional[Set[InteractionPattern]] = None
+        interaction_type: InteractionType = InteractionType.CHAT
     ) -> str:
         """
         Format context like a natural conversation
@@ -455,19 +447,14 @@ class ConversationManager:
                 shared_items.append(f"- {key}: {value}")
         shared_str = "\n".join(shared_items)
         
-        # Format any interaction patterns
-        pattern_str = ""
-        if patterns:
-            pattern_items = []
-            for pattern in patterns:
-                if pattern == InteractionPattern.CHAT:
-                    pattern_items.append("You can engage in free-form conversation")
-                elif pattern == InteractionPattern.TASK:
-                    pattern_items.append("You should focus on completing specific tasks")
-                elif pattern == InteractionPattern.RESEARCH:
-                    pattern_items.append("You should focus on gathering and analyzing information")
-            if pattern_items:
-                pattern_str = "Interaction style:\n" + "\n".join(f"- {item}" for item in pattern_items)
+        # Format interaction style
+        style_str = ""
+        if interaction_type == InteractionType.CHAT:
+            style_str = "Interaction style:\n- You can engage in free-form conversation"
+        elif interaction_type == InteractionType.TASK:
+            style_str = "Interaction style:\n- You should focus on completing specific tasks"
+        elif interaction_type == InteractionType.RESEARCH:
+            style_str = "Interaction style:\n- You should focus on gathering and analyzing information"
         
         # Combine everything naturally
         context_parts = []
@@ -475,8 +462,8 @@ class ConversationManager:
             context_parts.append(f"Recent conversation:\n{history_str}")
         if shared_str:
             context_parts.append(f"Shared team resources:\n{shared_str}")
-        if pattern_str:
-            context_parts.append(pattern_str)
+        if style_str:
+            context_parts.append(style_str)
         
         context_str = "\n\n".join(context_parts)
         
