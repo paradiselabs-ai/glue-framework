@@ -9,7 +9,7 @@ from ..core.model import ModelConfig
 from ..core.logger import get_logger
 from ..core.types import AdhesiveType, ToolResult
 from .base import BaseProvider
-from ..tools.simple_magnetic import SimpleMagneticTool
+from ..adhesive.tool import AdhesiveTool
 
 class SmoLAgentsProvider(BaseProvider):
     """
@@ -54,16 +54,56 @@ class SmoLAgentsProvider(BaseProvider):
         
         self.logger.debug(f"Initialized SmoLAgents provider: {name}")
         
-    def _convert_tool(self, glue_tool: SimpleMagneticTool) -> Any:
+    def _convert_tool(self, glue_tool: AdhesiveTool) -> Any:
         """Convert a GLUE tool to a SmoLAgents tool"""
         @tool
         async def smol_tool(*args, **kwargs):
-            """Wrapper for GLUE tool"""
+            """Wrapper for GLUE tool with enhanced documentation"""
             return await glue_tool.execute(*args, **kwargs)
             
-        # Copy metadata
+        # Enhanced documentation with examples and usage patterns
+        doc = f"""
+        {glue_tool.description}
+
+        Usage:
+        <think>Explain why you need this tool</think>
+        <tool>{glue_tool.name}</tool>
+        <input>what you want the tool to do</input>
+
+        Examples:
+        1. Web Search:
+        <think>I need to search for recent news about AI</think>
+        <tool>web_search</tool>
+        <input>latest developments in open source AI models</input>
+
+        2. File Handler:
+        <think>I need to save this information</think>
+        <tool>file_handler</tool>
+        <input>Title: AI News Summary
+        Latest developments in open source AI:
+        1. ...
+        2. ...</input>
+
+        3. Code Interpreter:
+        <think>I need to analyze some data with Python</think>
+        <tool>code_interpreter</tool>
+        <input>
+        import pandas as pd
+        data = {'Model': ['GPT-4', 'Claude', 'Llama'],
+                'Score': [95, 92, 88]}
+        df = pd.DataFrame(data)
+        print(f"Average score: {df['Score'].mean()}")
+        </input>
+
+        Notes:
+        - Always explain your reasoning in <think> tags
+        - Be specific about what you want the tool to do
+        - Check tool results before proceeding
+        """
+            
+        # Copy metadata with enhanced docs
         smol_tool.__name__ = glue_tool.name
-        smol_tool.__doc__ = glue_tool.description
+        smol_tool.__doc__ = doc
         
         return smol_tool
         

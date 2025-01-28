@@ -4,15 +4,13 @@ import re
 import aiohttp
 from typing import Dict, List, Optional, Any, Type, Union
 from .base import ToolConfig, ToolPermission
-from .magnetic import MagneticTool
+from .base import BaseTool
 from .search_providers import get_provider, SearchProvider, GenericSearchProvider
 from ..core.logger import get_logger
-from ..core.resource import ResourceState
+from ..core.tool_binding import ToolBinding
 from ..core.types import AdhesiveType
-from ..core.registry import ResourceRegistry
-from ..core.state import StateManager
 
-class WebSearchTool(MagneticTool):
+class WebSearchTool(BaseTool):
     """
     Tool for performing web searches with resource capabilities.
     
@@ -31,52 +29,36 @@ class WebSearchTool(MagneticTool):
         description: str = "Performs web searches and returns results",
         provider: str = "serp",
         max_results: int = 5,
-        magnetic: bool = True,
-        sticky: bool = False,
         binding_type: Optional[AdhesiveType] = None,
         **provider_config
     ):
-        # Create registry with state manager
-        registry = ResourceRegistry(StateManager())
-        
         super().__init__(
             name=name,
             description=description,
-            registry=registry,
-            magnetic=magnetic,
-            sticky=sticky,
-            shared_resources=["query", "search_results"],
             config=ToolConfig(
-                required_permissions=[
-                    ToolPermission.NETWORK,
-                    ToolPermission.READ,
-                    ToolPermission.MAGNETIC
-                ],
+                required_permissions=[ToolPermission.NETWORK, ToolPermission.READ],
                 timeout=10.0,
                 cache_results=True
-            ),
-            binding_type=binding_type or AdhesiveType.GLUE if magnetic else None
+            )
         )
         
-        # Get provider class and config
-        provider_class = get_provider(provider, **provider_config)
+        # Create tool binding
+        self.binding = ToolBinding(
+            type=binding_type or AdhesiveType.VELCRO  # Default to VELCRO if no binding type specified
+        )
         
         # If endpoint not in config but provider has default endpoint, add it
-        if issubclass(provider_class, GenericSearchProvider):
-            provider_endpoints = {
-                "tavily": "https://api.tavily.com/search",
-                "serp": "https://serpapi.com/search",
-                "bing": "https://api.bing.microsoft.com/v7.0/search",
-                "you": "https://api.you.com/search",
-            }
-            if provider in provider_endpoints and "endpoint" not in provider_config:
-                provider_config["endpoint"] = provider_endpoints[provider]
+        provider_endpoints = {
+            "tavily": "https://api.tavily.com/search",
+            "serp": "https://serpapi.com/search",
+            "bing": "https://api.bing.microsoft.com/v7.0/search",
+            "you": "https://api.you.com/search",
+        }
+        if provider in provider_endpoints and "endpoint" not in provider_config:
+            provider_config["endpoint"] = provider_endpoints[provider]
         
-        # Initialize provider and session
-        self.provider = provider_class(
-            api_key=api_key,
-            **provider_config
-        )
+        # Get provider instance with config
+        self.provider = get_provider(provider, api_key, **provider_config)
         self.max_results = max_results
         self.logger = get_logger()
         self._session: Optional[aiohttp.ClientSession] = None
@@ -133,11 +115,10 @@ class WebSearchTool(MagneticTool):
 
     async def prepare_input(self, input_data: Any) -> str:
         """Prepare input for search"""
-        # Check for shared query from attracted resources
-        if self._attracted_to:
-            for resource in self._attracted_to:
-                if hasattr(resource, "query"):
-                    return resource.query
+        # Check for stored query in binding
+        stored_query = self.binding.get_resource("query")
+        if stored_query:
+            return stored_query
         
         # If input is a string, use it directly
         if isinstance(input_data, str):
@@ -197,11 +178,8 @@ class WebSearchTool(MagneticTool):
             
             # Try each query until we get good results
             for query in queries:
-                # Share query with attracted resources
-                if self._attracted_to:
-                    for resource in self._attracted_to:
-                        if hasattr(resource, "query"):
-                            resource.query = query
+                # Store query in binding
+                self.binding.store_resource("query", query)
                 
                 # Perform search
                 try:
@@ -235,11 +213,8 @@ class WebSearchTool(MagneticTool):
             # Format results as markdown
             formatted_results = self._format_results_as_markdown(final_results, base_query)
             
-            # Share results with attracted resources
-            if self._attracted_to:
-                for resource in self._attracted_to:
-                    if hasattr(resource, "search_results"):
-                        resource.search_results = formatted_results
+            # Store results in binding
+            self.binding.store_resource("search_results", formatted_results)
             
             # Return formatted results
             return formatted_results
@@ -248,31 +223,17 @@ class WebSearchTool(MagneticTool):
             self.logger.error(f"Search request failed: {str(e)}")
             raise RuntimeError(f"Search request failed: {str(e)}")
 
-    def create_instance(self, api_key: Optional[str] = None, **kwargs) -> 'WebSearchTool':
+    def create_instance(self, api_key: Optional[str] = None, binding_type: Optional[AdhesiveType] = None) -> 'WebSearchTool':
         """Create a new instance with the same API key"""
         # Create new instance with api_key
         instance = self.__class__(
             api_key=api_key or self.provider.api_key,
             name=self.name,
             description=self.description,
-            registry=self._registry,
-            magnetic=self.magnetic,
-            sticky=self.sticky,
-            shared_resources=self.shared_resources,
-            binding_type=kwargs.get('binding_type', self.binding_type)
+            binding_type=binding_type or self.binding.type
         )
         return instance
 
     def __str__(self) -> str:
         """String representation"""
-        status = f"{self.name}: {self.description}"
-        if self.magnetic:
-            status += f" (Magnetic Tool"
-            if self.binding_type:
-                status += f" Binding: {self.binding_type.name}"
-            if self.shared_resources:
-                status += f" Shares: {', '.join(self.shared_resources)}"
-            if self.sticky:
-                status += " Sticky"
-            status += f" State: {self.state.name})"
-        return status
+        return f"{self.name}: {self.description} (Binding: {self.binding.type.name})"

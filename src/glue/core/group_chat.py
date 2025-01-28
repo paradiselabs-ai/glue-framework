@@ -1,6 +1,4 @@
-# src/glue/core/simple_group_chat.py
-
-"""Simplified Group Chat System"""
+"""GLUE Group Chat System"""
 
 import asyncio
 from typing import Dict, List, Set, Optional, Any
@@ -8,29 +6,43 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from .model import Model
-from .simple_conversation import SimpleConversationManager
+from .conversation import ConversationManager
 from .state import ResourceState
 from .types import AdhesiveType
 from .logger import get_logger
-from ..magnetic.rules import InteractionPattern
+from .context import ContextState
 
 @dataclass
 class ChatGroup:
     """Group of models in a chat"""
     models: Set[str]
     state: ResourceState = ResourceState.IDLE
+    context: Optional[ContextState] = None
     tools: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     last_active: Optional[datetime] = None
     resource_pool: Dict[str, Any] = field(default_factory=dict)
 
-class SimpleGroupChatManager:
+class GroupChatManager:
     """
-    Simplified group chat manager.
+    Manages model-to-model chat within teams.
     
     Features:
-    - Basic model-to-model chat
-    - Simple tool sharing
-    - Two-state management (IDLE/ACTIVE)
+    - Free-flowing model-to-model communication
+      * Models in a team can chat directly
+      * No magnetic field restrictions within teams
+      * Context-aware conversations
+    
+    - Tool Management
+      * Adhesive-based tool bindings (GLUE/VELCRO/TAPE)
+      * Tool instance lifecycle management
+      * Resource pooling with persistence options
+    
+    - State Management
+      * Clean conversation tracking
+      * History with context preservation
+      * Proper resource cleanup
+    
+    Note: For team-to-team communication, use TeamCommunicationManager.
     """
     
     def __init__(self, name: str):
@@ -39,7 +51,7 @@ class SimpleGroupChatManager:
         
         # Core components
         self.models: Dict[str, Model] = {}
-        self.conversation_manager = SimpleConversationManager()
+        self.conversation_manager = ConversationManager()
         
         # Chat tracking
         self.active_chats: Dict[str, ChatGroup] = {}
@@ -66,7 +78,7 @@ class SimpleGroupChatManager:
         tool_name: str,
         binding_type: AdhesiveType = AdhesiveType.VELCRO
     ) -> None:
-        """Bind a tool to a model"""
+        """Bind a tool to a model with adhesive type"""
         self.logger.debug(f"Binding {tool_name} to {model_name}")
         
         # Validate inputs
@@ -81,7 +93,8 @@ class SimpleGroupChatManager:
     async def start_chat(
         self,
         model1: str,
-        model2: str
+        model2: str,
+        context: Optional[ContextState] = None
     ) -> str:
         """Start a chat between models"""
         self.logger.debug(f"Starting chat between {model1} and {model2}")
@@ -97,6 +110,7 @@ class SimpleGroupChatManager:
             group = ChatGroup(
                 models={model1, model2},
                 state=ResourceState.ACTIVE,
+                context=context,
                 last_active=datetime.now()
             )
             
@@ -119,7 +133,25 @@ class SimpleGroupChatManager:
         model_name: str,
         chat_id: str
     ) -> Any:
-        """Get appropriate tool instance based on binding type"""
+        """
+        Get appropriate tool instance based on binding type and persistence level.
+        
+        Args:
+            tool_name: Name of tool to instantiate
+            model_name: Name of model requesting the tool
+            chat_id: ID of current chat session
+            
+        Returns:
+            Tool instance with appropriate persistence:
+            - GLUE: Returns shared instance from group resource pool
+            - VELCRO: Returns chat-scoped instance for the model
+            - TAPE: Returns new isolated instance
+            
+        The instance lifecycle follows adhesive rules:
+        - GLUE instances persist across all chat sessions
+        - VELCRO instances persist for the chat session
+        - TAPE instances are created new each time
+        """
         self.logger.debug(f"Getting tool instance for {tool_name} (model: {model_name})")
         
         group = self.active_chats[chat_id]
@@ -157,7 +189,35 @@ class SimpleGroupChatManager:
         from_model: Optional[str] = None,
         target_model: Optional[str] = None
     ) -> str:
-        """Process a message in a chat"""
+        """
+        Process a message in a chat with tool access and context preservation.
+        
+        This method:
+        1. Validates the chat exists and is active
+        2. Gathers available tools based on model bindings:
+           - Respects adhesive types (GLUE/VELCRO/TAPE)
+           - Creates appropriate tool instances
+           - Manages tool lifecycle
+        3. Processes message through conversation manager:
+           - Maintains chat context
+           - Handles tool usage
+           - Preserves conversation flow
+        4. Stores history with full context
+        
+        Args:
+            chat_id: ID of chat to process message in
+            content: Message content to process
+            from_model: Optional sender model name
+            target_model: Optional target model name
+            
+        Returns:
+            Processed response from the conversation
+            
+        The processing respects tool bindings and persistence:
+        - GLUE tools maintain state across all messages
+        - VELCRO tools maintain state within the chat
+        - TAPE tools are fresh for each message
+        """
         self.logger.debug(f"Processing message in chat {chat_id}")
         
         if chat_id not in self.active_chats:
@@ -177,22 +237,23 @@ class SimpleGroupChatManager:
                         chat_id
                     )
             
-            # Process through conversation manager
+            # Process through conversation manager with context
             response = await self.conversation_manager.process(
                 models={name: self.models[name] for name in group.models},
-                binding_patterns={},  # No magnetic patterns needed
                 user_input=content,
-                tools=available_tools
+                tools=available_tools,
+                context=group.context
             )
             
-            # Store in history
+            # Store in history with context
             self.chat_history.append({
                 'chat_id': chat_id,
                 'timestamp': datetime.now().isoformat(),
                 'from_model': from_model,
                 'target_model': target_model,
                 'content': content,
-                'response': response
+                'response': response,
+                'context': group.context
             })
             
             return response

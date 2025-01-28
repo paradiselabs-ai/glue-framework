@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional, Set
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from ..core.resource import Resource, ResourceState
-from ..core.registry import ResourceRegistry
+from ..core.state import StateManager
+from ..core.tool_binding import ToolBinding
 from ..core.types import BindingState
 
 
@@ -19,7 +19,7 @@ class ToolPermission(Enum):
     NETWORK = "network"
     FILE_SYSTEM = "file_system"
     SYSTEM = "system"
-    MAGNETIC = "magnetic"  # Permission for magnetic operations
+
 
 # ==================== Tool Configuration ====================
 @dataclass
@@ -31,19 +31,26 @@ class ToolConfig:
     cache_results: bool = False
     async_enabled: bool = True
 
+
+# ==================== Tool States ====================
+class ToolState(Enum):
+    """Tool execution states"""
+    IDLE = "idle"      # Tool is ready for use
+    ACTIVE = "active"  # Tool is currently executing
+
+
 # ==================== Base Tool ====================
-class BaseTool(Resource, ABC):
+class BaseTool(ABC):
     """
     Base class for all GLUE tools.
     
     Features:
-    - Resource lifecycle management
+    - State management through StateManager
     - Permission system
     - Error handling
     - Safe execution
-    - State tracking
-    - Field awareness
-    - Optional magnetic capabilities
+    - Tool binding management
+    - Result sharing through Team
     """
     def __init__(
         self,
@@ -51,41 +58,23 @@ class BaseTool(Resource, ABC):
         description: str,
         config: Optional[ToolConfig] = None,
         permissions: Optional[Set[str]] = None,
-        magnetic: bool = False,
-        sticky: bool = False,
-        shared_resources: Optional[List[str]] = None,
         binding_type: Optional['AdhesiveType'] = None
     ):
-        # Initialize base resource
-        tags = {"tool", name}
-        if magnetic:
-            tags.add("magnetic")
-            if sticky:
-                tags.add("sticky")
-        
-        super().__init__(name, category="tool", tags=tags)
-        
-        # Tool-specific attributes
+        # Initialize core components
+        self.name = name
         self.description = description
+        self._state_manager = StateManager()
+        self._binding = ToolBinding(binding_type) if binding_type else None
+        
+        # Tool configuration
         self.config = config or ToolConfig(required_permissions=[])
         self.permissions = permissions or set()
         self._error_handlers: Dict[type, callable] = {}
         self._is_initialized = False
         self._instance_data: Dict[str, Any] = {}
         
-        # Magnetic configuration (optional)
-        self.magnetic = magnetic
-        self.sticky = sticky
-        self.shared_resources = shared_resources or []
-        
-        # Binding configuration (optional)
-        if magnetic:
-            from ..core.binding import AdhesiveType
-            self.binding_type = binding_type or AdhesiveType.GLUE
-            
-            # Add magnetic permission if needed
-            if ToolPermission.MAGNETIC not in self.config.required_permissions:
-                self.config.required_permissions.append(ToolPermission.MAGNETIC)
+        # Initialize state
+        self._state_manager.initialize(self.name, ToolState.IDLE)
 
     @abstractmethod
     async def _execute(self, *args, **kwargs) -> Any:
@@ -94,7 +83,7 @@ class BaseTool(Resource, ABC):
 
     async def _validate_binding(self) -> None:
         """Validate binding state if tool is bound"""
-        if not hasattr(self, '_binding'):
+        if not self._binding:
             return
             
         if self._binding.state == BindingState.FAILED:
@@ -106,33 +95,40 @@ class BaseTool(Resource, ABC):
         self._binding.use()
 
     async def execute(self, *args, **kwargs) -> Any:
-        """Execute tool with simple state tracking"""
-        # Transition to ACTIVE
-        await self.transition_to_active()
-        
+        """Execute tool with state tracking and binding validation"""
         try:
-            # Validate binding if magnetic
-            if self.magnetic:
+            # Set state to ACTIVE
+            await self._state_manager.transition_to(self.name, ToolState.ACTIVE)
+            
+            # Validate binding if present
+            if self._binding:
                 await self._validate_binding()
             
-            # Initialize if needed and execute
+            # Initialize if needed
             if not self._is_initialized:
                 await self.initialize()
+                
+            # Execute tool
             result = await self._execute(*args, **kwargs)
             
-            # Store result in binding if magnetic
-            if self.magnetic and hasattr(self, '_binding') and self._binding.maintains_context():
+            # Store result based on binding type:
+            # - TAPE: No storage (temporary)
+            # - VELCRO: Stored in binding's session pool
+            # - GLUE: Handled by Team.share_result()
+            if self._binding and self._binding.maintains_context():
                 self._binding.store_resource('last_result', result)
             
             return result
+            
         except Exception as e:
-            # Handle binding failure if magnetic
-            if self.magnetic and hasattr(self, '_binding') and self._binding.state == BindingState.FAILED:
+            # Handle binding failures
+            if self._binding and self._binding.state == BindingState.FAILED:
                 raise RuntimeError(f"Tool {self.name} binding broke during use") from e
             raise
+            
         finally:
             # Always return to IDLE
-            await self.transition_to_idle()
+            await self._state_manager.transition_to(self.name, ToolState.IDLE)
 
     async def initialize(self, instance_data: Optional[Dict[str, Any]] = None) -> None:
         """Initialize tool resources"""
@@ -147,10 +143,7 @@ class BaseTool(Resource, ABC):
             description=self.description,
             config=self.config,
             permissions=self.permissions,
-            magnetic=self.magnetic,
-            sticky=self.sticky,
-            shared_resources=self.shared_resources,
-            binding_type=self.binding_type
+            binding_type=binding.type if binding else None
         )
         
         # Set binding if provided
@@ -168,7 +161,9 @@ class BaseTool(Resource, ABC):
     async def cleanup(self) -> None:
         """Cleanup tool resources"""
         self._is_initialized = False
-        await super().exit_field()
+        if self._binding:
+            await self._binding.unbind()
+        await self._state_manager.transition_to(self.name, ToolState.IDLE)
 
     def add_error_handler(self, error_type: type, handler: callable) -> None:
         """Add error handler for specific error types"""
@@ -194,78 +189,49 @@ class BaseTool(Resource, ABC):
                 return handler(e)
             raise
 
-    # Magnetic API methods (only used if magnetic=True)
-    async def share_resource(self, name: str, value: Any) -> None:
-        """Share resource with attracted resources"""
-        if not self.magnetic or name not in self.shared_resources:
-            return
-            
-        if self._attracted_to:
-            for resource in self._attracted_to:
-                if hasattr(resource, name):
-                    setattr(resource, name, value)
-
-    def get_shared_resource(self, name: str) -> Optional[Any]:
-        """Get shared resource from attracted resources"""
-        if not self.magnetic or name not in self.shared_resources:
-            return None
-            
-        if self._attracted_to:
-            for resource in self._attracted_to:
-                if hasattr(resource, name):
-                    return getattr(resource, name)
-        return None
-
     def __str__(self) -> str:
         """String representation"""
         status = f"{self.name}: {self.description}"
-        if self.magnetic:
-            status += f" (Magnetic Tool"
-            if self.binding_type:
-                status += f" Binding: {self.binding_type.name}"
-            if self.shared_resources:
-                status += f" Shares: {', '.join(self.shared_resources)}"
-            if self.sticky:
-                status += " Sticky"
-            status += f" State: {self.state.name})"
+        if self._binding:
+            status += f" (Binding: {self._binding.type.name})"
         return status
 
+
 # ==================== Tool Registry ====================
-class ToolRegistry(ResourceRegistry):
-    """Registry specialized for tools"""
+class ToolRegistry:
+    """Registry for managing tools and their permissions"""
+    
     def __init__(self):
-        super().__init__()
+        self._tools: Dict[str, BaseTool] = {}
         self._granted_permissions: Dict[str, List[ToolPermission]] = {}
-
-    def register(self, tool: BaseTool, category: str = None) -> None:
-        """Register a tool or resource"""
-        if isinstance(tool, BaseTool):
-            super().register(tool, "tool")
-        else:
-            if not category:
-                raise ValueError("Category required for non-tool resources")
-            super().register(tool, category)
-
-    def register_tool(self, tool: BaseTool) -> None:
+        
+    def register(self, tool: BaseTool) -> None:
         """Register a tool"""
-        self.register(tool)
-
-    def unregister_tool(self, tool_name: str) -> None:
+        if tool.name in self._tools:
+            raise ValueError(f"Tool already registered: {tool.name}")
+        self._tools[tool.name] = tool
+        
+    def unregister(self, tool_name: str) -> None:
         """Unregister a tool"""
-        self.unregister(tool_name)
-
+        if tool_name in self._tools:
+            del self._tools[tool_name]
+            if tool_name in self._granted_permissions:
+                del self._granted_permissions[tool_name]
+                
     def get_tool(self, tool_name: str) -> Optional[BaseTool]:
         """Get a tool by name"""
-        return self.get_resource(tool_name, "tool")
-
+        return self._tools.get(tool_name)
+        
     def grant_permissions(
         self,
         tool_name: str,
         permissions: List[ToolPermission]
     ) -> None:
         """Grant permissions to a tool"""
+        if tool_name not in self._tools:
+            raise ValueError(f"Tool not found: {tool_name}")
         self._granted_permissions[tool_name] = permissions
-
+        
     async def execute_tool(
         self,
         tool_name: str,
@@ -276,25 +242,24 @@ class ToolRegistry(ResourceRegistry):
         tool = self.get_tool(tool_name)
         if not tool:
             raise ValueError(f"Tool not found: {tool_name}")
-
+            
         granted = self._granted_permissions.get(tool_name, [])
         if not tool.validate_permissions(granted):
             raise PermissionError(
                 f"Tool {tool_name} lacks required permissions"
             )
-
+            
         return await tool.safe_execute(*args, **kwargs)
-
+        
     def list_tools(self) -> List[str]:
         """List all registered tools"""
-        tools = self.get_resources_by_category("tool")
-        return [t.name for t in tools]
-
+        return list(self._tools.keys())
+        
     def get_tool_description(self, tool_name: str) -> Optional[str]:
         """Get the description of a tool"""
         tool = self.get_tool(tool_name)
         return str(tool) if tool else None
-
+        
     def get_tool_permissions(self, tool_name: str) -> List[ToolPermission]:
         """Get granted permissions for a tool"""
         return self._granted_permissions.get(tool_name, [])

@@ -8,7 +8,6 @@ from typing import Dict, List, Any, Optional, Set
 from .simple_base import SimpleBaseProvider
 from ..core.model import ModelConfig
 from ..core.logger import get_logger
-from ..core.simple_resource import SimpleResource
 from ..core.state import ResourceState, StateManager
 from ..core.types import IntentAnalysis
 

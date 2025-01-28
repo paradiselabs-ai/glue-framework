@@ -1,6 +1,5 @@
-# src/glue/tools/file_handler.py
+"""File Handler Tool Implementation"""
 
-# ==================== Imports ====================
 from typing import Any, Dict, List, Optional, Union, Tuple
 import os
 import json
@@ -10,11 +9,10 @@ import re
 import asyncio
 from pathlib import Path
 from .base import ToolConfig, ToolPermission
-from .magnetic import MagneticTool, ResourceStateException
+from .base import BaseTool
 from ..core.types import AdhesiveType
 from ..core.logger import get_logger
-from ..core.registry import ResourceRegistry
-from ..core.state import StateManager
+from ..core.tool_binding import ToolBinding
 
 # ==================== Constants ====================
 SUPPORTED_FORMATS = {
@@ -34,8 +32,8 @@ DEFAULT_FORMAT = ".md"  # Default to markdown
 VALID_OPERATIONS = {"read", "write", "append", "delete"}
 
 # ==================== File Handler Tool ====================
-class FileHandlerTool(MagneticTool):
-    """Tool for handling file operations with magnetic capabilities"""
+class FileHandlerTool(BaseTool):
+    """Tool for handling file operations"""
     
     def __init__(
         self,
@@ -43,34 +41,33 @@ class FileHandlerTool(MagneticTool):
         description: str = "Handles file operations with format support",
         base_path: Optional[str] = None,
         allowed_formats: Optional[List[str]] = None,
-        magnetic: bool = True,
-        sticky: bool = False,
         workspace_dir: Optional[str] = None,
         binding_type: Optional[AdhesiveType] = None,
         shared_resources: Optional[List[str]] = None,
         registry: Optional[ResourceRegistry] = None,
         **kwargs
     ):
-        # Initialize with magnetic tool configuration
+        # Initialize base tool
         super().__init__(
             name=name,
             description=description,
-            magnetic=magnetic,
-            sticky=sticky,
-            shared_resources=shared_resources or ["file_content", "file_path", "file_format"],
             config=ToolConfig(
                 required_permissions=[
                     ToolPermission.FILE_SYSTEM,
                     ToolPermission.READ,
-                    ToolPermission.WRITE,
-                    ToolPermission.MAGNETIC
+                    ToolPermission.WRITE
                 ],
                 cache_results=False
-            ),
-            binding_type=binding_type or AdhesiveType.GLUE if magnetic else None,
-            registry=registry,
-            **kwargs
+            )
         )
+        
+        # Create tool binding with shared resources
+        self.binding = ToolBinding(
+            type=binding_type or AdhesiveType.VELCRO,
+            shared_resources=shared_resources or ["file_content", "file_path", "file_format"]
+        )
+        self._registry = registry
+        
         # Use workspace_dir if provided, otherwise use base_path or cwd
         self.base_path = os.path.abspath(workspace_dir or base_path or os.getcwd())
         self.allowed_formats = (
@@ -308,24 +305,17 @@ class FileHandlerTool(MagneticTool):
         format_handler = self._get_format_handler(path)
         self.logger.debug(f"Using format handler: {format_handler}")
 
-        # Update state for magnetic operations before executing
-        if self.magnetic and self._current_field:
-            if self._attracted_to:
-                self._state = ResourceState.SHARED
-                for other in self._attracted_to:
-                    other._state = ResourceState.SHARED
-            elif self._locked_by:
-                raise ResourceStateException("Resource is locked")
+        # Store operation details in binding
+        self.binding.store_resource("operation", operation)
+        self.binding.store_resource("file_path", str(path))
+        self.binding.store_resource("format", format_handler)
 
         try:
             result = None
             if operation == "read":
                 result = await self._read_file(path, format_handler)
-                # Share the file content magnetically
-                if self.magnetic:
-                    await self.share_resource("file_content", result["content"])
-                    await self.share_resource("file_path", str(path))
-                    await self.share_resource("file_format", format_handler)
+                # Store result in binding
+                self.binding.store_resource("file_content", result["content"])
             elif operation == "write":
                 # Use operation_content if available, otherwise use content from kwargs
                 write_content = operation_content or (
@@ -380,11 +370,10 @@ class FileHandlerTool(MagneticTool):
             "file_content": content  # Add file_content for backward compatibility
         }
 
-        # Share content magnetically
-        if self.magnetic:
-            await self.share_resource("file_content", content)
-            await self.share_resource("file_path", str(path))
-            await self.share_resource("file_format", format_handler)
+        # Store content in binding
+        self.binding.store_resource("file_content", content)
+        self.binding.store_resource("file_path", str(path))
+        self.binding.store_resource("file_format", format_handler)
 
         return result
 
@@ -414,11 +403,10 @@ class FileHandlerTool(MagneticTool):
                     writer.writeheader()
                 writer.writerows(content)
 
-        # Share the updated file content magnetically
-        if self.magnetic:
-            await self.share_resource("file_content", content)
-            await self.share_resource("file_path", str(path))
-            await self.share_resource("file_format", format_handler)
+        # Store the updated file content in binding
+        self.binding.store_resource("file_content", content)
+        self.binding.store_resource("file_path", str(path))
+        self.binding.store_resource("file_format", format_handler)
 
         return {
             "success": True,
@@ -440,41 +428,34 @@ class FileHandlerTool(MagneticTool):
             "path": str(path)
         }
 
-    async def _on_resource_shared(self, source: 'MagneticTool', resource_name: str, data: Any) -> None:
-        """Handle shared resources from other tools"""
-        # Only process resources shared by models, not other tools
-        if not hasattr(source, 'role'):  # Models have 'role' attribute, tools don't
-            self.logger.debug(f"Ignoring resource from non-model source: {source.name}")
-            return
-            
-        # Process content from model
-        if resource_name == "file_content":
-            if isinstance(data, str):
-                # Extract topic from content if possible
-                topic = self._extract_topic(data)
-                if topic:
-                    # Convert to snake case
-                    topic = re.sub(r'[^\w\s-]', '', topic)  # Remove special chars
-                    topic = re.sub(r'[-\s]+', '_', topic)   # Replace spaces/hyphens with underscore
-                    topic = topic.strip('_').lower()        # Clean up and lowercase
-                    
-                    # Clean up common words that make bad filenames
-                    topic = re.sub(r'\b(the|a|an|in|on|at|to|for|of|with|by|from)\b', '', topic)
-                    topic = re.sub(r'\s+', '_', topic.strip())
-                    
-                    # If topic is too generic, try to get first result title
-                    if len(topic.split('_')) < 2:
-                        heading_match = re.search(r'### \d+\.\s*(.+?)\n', data)
-                        if heading_match:
-                            first_result = heading_match.group(1).strip()
-                            topic = re.sub(r'[^\w\s-]', '', first_result)
-                            topic = re.sub(r'[-\s]+', '_', topic)
-                            topic = topic.strip('_').lower()
+    async def process_shared_content(self, content: str) -> None:
+        """Process shared content from other tools"""
+        if isinstance(content, str):
+            # Extract topic from content if possible
+            topic = self._extract_topic(content)
+            if topic:
+                # Convert to snake case
+                topic = re.sub(r'[^\w\s-]', '', topic)  # Remove special chars
+                topic = re.sub(r'[-\s]+', '_', topic)   # Replace spaces/hyphens with underscore
+                topic = topic.strip('_').lower()        # Clean up and lowercase
                 
-                # Use topic or default name
-                filename = f"{topic or 'document'}.md"
-                path = self._validate_path(filename)
-                await self._write_file(path, data, "text", mode='w')
+                # Clean up common words that make bad filenames
+                topic = re.sub(r'\b(the|a|an|in|on|at|to|for|of|with|by|from)\b', '', topic)
+                topic = re.sub(r'\s+', '_', topic.strip())
+                
+                # If topic is too generic, try to get first result title
+                if len(topic.split('_')) < 2:
+                    heading_match = re.search(r'### \d+\.\s*(.+?)\n', content)
+                    if heading_match:
+                        first_result = heading_match.group(1).strip()
+                        topic = re.sub(r'[^\w\s-]', '', first_result)
+                        topic = re.sub(r'[-\s]+', '_', topic)
+                        topic = topic.strip('_').lower()
+            
+            # Use topic or default name
+            filename = f"{topic or 'document'}.md"
+            path = self._validate_path(filename)
+            await self._write_file(path, content, "text", mode='w')
 
     async def cleanup(self) -> None:
         """Clean up resources when tool is done"""
@@ -485,14 +466,4 @@ class FileHandlerTool(MagneticTool):
 
     def __str__(self) -> str:
         """String representation"""
-        status = f"{self.name}: {self.description}"
-        if self.magnetic:
-            status += f" (Magnetic Tool"
-            if self.binding_type:
-                status += f" Binding: {self.binding_type.name}"
-            if self.shared_resources:
-                status += f" Shares: {', '.join(self.shared_resources)}"
-            if self.sticky:
-                status += " Sticky"
-            status += f" State: {self.state.name})"
-        return status
+        return f"{self.name}: {self.description} (Binding: {self.binding.type.name})"

@@ -44,30 +44,6 @@ class Message:
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
 
-class MagneticResource(Protocol):
-    """Protocol for resources that can participate in magnetic fields"""
-    name: str
-    team: str
-    _attracted_to: Set['MagneticResource']
-    _repelled_by: Set['MagneticResource']
-
-class InteractionPattern(Enum):
-    """Patterns for resource interaction"""
-    ATTRACT = "><"  # Bidirectional attraction (full coupling)
-    PUSH = "->"    # One-way push (directed flux)
-    PULL = "<-"    # Fallback pull (only if push fails or more data needed)
-    REPEL = "<>"   # Repulsion (enforced boundary)
-
-    @property
-    def is_pull_allowed(self) -> bool:
-        """Check if pull is allowed based on pattern"""
-        return self in {self.ATTRACT, self.PULL}  # Pull allowed for ATTRACT and PULL patterns
-
-    @property
-    def is_push_allowed(self) -> bool:
-        """Check if push is allowed based on pattern"""
-        return self in {self.ATTRACT, self.PUSH}  # Push allowed for ATTRACT and PUSH patterns
-
 class ResourceState(Enum):
     """States for resources"""
     IDLE = auto()     # Resource is available

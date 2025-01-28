@@ -1,13 +1,12 @@
 """GLUE Application Core"""
 
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 from dataclasses import dataclass, field, Field
 
 from .model import Model
 from .types import ResourceState, Message, MessageType, AdhesiveType
-from .simple_resource import SimpleResource
-from ..tools.simple_base import SimpleBaseTool
+from ..tools.base import BaseTool
 
 @dataclass
 class AppMemory:
@@ -51,7 +50,7 @@ class GlueApp:
         self.config = config or AppConfig(name=name)
         
         # Core components
-        self.fields: Dict[str, List[SimpleResource]] = {}
+        self.fields: Dict[str, List[Any]] = {}
         self._memory: List[AppMemory] = []
         self._default_field: Optional[str] = None
         
@@ -63,7 +62,7 @@ class GlueApp:
         name: str,
         lead: Optional[Model] = None,
         members: Optional[List[Model]] = None,
-        tools: Optional[List[SimpleBaseTool]] = None,
+        tools: Optional[List[BaseTool]] = None,
         adhesive_type: Optional[AdhesiveType] = None
     ) -> None:
         """Add a new field to the app"""
@@ -184,7 +183,7 @@ class GlueApp:
             
         return memory
         
-    def get_field_resources(self, name: str) -> Optional[List[SimpleResource]]:
+    def get_field_resources(self, name: str) -> Optional[List[Any]]:
         """Get resources in a field by name"""
         return self.fields.get(name)
         

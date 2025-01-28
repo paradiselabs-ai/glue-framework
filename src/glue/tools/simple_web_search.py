@@ -5,6 +5,7 @@ import re
 import aiohttp
 from typing import Dict, List, Optional, Any, Union
 from .simple_base import SimpleBaseTool, ToolConfig, ToolPermission
+from ..core.types import AdhesiveType
 from .search_providers import get_provider, SearchProvider, GenericSearchProvider
 from ..core.logger import get_logger
 
@@ -25,7 +26,7 @@ class SimpleWebSearchTool(SimpleBaseTool):
         description: str = "Performs web searches and returns results",
         provider: str = "serp",
         max_results: int = 5,
-        sticky: bool = False,
+        adhesive_type: Optional[AdhesiveType] = None,
         **provider_config
     ):
         super().__init__(
@@ -38,9 +39,12 @@ class SimpleWebSearchTool(SimpleBaseTool):
                 ],
                 timeout=10.0,
                 cache_results=True
-            ),
-            sticky=sticky
+            )
         )
+        
+        # Adhesive type determines result persistence
+        self.adhesive_type = adhesive_type or AdhesiveType.TAPE
+        self._last_result = None  # Only persists if not TAPE
         
         # Get API key from environment based on provider
         api_key = None
@@ -85,11 +89,18 @@ class SimpleWebSearchTool(SimpleBaseTool):
         await super().initialize(*args, **kwargs)
 
     async def cleanup(self) -> None:
-        """Clean up search provider and session"""
+        """Clean up resources based on adhesive type"""
+        # Clean up session
         if self._session:
             await self._session.close()
             self._session = None
+            
+        # Clean up provider
         await self.provider.cleanup()
+        
+        # Clear results based on adhesive type
+        if self.adhesive_type != AdhesiveType.GLUE:
+            self._last_result = None
 
     def _optimize_query(self, query: str) -> List[str]:
         """Optimize search query for better results"""
@@ -153,11 +164,15 @@ class SimpleWebSearchTool(SimpleBaseTool):
         return "\n".join(lines)
 
     async def _execute(self, *args, **kwargs) -> Union[str, List[Dict[str, str]]]:
-        """Execute web search"""
+        """Execute web search with simple persistence"""
         try:
+            # Check for persisted results first
+            if self.adhesive_type != AdhesiveType.TAPE and self._last_result:
+                self.logger.debug("Using persisted results")
+                return self._last_result
+
             # Handle positional arguments
             input_data = args[0] if args else kwargs.get("input_data", "")
-            # Get base query from input
             base_query = str(input_data)
             self.logger.debug(f"Base query: {base_query}")
             
@@ -170,7 +185,6 @@ class SimpleWebSearchTool(SimpleBaseTool):
             
             # Try each query until we get good results
             for query in queries:
-                # Perform search
                 try:
                     self.logger.debug(f"Searching with query: {query}")
                     results = await self.provider.search(
@@ -196,16 +210,20 @@ class SimpleWebSearchTool(SimpleBaseTool):
             if not all_results:
                 raise RuntimeError("No search results found for any query")
             
-            # Take top results
+            # Take top results and format
             final_results = all_results[:self.max_results]
+            formatted_results = self._format_results_as_markdown(final_results, base_query)
             
-            # Format results as markdown
-            return self._format_results_as_markdown(final_results, base_query)
+            # Store results based on adhesive type
+            if self.adhesive_type != AdhesiveType.TAPE:
+                self._last_result = formatted_results
+            
+            return formatted_results
             
         except Exception as e:
             self.logger.error(f"Search request failed: {str(e)}")
             raise RuntimeError(f"Search request failed: {str(e)}")
 
     def __str__(self) -> str:
-        """String representation"""
-        return f"{self.name}: {self.description}"
+        """String representation with adhesive type"""
+        return f"{self.name}: {self.description} ({self.adhesive_type.name})"

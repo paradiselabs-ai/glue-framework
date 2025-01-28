@@ -12,8 +12,6 @@ from datetime import datetime
 
 from .types import ResourceState, TransitionLog
 
-if TYPE_CHECKING:
-    from .resource import Resource
 
 class TransitionError(Exception):
     """Error during state transition"""

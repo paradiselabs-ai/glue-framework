@@ -1,22 +1,21 @@
-# src/glue/tools/code_interpreter.py:
+"""Code Interpreter Tool with Advanced Features"""
 
-#============ Imports ====================
-
-from typing import Any, Dict, List, Optional
-from dataclasses import dataclass
-import subprocess
+import os
+import sys
 import asyncio
 import tempfile
-import os
 import re
 import importlib.util
 import traceback
 from pathlib import Path
-from .base import ToolConfig, ToolPermission
-from .base import BaseTool
+from typing import Any, Dict, List, Optional, Type
+from dataclasses import dataclass
+
+from .simple_base import SimpleBaseTool
 from ..core.types import AdhesiveType
 from ..core.context import ContextState, ComplexityLevel
 from ..core.state import ResourceState
+from ..core.logger import get_logger
 
 # ==================== Constants ====================
 SUPPORTED_LANGUAGES = {
@@ -93,189 +92,67 @@ class CodeResult:
         if self.resource_usage is None:
             self.resource_usage = {}
 
-# ==================== Code Interpreter Configuration ====================
-@dataclass
-class CodeInterpreterConfig:
-    """Configuration for code interpreter tool"""
-    # Feature flags
-    enable_security_checks: bool = True
-    enable_code_analysis: bool = True
-    enable_error_suggestions: bool = True
-    enable_code_persistence: bool = True
-    
-    # Security limits
-    max_memory_mb: int = 500
-    max_execution_time: int = 30
-    max_file_size_kb: int = 10240
-    max_subprocess_count: int = 2
-    
-    # Analysis settings
-    complexity_threshold: str = "MODERATE"
-    security_level: str = "suspicious"
-    
-    # Error handling
-    max_retries: int = 3
-    show_traceback: bool = True
-    detailed_errors: bool = True
-    
-    # Tool settings
-    supported_languages: Optional[List[str]] = None
-    workspace_dir: Optional[str] = None
-    binding_type: Optional[AdhesiveType] = None
-
-    def __post_init__(self):
-        """Validate configuration after initialization"""
-        # Validate numeric limits
-        if self.max_memory_mb < 0:
-            raise ValueError("max_memory_mb must be positive")
-        if self.max_execution_time < 0:
-            raise ValueError("max_execution_time must be positive")
-        if self.max_file_size_kb < 0:
-            raise ValueError("max_file_size_kb must be positive")
-        if self.max_subprocess_count < 0:
-            raise ValueError("max_subprocess_count must be positive")
-            
-        # Validate complexity threshold
-        valid_complexities = ["SIMPLE", "MODERATE", "COMPLEX"]
-        if self.complexity_threshold not in valid_complexities:
-            raise ValueError(f"complexity_threshold must be one of {valid_complexities}")
-            
-        # Validate security level
-        valid_security = ["safe", "suspicious", "dangerous"]
-        if self.security_level not in valid_security:
-            raise ValueError(f"security_level must be one of {valid_security}")
-
 # ==================== Code Interpreter Tool ====================
-
-class CodeInterpreterTool(BaseTool):
-    """Tool for executing code in various languages with advanced features"""
+class CodeInterpreterTool(SimpleBaseTool):
+    """
+    Advanced code interpreter tool with security and analysis features.
+    
+    Features:
+    - Code execution in multiple languages
+    - Security checks and analysis
+    - Resource tracking
+    - Error suggestions
+    - Adhesive-based persistence
+    """
     
     def __init__(
         self,
         name: str = "code_interpreter",
         description: str = "Executes code in a sandboxed environment",
-        config: Optional[CodeInterpreterConfig] = None
+        workspace_dir: Optional[str] = None,
+        supported_languages: Optional[List[str]] = None,
+        adhesive_type: Optional[AdhesiveType] = None,
+        enable_security_checks: bool = True,
+        enable_code_analysis: bool = True,
+        enable_error_suggestions: bool = True,
+        max_memory_mb: int = 500,
+        max_execution_time: int = 30,
+        max_file_size_kb: int = 10240,
+        max_subprocess_count: int = 2
     ):
-        # Use default config if none provided
-        self.tool_config = config or CodeInterpreterConfig()
-        
         super().__init__(
             name=name,
             description=description,
-            binding_type=self.tool_config.binding_type,
-            config=ToolConfig(
-                required_permissions=[
-                    ToolPermission.EXECUTE,
-                    ToolPermission.FILE_SYSTEM
-                ],
-                timeout=self.tool_config.max_execution_time,
-                cache_results=False
-            )
+            adhesive_type=adhesive_type
         )
         
-        # Store feature flags and limits
-        self.enable_security_checks = self.tool_config.enable_security_checks
-        self.enable_code_analysis = self.tool_config.enable_code_analysis
-        self.enable_error_suggestions = self.tool_config.enable_error_suggestions
-        self.enable_code_persistence = self.tool_config.enable_code_persistence
+        # Initialize logger
+        self.logger = get_logger()
         
-        # Store resource limits
-        self.max_memory_mb = self.tool_config.max_memory_mb
-        self.max_execution_time = self.tool_config.max_execution_time
-        self.max_file_size_kb = self.tool_config.max_file_size_kb
-        self.max_subprocess_count = self.tool_config.max_subprocess_count
+        # Feature flags
+        self.enable_security_checks = enable_security_checks
+        self.enable_code_analysis = enable_code_analysis
+        self.enable_error_suggestions = enable_error_suggestions
+        
+        # Resource limits
+        self.max_memory_mb = max_memory_mb
+        self.max_execution_time = max_execution_time
+        self.max_file_size_kb = max_file_size_kb
+        self.max_subprocess_count = max_subprocess_count
+        
         # Initialize languages and workspace
         self.supported_languages = (
             {lang: SUPPORTED_LANGUAGES[lang] 
-             for lang in self.tool_config.supported_languages if lang in SUPPORTED_LANGUAGES}
-            if self.tool_config.supported_languages
+             for lang in supported_languages if lang in SUPPORTED_LANGUAGES}
+            if supported_languages
             else SUPPORTED_LANGUAGES
         )
-        self.workspace_dir = os.path.abspath(self.tool_config.workspace_dir or "workspace")
+        self.workspace_dir = os.path.abspath(workspace_dir or "workspace")
         self._temp_files: List[str] = []
-
-    async def _transition_state(self, new_state: ResourceState) -> None:
-        """Simple state transition between IDLE and ACTIVE"""
-        if self._state == new_state:
-            return
-            
-        try:
-            if new_state == ResourceState.IDLE:
-                await self.cleanup()
-            elif new_state == ResourceState.ACTIVE:
-                if not os.path.exists(self.workspace_dir):
-                    os.makedirs(self.workspace_dir, exist_ok=True)
-            
-            self._state = new_state
-            
-        except Exception as e:
-            raise RuntimeError(f"Failed to transition to {new_state.name}: {str(e)}")
-
-    async def execute(self, *args, **kwargs) -> CodeResult:
-        """Execute with enhanced error handling and validation"""
-        context = kwargs.get("context")
-        retries = 0
-        max_retries = self.tool_config.max_retries
         
-        while retries <= max_retries:
-            try:
-                # Set state to ACTIVE
-                await self._transition_state(ResourceState.ACTIVE)
-                
-                # Execute code with validation
-                result = await self._execute(*args, **kwargs)
-                
-                # Return to IDLE
-                await self._transition_state(ResourceState.IDLE)
-                return result
-                
-            except TimeoutError as e:
-                await self._transition_state(ResourceState.IDLE)
-                return CodeResult(
-                    output="",
-                    error=str(e),
-                    success=False,
-                    error_type="timeout_error",
-                    error_context={
-                        "timeout": kwargs.get("timeout", self.max_execution_time),
-                        "language": args[1] if len(args) > 1 else kwargs.get("language", "python"),
-                        "attempt": retries + 1,
-                        "max_retries": max_retries
-                    },
-                    suggestions=[
-                        "Consider breaking down the code into smaller parts",
-                        "Check for infinite loops or recursion",
-                        f"Try increasing the timeout (current: {kwargs.get('timeout', self.max_execution_time)}s)"
-                    ]
-                )
-                
-            except Exception as e:
-                error_type = type(e).__name__
-                error_context = {
-                    "language": args[1] if len(args) > 1 else kwargs.get("language", "python"),
-                    "error_type": error_type,
-                    "traceback": traceback.format_exc() if self.tool_config.show_traceback else None,
-                    "attempt": retries + 1,
-                    "max_retries": max_retries
-                }
-                
-                # Add context-specific information
-                if error_type == "SyntaxError":
-                    error_context.update({
-                        "line_number": getattr(e, "lineno", None),
-                        "offset": getattr(e, "offset", None),
-                        "text": getattr(e, "text", None)
-                    })
-                elif error_type == "ImportError":
-                    error_context.update({
-                        "module": getattr(e, "name", None),
-                        "path": getattr(e, "path", None)
-                    })
-                
-                # For retryable errors, attempt again
-                if error_type in ["ConnectionError", "IOError", "OSError"] and retries < max_retries:
-                    retries += 1
-                    await asyncio.sleep(1)  # Wait before retrying
+        # Ensure workspace exists
+        os.makedirs(self.workspace_dir, exist_ok=True)
+
                     continue
                 
                 await self._transition_state(ResourceState.IDLE)

@@ -16,19 +16,10 @@ from typing import Optional, List, Dict, Any, Tuple
 from .dsl import parse_glue_file, execute_glue_app, load_env
 from .providers.openrouter import OpenRouterProvider
 from .tools import web_search, file_handler, code_interpreter
-from .core.resource import Resource, ResourceState
-from .core.state import StateManager
-from .core.registry import ResourceRegistry
+from .core.state import StateManager, ResourceState
 from .tools.base import BaseTool, ToolConfig, ToolPermission
-
-registry = None
-
-def get_registry():
-    """Get or create global registry"""
-    global registry
-    if not registry:
-        registry = ResourceRegistry(StateManager())
-    return registry
+from .magnetic.field import MagneticField
+from .core.workspace import WorkspaceManager
 
 def print_version(ctx, param, value):
     if not value or ctx.resilient_parsing:
@@ -452,16 +443,19 @@ def run(file, env):
     """
     try:
         # Load environment
-        load_env(env_file=env)
+        env_vars = load_env(env_file=env)
+        
+        # Log loaded environment variables (masked)
+        logger = get_logger()
+        masked_vars = {k: f"{v[:4]}...{v[-4:]}" if len(v) > 8 else "***" 
+                      for k, v in env_vars.items()}
+        logger.debug(f"Loaded environment variables: {masked_vars}")
         
         # Parse GLUE file
         app = parse_glue_file(file)
         
-        # Get or create registry
-        registry = get_registry()
-        
-        # Execute application with registry
-        asyncio.run(execute_glue_app(app, registry=registry))
+        # Execute application
+        asyncio.run(execute_glue_app(app))
         
     except Exception as e:
         import traceback
@@ -743,33 +737,203 @@ SERP_API_KEY=your_api_key_here  # For web search tool
 
 @cli.command()
 def status():
-    """Show status of GLUE resources"""
-    # Get registry
-    registry = get_registry()
+    """Show status of GLUE application components"""
+    workspace_manager = WorkspaceManager()
+    workspaces = workspace_manager.list_workspaces()
     
-    # Show active resources
-    active = registry.get_resources_by_state(ResourceState.ACTIVE)
-    if active:
-        click.echo("\nActive Resources:")
+    if not workspaces:
+        click.echo("No active GLUE applications found")
+        return
+        
+    for workspace in workspaces:
+        click.echo(f"\nApplication: {workspace.name}")
         click.echo("-" * 80)
-        for resource in active:
-            click.echo(f"Name: {resource.name}")
-            click.echo(f"Category: {resource.metadata.category}")
-            click.echo(f"Field: {resource.field.name if resource.field else 'None'}")
+        
+        # Show teams
+        for team in workspace.teams.values():
+            click.echo(f"\nTeam: {team.name}")
+            
+            # Show members and their tools
+            click.echo("Members:")
+            for member_name in team.members:
+                member = workspace.models[member_name]
+                click.echo(f"  - {member_name}:")
+                for tool_name, binding in member._tool_bindings.items():
+                    click.echo(f"    • {tool_name} ({binding.type.name})")
+            
+            # Show magnetic relationships
+            if team.get_team_flows():
+                click.echo("Magnetic Flows:")
+                for target, flow_type in team.get_team_flows().items():
+                    if flow_type == "><":
+                        click.echo(f"  ↔ {target} (bidirectional)")
+                    elif flow_type == "->":
+                        click.echo(f"  → {target} (push)")
+                    elif flow_type == "<-":
+                        click.echo(f"  ← {target} (pull)")
+                    elif flow_type == "<>":
+                        click.echo(f"  ⊥ {target} (repelled)")
+            
             click.echo("-" * 80)
+
+@cli.command()
+@click.argument('name')
+@click.option('--description', '-d', help='Tool description')
+@click.option('--api-url', help='API endpoint URL')
+@click.option('--api-key-env', help='Environment variable name for API key')
+@click.option('--method', type=click.Choice(['GET', 'POST', 'PUT', 'DELETE']), default='GET')
+@click.option('--mcp', is_flag=True, help='Create as MCP tool')
+def create_tool(name, description, api_url, api_key_env, method, mcp):
+    """Create a new tool dynamically.
     
-    # Show resources by category
-    categories = registry.get_categories()
-    for category in categories:
-        resources = registry.get_resources_by_category(category)
-        if resources:
-            click.echo(f"\n{category.title()} Resources:")
-            click.echo("-" * 80)
-            for resource in resources:
-                click.echo(f"Name: {resource.name}")
-                click.echo(f"State: {resource.state.name}")
-                click.echo(f"Tags: {', '.join(resource.metadata.tags)}")
-                click.echo("-" * 80)
+    If --mcp is specified, creates an MCP tool. Otherwise creates a regular GLUE tool.
+    The tool will be immediately available for use in GLUE applications.
+    """
+    try:
+        # Format names
+        dir_name, module_name, class_name = format_component_name(name)
+        
+        if mcp:
+            # Create MCP tool
+            mcp_dir = Path.home() / "Documents/Cline/MCP"
+            server_dir = mcp_dir / f"{module_name}-server"
+            server_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create server implementation
+            server_file = server_dir / "index.ts"
+            server_content = f'''import {{ Server }} from '@modelcontextprotocol/sdk/server';
+import {{ StdioServerTransport }} from '@modelcontextprotocol/sdk/server/stdio';
+
+const server = new Server({{
+    name: "{name}",
+    version: "0.1.0"
+}});
+
+// Tool implementation
+server.addTool("{name}", {{
+    description: "{description or f'Tool for {name}'}",
+    inputSchema: {{
+        type: "object",
+        properties: {{
+            input: {{ type: "string" }}
+        }},
+        required: ["input"]
+    }},
+    handler: async (args) => {{
+        try {{
+            const response = await fetch("{api_url or ''}", {{
+                method: "{method}",
+                headers: {{
+                    "Authorization": `Bearer ${{process.env.{api_key_env or 'API_KEY'}}}`
+                }},
+                body: method !== "GET" ? JSON.stringify(args) : undefined
+            }});
+            return await response.json();
+        }} catch (error) {{
+            console.error(error);
+            throw error;
+        }}
+    }}
+}});
+
+// Start server
+const transport = new StdioServerTransport();
+server.connect(transport).catch(console.error);'''
+            
+            server_file.write_text(server_content)
+            
+            click.echo(f"Created new MCP tool: {name}")
+            click.echo(f"Server location: {server_file}")
+            click.echo("\nTo use this tool:")
+            click.echo("1. Add to MCP settings in:")
+            click.echo("   ~/Library/Application Support/Claude/claude_desktop_config.json")
+            click.echo("2. Add the following configuration:")
+            click.echo(f'''   "{module_name}": {{
+        "command": "node",
+        "args": ["{server_file}"],
+        "env": {{
+            "{api_key_env or 'API_KEY'}": "your-api-key-here"
+        }}
+    }}''')
+            
+        else:
+            # Create regular GLUE tool
+            tool_dir = Path.cwd() / 'tools' / dir_name
+            tool_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create tool implementation
+            tool_file = tool_dir / '__init__.py'
+            tool_content = f'''"""GLUE Tool Implementation for {name}"""
+
+import os
+import aiohttp
+from typing import Any, Dict, Optional
+from glue.tools.base import BaseTool, ToolConfig, ToolPermission
+
+class {class_name}Tool(BaseTool):
+    """Implementation of {name} tool"""
+    
+    def __init__(
+        self,
+        name: str = "{name}",
+        description: str = "{description or f'{name} tool'}",
+        **config
+    ):
+        super().__init__(
+            name=name,
+            description=description,
+            config=ToolConfig(
+                required_permissions=[ToolPermission.NETWORK],
+                timeout=30.0
+            )
+        )
+        self.config = config
+        self.api_key = os.getenv("{api_key_env or 'API_KEY'}")
+        if not self.api_key:
+            raise ValueError(f"No API key found in {api_key_env or 'API_KEY'}")
+    
+    async def _execute(self, input_data: Any) -> Any:
+        """Execute the tool
+        
+        Args:
+            input_data: Data to send to API
+            
+        Returns:
+            API response
+        """
+        async with aiohttp.ClientSession() as session:
+            headers = {{"Authorization": f"Bearer {{self.api_key}}"}}
+            
+            if "{method}" == "GET":
+                async with session.get(
+                    "{api_url or ''}",
+                    headers=headers,
+                    params={{"input": input_data}}
+                ) as response:
+                    return await response.json()
+            else:
+                async with session.{method.lower()}(
+                    "{api_url or ''}",
+                    headers=headers,
+                    json={{"input": input_data}}
+                ) as response:
+                    return await response.json()
+'''
+            
+            tool_file.write_text(tool_content)
+            
+            click.echo(f"Created new tool: {name}")
+            click.echo(f"Tool location: {tool_file}")
+            click.echo("\nTo use this tool, add to your .glue file:")
+            click.echo(f'''tool {name} {{
+    config {{
+        api_key = "env:{api_key_env or 'API_KEY'}"  // Will load from environment
+    }}
+}}''')
+    
+    except Exception as e:
+        click.echo(f"Error creating tool: {str(e)}", err=True)
+        sys.exit(1)
 
 @cli.command()
 def list_tools():

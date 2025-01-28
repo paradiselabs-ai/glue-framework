@@ -29,8 +29,7 @@ class TeamState:
     name: str
     members: Dict[str, TeamMember]
     tools: Set[str]
-    shared_results: Dict[str, ToolResult]
-    session_results: Dict[str, Dict[str, ToolResult]]
+    shared_results: Dict[str, ToolResult]  # Only GLUE results
     relationships: Dict[str, AdhesiveType]
     repelled_by: Set[str]
     created_at: datetime
@@ -55,14 +54,12 @@ class Team:
         members: Optional[Dict[str, TeamMember]] = None,
         tools: Optional[Set[str]] = None,
         shared_results: Optional[Dict[str, ToolResult]] = None,
-        session_results: Optional[Dict[str, Dict[str, ToolResult]]] = None,
         state_manager: Optional[StateManager] = None
     ):
         self.name = name
         self.members = members or {}
         self.tools = tools or set()
-        self.shared_results = shared_results or {}
-        self.session_results = session_results or {}
+        self.shared_results = shared_results or {}  # Only GLUE results
         self._state_manager = state_manager or StateManager()
         
         # Team relationships with adhesive types
@@ -127,16 +124,12 @@ class Team:
         if tool_name not in self.tools:
             raise ValueError(f"Unknown tool: {tool_name}")
             
-        # Store result based on adhesive type
+        # Only store GLUE results at team level
         if adhesive_type == AdhesiveType.GLUE:
-            # Permanent storage
+            # Permanent team-wide storage
             self.shared_results[tool_name] = result
-        elif adhesive_type == AdhesiveType.TAPE:
-            # Session storage
-            if tool_name not in self.session_results:
-                self.session_results[tool_name] = {}
-            self.session_results[tool_name][datetime.now().isoformat()] = result
-        # VELCRO results are not stored, only used immediately
+        # VELCRO results stay in tool instance's resource_pool
+        # TAPE results are not stored anywhere
         
         # Update timestamp
         self.updated_at = datetime.now()
@@ -155,18 +148,9 @@ class Team:
         if target_team.name not in self._relationships:
             raise ValueError(f"No relationship with {target_team.name}")
             
-        # Share all available results
+        # Share all available GLUE results if none specified
         if results is None:
-            # Share both persistent and session results
-            results = {}
-            # Add persistent results
-            results.update(self.shared_results)
-            # Add latest session results
-            for tool, sessions in self.session_results.items():
-                if sessions:
-                    latest = sorted(sessions.items(), key=lambda x: x[0])[-1][1]
-                    if tool not in results:  # Don't override persistent results
-                        results[tool] = latest
+            results = self.shared_results.copy()
                 
         # Share results (let target team handle adhesive type)
         await target_team.receive_results(results)
@@ -204,20 +188,12 @@ class Team:
         Receive results and store based on team's needs.
         If adhesive_type is None, store based on team's configuration.
         """
-        timestamp = datetime.now().isoformat()
-        
         for tool_name, result in results.items():
-            # Store in persistent storage if using GLUE
+            # Only store in shared_results if using GLUE
             if adhesive_type in (AdhesiveType.GLUE, None):
                 self.shared_results[tool_name] = result
-                
-            # Store in session storage if using TAPE
-            if adhesive_type in (AdhesiveType.TAPE, None):
-                if tool_name not in self.session_results:
-                    self.session_results[tool_name] = {}
-                self.session_results[tool_name][timestamp] = result
-                
-            # VELCRO results are transient - only used immediately
+            # VELCRO results stay in tool instance
+            # TAPE results are not stored
         
         # Update timestamp
         self.updated_at = datetime.now()
@@ -228,25 +204,11 @@ class Team:
         tools: Optional[Set[str]] = None
     ) -> None:
         """Share specific or all results with pulling team"""
-        # Share both persistent and session results
+        # Only share GLUE results
         results = {}
-        
-        # Filter by tools if specified
-        sources = [
-            (self.shared_results, None),  # Persistent results
-            *[(sessions, tool_name) for tool_name, sessions in self.session_results.items()]  # Session results
-        ]
-        
-        for source, tool_name in sources:
-            if isinstance(source, dict):
-                for name, result in source.items():
-                    if tools is None or name in tools:
-                        if name not in results:  # Don't override persistent results
-                            if tool_name:  # Session results
-                                latest = sorted(source.items(), key=lambda x: x[0])[-1][1]
-                                results[name] = latest
-                            else:  # Persistent results
-                                results[name] = result
+        for name, result in self.shared_results.items():
+            if tools is None or name in tools:
+                results[name] = result
                 
         # Share results (let target team handle adhesive type)
         await target_team.receive_results(results)
@@ -318,8 +280,7 @@ class Team:
             name=self.name,
             members=self.members,
             tools=self.tools,
-            shared_results=self.shared_results,
-            session_results=self.session_results,
+            shared_results=self.shared_results,  # Only GLUE results
             relationships=self._relationships,
             repelled_by=self._repelled_by,
             created_at=self.created_at,
@@ -333,8 +294,7 @@ class Team:
             name=state.name,
             members=state.members,
             tools=state.tools,
-            shared_results=state.shared_results,
-            session_results=state.session_results
+            shared_results=state.shared_results  # Only GLUE results
         )
         
         # Restore relationships
@@ -368,6 +328,22 @@ class Team:
         if member_name not in self.members:
             raise ValueError(f"Unknown member: {member_name}")
         return self.members[member_name].role
+        
+    def get_team_flows(self) -> Dict[str, str]:
+        """Get magnetic flows with other teams"""
+        flows = {}
+        for team_name, adhesive in self._relationships.items():
+            if team_name not in self._repelled_by:
+                # Convert relationship to magnetic operator
+                if team_name in self._repelled_by:
+                    flows[team_name] = "<>"  # Repulsion
+                else:
+                    # Check if bidirectional
+                    if team_name in self._relationships and self.name in self._relationships.get(team_name, {}):
+                        flows[team_name] = "><"  # Bidirectional
+                    else:
+                        flows[team_name] = "->"  # Push by default
+        return flows
         
     def update_member_role(
         self,

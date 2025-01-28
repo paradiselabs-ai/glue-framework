@@ -1,46 +1,66 @@
-# src/glue/core/conversation.py
+"""GLUE Conversation Manager
 
-"""GLUE Conversation Manager"""
+Core component for facilitating natural, efficient conversations between models.
+Handles conversation flow, context management, tool usage, and memory within teams.
+"""
 
 import os
 import json
+import re
 import asyncio
-from typing import Dict, List, Any, Optional, Union, Set
+from typing import Dict, List, Any, Optional, Tuple, Set
 from datetime import datetime
 from pathlib import Path
+
 from .model import Model
 from .memory import MemoryManager
 from .logger import get_logger
-from .context import ContextAnalyzer, ContextState, InteractionType
+from .context import ContextAnalyzer, ContextState, InteractionType, InteractionPattern
 from .role import DynamicRole, RoleState
 from ..tools.chain import ToolChainOptimizer
-from ..magnetic.rules import InteractionPattern
-from ..core.adhesive import AdhesiveType, AdhesiveState
+from .types import AdhesiveType
 
 class ConversationManager:
     """
-    Core orchestrator for model interactions and tool management in GLUE.
+    Manages natural and efficient conversations between models within a team.
     
-    Features:
-    - Magnetic Fields: Model interaction patterns (><, ->, <-, <>)
-    - Adhesive Bindings: Tool persistence levels (glue, velcro, tape)
-    - Context-aware state management
-    - Resource pooling
-    - Memory management
-    - Tool optimization
-    - Event tracking
+    Core Features:
+    - Natural Conversation Flow
+      * Context-aware message formatting
+      * Turn management and coordination
+      * Free-flowing intra-team communication
     
-    The ConversationManager acts as the central coordinator for:
-    1. Model-to-model communication through magnetic fields
-    2. Tool persistence and sharing through adhesive bindings
-    3. Context-aware workflow optimization
-    4. Resource and state management
+    - Tool Integration
+      * Smart tool chain optimization
+      * Persistence management (GLUE/VELCRO/TAPE)
+      * Usage tracking and performance monitoring
     
-    This manager can be used in various scenarios including but not limited to:
-    - Conversational agents (CBMs)
-    - Multi-model workflows
-    - Tool-augmented processing
-    - Resource-aware computations
+    - Memory & Context
+      * Short and long-term memory
+      * Context preservation
+      * Role-based behavior adaptation
+    
+    - Error Handling
+      * Graceful error recovery
+      * Clear error messages
+      * State preservation
+    
+    Team Communication:
+    - Within Teams (this manager):
+      * Models communicate freely
+      * No magnetic field restrictions
+      * Direct tool sharing and usage
+      * Conversation history tracking
+    
+    - Between Teams (via TeamCommunicationManager):
+      * Results synthesized via _synthesize_responses
+      * Shared through magnetic field system
+      * Follows team-to-team protocols
+      * Respects magnetic operators (><, ->, <-, <>)
+    
+    This manager handles HOW models communicate and use tools within a team,
+    while team membership and team-to-team communication are handled by
+    Team and TeamCommunicationManager respectively.
     """
     
     # Tool usage patterns
@@ -49,21 +69,6 @@ class ConversationManager:
         r'<input>(.*?)</input>': lambda m: f"with input: {m.group(1)}",
         r'<think>(.*?)</think>': lambda m: f"Reasoning: {m.group(1)}",
         r'<error>(.*?)</error>': lambda m: f"Error: {m.group(1)}"
-    }
-    
-    # Magnetic field patterns
-    MAGNETIC_PATTERNS = {
-        InteractionPattern.ATTRACT: "bidirectional",  # ><
-        InteractionPattern.PUSH: "outgoing",          # ->
-        InteractionPattern.PULL: "incoming",          # <-
-        InteractionPattern.REPEL: "repulsion"         # <>
-    }
-    
-    # Adhesive binding types
-    ADHESIVE_TYPES = {
-        "permanent": AdhesiveType.GLUE,    # Full persistence
-        "session": AdhesiveType.VELCRO,    # Partial persistence
-        "temporary": AdhesiveType.TAPE     # No persistence
     }
     
     def __init__(self, sticky: bool = False, workspace_dir: Optional[str] = None):
@@ -79,24 +84,38 @@ class ConversationManager:
         self.context_analyzer = ContextAnalyzer()
         self.tool_optimizer = ToolChainOptimizer()
         
-        # Model management (Magnetic)
-        self.model_states: Dict[str, Dict[str, Any]] = {}
+        # Model management
         self.model_roles: Dict[str, DynamicRole] = {}
-        self.model_patterns: Dict[str, Set[InteractionPattern]] = {}
+        self.model_states: Dict[str, Dict[str, Any]] = {}
         
-        # Tool management (Adhesive)
+        # Tool management
         self.tool_instances: Dict[str, Dict[str, Any]] = {}
         self.resource_pool: Dict[str, Dict[str, Any]] = {}
         self.tool_bindings: Dict[str, Dict[str, AdhesiveType]] = {}
+        self.tool_usage: Dict[str, int] = {}
         
         # Performance tracking
         self.interaction_success: Dict[str, bool] = {}
-        self.tool_usage: Dict[str, int] = {}
         
         # Load history if sticky
         if self.sticky:
             self._load_history()
-
+    
+    def _extract_tool_usage(self, response: str) -> Optional[Tuple[str, str, str]]:
+        """Extract tool name, thought, and input from response"""
+        tool_match = re.search(r'<tool>(.*?)</tool>', response)
+        input_match = re.search(r'<input>(.*?)</input>', response)
+        thought_match = re.search(r'<think>(.*?)</think>', response)
+        
+        if tool_match and input_match:
+            tool_name = tool_match.group(1).strip()
+            tool_input = input_match.group(1).strip()
+            thought = thought_match.group(1).strip() if thought_match else ""
+            return (tool_name, thought, tool_input)
+            
+        return None
+    
+    
     def _get_tool_instance(
         self,
         tool_name: str,
@@ -104,16 +123,7 @@ class ConversationManager:
         binding_type: AdhesiveType,
         model_name: Optional[str] = None
     ) -> Any:
-        """
-        Get appropriate tool instance based on binding type
-        
-        Args:
-            tool_name: Name of the tool
-            conversation_id: Current conversation ID
-            binding_type: Type of adhesive binding
-            model_name: Optional model using the tool
-        """
-        # Handle based on binding type
+        """Get appropriate tool instance based on binding type"""
         if binding_type == AdhesiveType.GLUE:
             # Full persistence - use shared instance
             if tool_name not in self.resource_pool:
@@ -135,182 +145,61 @@ class ConversationManager:
         else:  # TAPE
             # No persistence - create new instance
             return {}
-
+    
     async def _initialize_tool(
         self,
         tool: Any,
-        field: Any,
         binding_type: AdhesiveType,
         conversation_id: str,
         model_name: Optional[str] = None
     ) -> None:
-        """
-        Initialize tool with appropriate instance and binding
+        """Initialize tool with appropriate instance and binding"""
+        # Get instance based on binding type
+        instance_data = self._get_tool_instance(
+            tool_name=tool.name,
+            conversation_id=conversation_id,
+            binding_type=binding_type,
+            model_name=model_name
+        )
         
-        Args:
-            tool: Tool to initialize
-            field: Magnetic field
-            binding_type: Type of adhesive binding
-            conversation_id: Current conversation ID
-            model_name: Optional model using the tool
-        """
-        if hasattr(tool, 'magnetic') and tool.magnetic:
-            # Get instance based on binding type
-            instance_data = self._get_tool_instance(
-                tool_name=tool.name,
-                conversation_id=conversation_id,
-                binding_type=binding_type,
-                model_name=model_name
-            )
-            
-            # Initialize tool
-            await tool.initialize(instance_data)
-            
-            # Add to field if needed (magnetic aspect)
-            if not tool._workspace:
-                await tool.attach_to_workspace(field)
-            if not field.get_resource(tool.name):
-                await field.add_resource(tool)
-            
-            # Store binding type (adhesive aspect)
-            if model_name:
-                if model_name not in self.tool_bindings:
-                    self.tool_bindings[model_name] = {}
-                self.tool_bindings[model_name][tool.name] = binding_type
-
-    def _determine_flow(
-        self,
-        binding_patterns: Dict[str, Any],
-        context: Optional[ContextState] = None
-    ) -> List[str]:
-        """
-        Determine execution flow based on magnetic patterns
+        # Initialize tool
+        await tool.initialize(instance_data)
         
-        Args:
-            binding_patterns: Magnetic field patterns
-            context: Optional conversation context
-        """
-        flow = []
-        visited = set()
-        
-        def should_add_component(component: str) -> bool:
-            """Check if component should be added"""
-            # Check model role (magnetic)
-            if component in self.model_roles:
-                role = self.model_roles[component]
-                role_context = role.adjust_for_context(context)
-                return role_context.state != RoleState.PASSIVE
-                
-            # Check tool based on context
-            if context:
-                # In chat mode, only add explicitly required tools
-                if context.interaction_type == InteractionType.CHAT:
-                    return component in context.tools_required
-                    
-                # In research/task mode, add tools that match the context
-                elif context.interaction_type in [InteractionType.RESEARCH, InteractionType.TASK]:
-                    return (
-                        # Add tool if it's required by context
-                        component in context.tools_required or
-                        # Or if it's a research tool in research mode
-                        (context.interaction_type == InteractionType.RESEARCH and 
-                         component == "web_search") or
-                        # Or if it's a code tool in task mode
-                        (context.interaction_type == InteractionType.TASK and 
-                         component == "code_interpreter")
-                    )
-                    
-            # Default to True for unknown contexts
-            return True
-        
-        def add_magnetic_chain(chain, pattern: Optional[InteractionPattern] = None):
-            """Add components based on magnetic pattern"""
-            for item in chain:
-                if isinstance(item, (list, tuple)):
-                    if len(item) == 2:
-                        comp1, comp2 = item
-                    else:
-                        comp1, comp2, _ = item
-                        
-                    # Add based on pattern/state
-                    if comp1 not in visited and should_add_component(comp1):
-                        flow.append(comp1)
-                        visited.add(comp1)
-                        if pattern:
-                            self.model_patterns[comp1].add(pattern)
-                            
-                    if comp2 not in visited and should_add_component(comp2):
-                        flow.append(comp2)
-                        visited.add(comp2)
-                        if pattern:
-                            self.model_patterns[comp2].add(pattern)
-                else:
-                    if item not in visited and should_add_component(item):
-                        flow.append(item)
-                        visited.add(item)
-                        if pattern:
-                            self.model_patterns[item].add(pattern)
-
-        # Process magnetic patterns
-        field = binding_patterns.get('field')
-        if field:
-            # Check if field is a pull team
-            is_pull_team = hasattr(field, 'is_pull_team') and field.is_pull_team
-            
-            # First add non-pull patterns
-            # Bidirectional (><)
-            add_magnetic_chain(
-                binding_patterns.get('attract', []),
-                InteractionPattern.ATTRACT
-            )
-            
-            # Push (->)
-            add_magnetic_chain(
-                binding_patterns.get('push', []),
-                InteractionPattern.PUSH
-            )
-            
-            # Repel (<>)
-            add_magnetic_chain(
-                binding_patterns.get('repel', []),
-                InteractionPattern.REPEL
-            )
-            
-            # Add pull patterns last (if pull team)
-            if is_pull_team:
-                add_magnetic_chain(
-                    binding_patterns.get('pull', []),
-                    InteractionPattern.PULL
-                )
-                
-                # If no flow determined and this is a pull team,
-                # add all non-repelled components
-                if not flow:
-                    repelled = set()
-                    for r1, r2 in binding_patterns.get('repel', []):
-                        repelled.add(r1)
-                        repelled.add(r2)
-                    
-                    # Add all components except repelled ones
-                    for component in field.list_resources():
-                        if (component not in repelled and 
-                            component not in visited and 
-                            should_add_component(component)):
-                            flow.append(component)
-                            visited.add(component)
-                            self.model_patterns[component].add(InteractionPattern.PULL)
-        
-        return flow
-
+        # Store binding type
+        if model_name:
+            if model_name not in self.tool_bindings:
+                self.tool_bindings[model_name] = {}
+            self.tool_bindings[model_name][tool.name] = binding_type
+    
     async def process(
-        self, 
-        models: Dict[str, Model], 
-        binding_patterns: Dict[str, Any],
+        self,
+        models: Dict[str, Model],
         user_input: str,
         tools: Optional[Dict[str, Any]] = None,
         context: Optional[ContextState] = None
     ) -> str:
-        """Process user input through the bound models and tools"""
+        """
+        Process user input through models and tools within a team.
+        
+        This method handles the core conversation flow between models in the same team:
+        - Routes messages through appropriate models
+        - Manages tool usage and persistence
+        - Maintains conversation history and context
+        - Handles error recovery
+        
+        For team-to-team communication, the results from this method can be
+        formatted using _synthesize_responses before being shared through
+        the magnetic field system.
+        
+        Args:
+            models: Dictionary of available models
+            user_input: The input to process
+            tools: Optional dictionary of available tools
+            context: Optional conversation context
+            
+        Returns:
+            The processed response or error message
+        """
         try:
             self.logger.debug("Processing conversation...")
             
@@ -325,29 +214,7 @@ class ConversationManager:
                     available_tools=list(tools.keys()) if tools else None
                 )
             self.logger.debug(f"Context: {context}")
-
-            # Update magnetic field context if present
-            field = binding_patterns.get('field')
-            if field:
-                await field.update_context(context)
-                
-                # Initialize tools only for non-chat interactions or if explicitly required
-                if tools and (context.interaction_type != InteractionType.CHAT or context.tools_required):
-                    for tool_name, tool in tools.items():
-                        # Skip tools not required in chat mode
-                        if context.interaction_type == InteractionType.CHAT and tool_name not in context.tools_required:
-                            continue
-                            
-                        # Determine binding type from tool configuration
-                        binding_type = self._get_binding_type(tool)
-                        
-                        await self._initialize_tool(
-                            tool=tool,
-                            field=field,
-                            binding_type=binding_type,
-                            conversation_id=self.active_conversation
-                        )
-
+            
             # Store user input
             message = {
                 "role": "user",
@@ -364,324 +231,164 @@ class ConversationManager:
                 memory_type="short_term",
                 context=context
             )
-
-            # Initialize/update model roles and patterns
+            
+            # Initialize/update model roles with tools
             for model_name, model in models.items():
-                # Initialize role if needed
                 if model_name not in self.model_roles:
-                    self.model_roles[model_name] = DynamicRole(model.role)
+                    # Get base role
+                    base_role = model.role
+                    
+                    # Enhance with tools if available
+                    if hasattr(model, "_tools"):
+                        tool_names = list(model._tools.keys())
+                        base_role = self._enhance_role_with_tools(base_role, tool_names)
+                    
+                    # Create dynamic role
+                    self.model_roles[model_name] = DynamicRole(base_role)
+                    
+                    # Allow tools
                     if hasattr(model, "_tools"):
                         for tool_name in model._tools:
                             self.model_roles[model_name].allow_tool(tool_name)
-                
-                # Initialize patterns set
-                if model_name not in self.model_patterns:
-                    self.model_patterns[model_name] = set()
-
-            # Determine conversation flow (magnetic)
-            flow = self._determine_flow(binding_patterns, context)
-            self.logger.debug(f"Flow: {flow}")
             
-            # Clean and normalize input
-            cleaned_input = ' '.join(user_input.split())  # Remove extra spaces
-            
-            # Determine interaction type from context
-            interaction_type = context.interaction_type if context else InteractionType.UNKNOWN
-            
-            # Get team structure from field
-            field = binding_patterns.get('field')
-            teams = {}
-            if field and hasattr(field, '_child_fields'):
-                for child in field._child_fields:
-                    teams[child.name] = {
-                        'lead': next((r for r in child._resources.values() 
-                                    if hasattr(r, '_is_lead') and r._is_lead), None),
-                        'members': [r for r in child._resources.values() 
-                                  if isinstance(r, Model)]
-                    }
-            
-            # Default flow based on interaction type and team structure
-            if not flow:
-                if interaction_type == InteractionType.RESEARCH:
-                    # Start with research team if available
-                    research_teams = [
-                        (name, team) for name, team in teams.items()
-                        if 'research' in name.lower()
-                    ]
-                    
-                    if research_teams:
-                        # Get first research team
-                        team_name, team = research_teams[0]
-                        self.logger.debug(f"Using research team: {team_name}")
-                        
-                        # Initialize team flow
-                        flow = []
-                        
-                        # Add lead first if available
-                        if team['lead']:
-                            self.logger.debug(f"Adding lead: {team['lead'].name}")
-                            flow.append(team['lead'].name)
-                            
-                            # Initialize lead's tools
-                            if hasattr(team['lead'], "_tools"):
-                                for tool_name, tool in team['lead']._tools.items():
-                                    if tools and tool_name in tools:
-                                        binding_type = self._get_binding_type(tools[tool_name])
-                                        await self._initialize_tool(
-                                            tool=tools[tool_name],
-                                            field=field,
-                                            binding_type=binding_type,
-                                            conversation_id=self.active_conversation,
-                                            model_name=team['lead'].name
-                                        )
-                        
-                        # Add members
-                        for member in team['members']:
-                            self.logger.debug(f"Adding member: {member.name}")
-                            flow.append(member.name)
-                            
-                            # Initialize member's tools
-                            if hasattr(member, "_tools"):
-                                for tool_name, tool in member._tools.items():
-                                    if tools and tool_name in tools:
-                                        binding_type = self._get_binding_type(tools[tool_name])
-                                        await self._initialize_tool(
-                                            tool=tools[tool_name],
-                                            field=field,
-                                            binding_type=binding_type,
-                                            conversation_id=self.active_conversation,
-                                            model_name=member.name
-                                        )
-                    else:
-                        # No research team, use first model
-                        self.logger.debug("No research team found, using first model")
-                        flow = [next(iter(models.keys()))] if models else []
-                else:
-                    # Default to first model
-                    self.logger.debug("Using default flow with first model")
-                    flow = [next(iter(models.keys()))] if models else []
-            
-            # Optimize tool chain
+            # Optimize tool chain if tools available
             optimized_tools = []
             if tools:
                 tool_names = list(tools.keys())
                 optimized_tools = self.tool_optimizer.optimize_chain(tool_names, context)
                 self.logger.debug(f"Optimized tools: {optimized_tools}")
             
-            # Clean and normalize input, removing extra spaces and control characters
-            cleaned_input = ' '.join(
-                ''.join(c for c in user_input if c.isprintable() or c.isspace())
-                .split()
-            )
+            # Process through first model
+            if not models:
+                return "No models available"
+                
+            model = next(iter(models.values()))
+            current_input = user_input
             
-            # Skip empty input
-            if not cleaned_input:
-                return "Please provide some input."
+            while True:  # Allow multiple tool uses
+                # Get model context
+                model_context = self._get_model_context(model.name)
                 
-            # Check for excessive spaces or control characters
-            raw_chars = len(user_input)
-            clean_chars = len(cleaned_input)
-            if raw_chars > 0 and clean_chars / raw_chars < 0.7:  # More than 30% of input was spaces/control chars
-                return "Your input contains too many extra spaces or special characters. Please retype your request clearly."
+                # Determine interaction patterns from context
+                patterns = {InteractionPattern.CHAT}  # Default to chat
+                if context:
+                    if context.interaction_type == InteractionType.RESEARCH:
+                        patterns = {InteractionPattern.RESEARCH}
+                    elif context.interaction_type == InteractionType.TASK:
+                        patterns = {InteractionPattern.TASK}
                 
-            # Check if input is mostly gibberish
-            words = cleaned_input.split()
-            if len(words) > 1:  # Only check multi-word inputs
-                # Count valid words (at least 2 chars, not all digits, no repeated chars)
-                valid_words = sum(1 for word in words 
-                                if len(word) > 1 and 
-                                not all(c.isdigit() for c in word) and
-                                len(set(word)) > len(word) * 0.4)  # At least 40% unique chars
+                # Enhance input with context and patterns
+                enhanced_input = self._enhance_input_with_context(
+                    current_input=current_input,
+                    context=model_context,
+                    patterns=patterns
+                )
                 
-                if valid_words < len(words) * 0.7:  # Less than 70% valid words
-                    return "Your input appears to be unclear. Please retype your request."
-            
-            # Process through chain with cleaned input
-            current_input = cleaned_input
-            responses = []
-            start_time = datetime.now()
-            
-            for component_name in flow:
-                self.logger.debug(f"Processing: {component_name}")
+                # Get model's response
+                response = await model.generate(enhanced_input)
                 
-                # Handle model
-                if component_name in models:
-                    model = models[component_name]
-                    role = self.model_roles[component_name]
-                    patterns = self.model_patterns[component_name]
-                    
-                    # Adjust role for context
-                    role_context = role.adjust_for_context(context)
-                    
-                    # Skip if passive
-                    if role_context.state == RoleState.PASSIVE:
-                        continue
-                    
-                    # Get model's tools
-                    model_tools = []
-                    if hasattr(model, "_tools"):
-                        for tool_name, tool in model._tools.items():
-                            # Initialize tool for this model
-                            if tools and tool_name in tools:
-                                binding_type = self._get_binding_type(tools[tool_name])
-                                
-                                await self._initialize_tool(
-                                    tool=tools[tool_name],
-                                    field=field,
-                                    binding_type=binding_type,
-                                    conversation_id=self.active_conversation,
-                                    model_name=model_name
-                                )
-                                model_tools.append(tool_name)
-                    
-                    # Enhance role with tools
-                    if model_tools and hasattr(model, "role"):
-                        model.role = self._enhance_role_with_tools(model.role, model_tools)
-                    
-                    # Get context and enhance input
-                    model_context = self._get_model_context(component_name)
-                    enhanced_input = self._enhance_input_with_context(
-                        current_input,
-                        model_context,
-                        patterns
-                    )
-                    
-                    try:
-                        response = await model.generate(enhanced_input)
-                        
-                        responses.append({
-                            "component": component_name,
-                            "type": "model",
-                            "content": response,
-                            "timestamp": datetime.now().isoformat(),
-                            "patterns": list(patterns)
-                        })
-                        
-                        # Store in memory
-                        self.memory_manager.store(
-                            key=f"response_{component_name}_{datetime.now().isoformat()}",
-                            content=response,
-                            memory_type="short_term",
-                            context=context
-                        )
-                        
-                        # Update chain
-                        current_input = response
-                        
-                        # Store in history
-                        self.history.append({
-                            "role": "assistant",
-                            "model": component_name,
-                            "content": response,
-                            "timestamp": datetime.now().isoformat(),
-                            "conversation_id": self.active_conversation,
-                            "patterns": list(patterns)
-                        })
-                        
-                        self.interaction_success[component_name] = True
-                        
-                    except Exception as e:
-                        self.logger.error(f"Error from {component_name}: {str(e)}")
-                        self.interaction_success[component_name] = False
-                        raise
+                # Store response
+                self.history.append({
+                    "role": "assistant",
+                    "content": response,
+                    "timestamp": datetime.now().isoformat(),
+                    "conversation_id": self.active_conversation
+                })
                 
-                # Handle tool
-                elif tools and component_name in tools:
-                    tool = tools[component_name]
+                # Check for tool usage
+                tool_usage = self._extract_tool_usage(response)
+                if tool_usage and tools:
+                    tool_name, thought, tool_input = tool_usage
                     
-                    # Skip if not needed
+                    # Log the attempt
+                    self.logger.debug(f"Tool usage detected: {tool_name}")
+                    self.logger.debug(f"Thought: {thought}")
+                    self.logger.debug(f"Input: {tool_input}")
+                    
+                    # Skip if tool not needed in current context
                     if (context.interaction_type == InteractionType.CHAT and
-                        component_name not in context.tools_required):
+                        tool_name not in context.tools_required):
                         continue
                     
                     # Skip if optimized out
-                    if component_name not in optimized_tools:
+                    if tool_name not in optimized_tools:
                         continue
                     
-                    try:
-                        tool_start = datetime.now()
-                        result = await tool.execute(current_input)
-                        tool_duration = (datetime.now() - tool_start).total_seconds()
-                        
-                        # Record usage
-                        self.tool_usage[component_name] = self.tool_usage.get(component_name, 0) + 1
-                        
-                        # Record success
-                        self.tool_optimizer.record_usage(
-                            tool_name=component_name,
-                            input_type=type(current_input).__name__,
-                            output_type=type(result).__name__,
-                            success=True,
-                            execution_time=tool_duration,
-                            context=context
-                        )
-                        
-                        responses.append({
-                            "component": component_name,
-                            "type": "tool",
-                            "content": result,
-                            "timestamp": datetime.now().isoformat()
-                        })
-                        
-                        # Store in memory
-                        self.memory_manager.store(
-                            key=f"result_{component_name}_{datetime.now().isoformat()}",
-                            content=result,
-                            memory_type="short_term",
-                            context=context
-                        )
-                        
-                        # Update chain
-                        current_input = result
-                        
-                        # Store in history
-                        self.history.append({
-                            "role": "tool",
-                            "tool": component_name,
-                            "content": result,
-                            "timestamp": datetime.now().isoformat(),
-                            "conversation_id": self.active_conversation
-                        })
-                        
-                    except Exception as e:
-                        self.logger.error(f"Tool error {component_name}: {str(e)}")
-                        self.tool_optimizer.record_usage(
-                            tool_name=component_name,
-                            input_type=type(current_input).__name__,
-                            output_type="error",
-                            success=False,
-                            execution_time=(datetime.now() - tool_start).total_seconds(),
-                            context=context
-                        )
-                        raise
-                        
-                else:
-                    self.logger.warning(f"Unknown component: {component_name}")
-
-            # Record chain
-            total_duration = (datetime.now() - start_time).total_seconds()
-            self.tool_optimizer.record_chain(
-                tools=optimized_tools,
-                success=True,
-                execution_time=total_duration,
-                context=context
-            )
+                    # Execute tool if available
+                    if tool_name in tools:
+                        try:
+                            tool = tools[tool_name]
+                            tool_start = datetime.now()
+                            result = await tool.execute(tool_input)
+                            tool_duration = (datetime.now() - tool_start).total_seconds()
+                            
+                            # Record usage
+                            self.tool_usage[tool_name] = self.tool_usage.get(tool_name, 0) + 1
+                            
+                            # Record success
+                            self.tool_optimizer.record_usage(
+                                tool_name=tool_name,
+                                input_type=type(tool_input).__name__,
+                                output_type=type(result).__name__,
+                                success=True,
+                                execution_time=tool_duration,
+                                context=context
+                            )
+                            
+                            # Store result
+                            self.history.append({
+                                "role": "tool",
+                                "tool": tool_name,
+                                "content": result,
+                                "timestamp": datetime.now().isoformat(),
+                                "conversation_id": self.active_conversation
+                            })
+                            
+                            # Store in memory
+                            self.memory_manager.store(
+                                key=f"result_{tool_name}_{datetime.now().isoformat()}",
+                                content=result,
+                                memory_type="short_term",
+                                context=context
+                            )
+                            
+                            # Update input for next iteration
+                            current_input = f"Tool output: {result}"
+                            continue
+                            
+                        except Exception as e:
+                            error = f"Tool execution failed: {str(e)}"
+                            self.logger.error(error)
+                            
+                            # Record failure
+                            self.tool_optimizer.record_usage(
+                                tool_name=tool_name,
+                                input_type=type(tool_input).__name__,
+                                output_type="error",
+                                success=False,
+                                execution_time=(datetime.now() - tool_start).total_seconds(),
+                                context=context
+                            )
+                            
+                            # Store error
+                            self.history.append({
+                                "role": "error",
+                                "content": error,
+                                "timestamp": datetime.now().isoformat(),
+                                "conversation_id": self.active_conversation
+                            })
+                            return error
+                    else:
+                        error = f"Tool not available: {tool_name}"
+                        self.logger.error(error)
+                        return error
+                
+                # Save if sticky
+                if self.sticky:
+                    self._save_history()
+                
+                return response
             
-            # Learn pattern
-            self.memory_manager.learn_pattern(
-                trigger=user_input,
-                sequence=[r["component"] for r in responses],
-                success=True,
-                context=context
-            )
-
-            # Save if sticky
-            if self.sticky:
-                self._save_history()
-
-            # Return final response
-            return self._synthesize_responses(responses)
-
         except Exception as e:
             error_msg = f"Error: {str(e)}"
             self.logger.error(error_msg)
@@ -719,72 +426,112 @@ class ConversationManager:
         patterns: Optional[Set[InteractionPattern]] = None
     ) -> str:
         """
-        Enhance input with context and patterns
+        Format context like a natural conversation
         
         Args:
-            current_input: Current input to enhance
-            context: Context information
-            patterns: Optional interaction patterns
+            current_input: The current user input
+            context: The conversation context
+            patterns: Optional interaction patterns for the conversation
         """
-        # Get history
-        history_str = "\n".join(
-            f"{msg['role']}: {msg['content']}" 
-            for msg in context["recent_history"]
-        )
+        # Format recent messages like chat
+        history = []
+        for msg in context.get("recent_history", [])[-3:]:  # Last 3 messages
+            role = msg.get('role', 'unknown')
+            content = msg.get('content', '')
+            if role == 'user':
+                history.append(f"Previous request: {content}")
+            elif role == 'assistant':
+                history.append(f"My response: {content}")
+            elif role == 'tool':
+                history.append(f"Tool result: {content}")
+        history_str = "\n".join(history)
         
-        # Add patterns if available
+        # Format shared info like team resources
+        shared_items = []
+        for key, value in context.get("shared_memory", {}).items():
+            if isinstance(value, dict) and 'content' in value:
+                shared_items.append(f"- {key}: {value['content']}")
+            else:
+                shared_items.append(f"- {key}: {value}")
+        shared_str = "\n".join(shared_items)
+        
+        # Format any interaction patterns
         pattern_str = ""
         if patterns:
-            pattern_str = "\nAllowed interaction patterns: " + ", ".join(
-                self.MAGNETIC_PATTERNS[p] for p in patterns
-            )
+            pattern_items = []
+            for pattern in patterns:
+                if pattern == InteractionPattern.CHAT:
+                    pattern_items.append("You can engage in free-form conversation")
+                elif pattern == InteractionPattern.TASK:
+                    pattern_items.append("You should focus on completing specific tasks")
+                elif pattern == InteractionPattern.RESEARCH:
+                    pattern_items.append("You should focus on gathering and analyzing information")
+            if pattern_items:
+                pattern_str = "Interaction style:\n" + "\n".join(f"- {item}" for item in pattern_items)
         
-        return f"""Context:{pattern_str}
-{history_str}
+        # Combine everything naturally
+        context_parts = []
+        if history_str:
+            context_parts.append(f"Recent conversation:\n{history_str}")
+        if shared_str:
+            context_parts.append(f"Shared team resources:\n{shared_str}")
+        if pattern_str:
+            context_parts.append(pattern_str)
+        
+        context_str = "\n\n".join(context_parts)
+        
+        return f"""{context_str}
 
-Current Input:
+Current request:
 {current_input}"""
 
     def _enhance_role_with_tools(self, role: str, tools: List[str]) -> str:
         """
-        Enhance role with tool capabilities
+        Enhance role description with available tool capabilities.
+        
+        Adds natural language descriptions of what the model can do with each tool,
+        making it easier for the model to understand its capabilities.
         
         Args:
-            role: Current role description
-            tools: Available tools
-        """
-        import re
+            role: Base role description
+            tools: List of available tool names
         
+        Returns:
+            Enhanced role description with tool capabilities
+        """
         enhanced = role
         
         # Add tool capabilities
         if tools:
             tool_descriptions = {
-                "web_search": "search and retrieve information",
-                "file_handler": "create and manage documents",
-                "code_interpreter": "execute and analyze code"
+                "web_search": "search and retrieve information from the internet",
+                "file_handler": "create, read, update, and delete files",
+                "code_interpreter": "write, execute, and analyze code"
             }
             
-            capabilities = [
-                tool_descriptions.get(tool, tool)
-                for tool in tools
-            ]
+            capabilities = []
+            for tool in tools:
+                desc = tool_descriptions.get(tool)
+                if desc:
+                    capabilities.append(desc)
+                else:
+                    # For unknown tools, use the name as a base description
+                    desc = tool.replace('_', ' ').lower()
+                    capabilities.append(f"use {desc}")
             
-            enhanced += f"\n\nAs part of this role, you can {', '.join(capabilities)}."
+            # Add capabilities in a natural way
+            if capabilities:
+                enhanced += "\n\nYour capabilities include:\n"
+                enhanced += "\n".join(f"- {cap}" for cap in capabilities)
         
-        # Apply patterns
+        # Apply any tool usage patterns
         for pattern, replacement in self.TOOL_PATTERNS.items():
             enhanced = re.sub(pattern, replacement, enhanced)
         
         return enhanced
 
     def _get_model_context(self, model_name: str) -> Dict[str, Any]:
-        """
-        Get context for model
-        
-        Args:
-            model_name: Name of the model
-        """
+        """Get context for model"""
         context = {
             "recent_history": [],
             "shared_memory": {},
@@ -810,10 +557,18 @@ Current Input:
 
     def _synthesize_responses(self, responses: List[Dict[str, Any]]) -> str:
         """
-        Combine responses into final output
+        Synthesize multiple responses into a formatted message for team communication.
+        
+        This method combines multiple responses, tool outputs, and file operations
+        into a clean, formatted message that can be shared with other teams.
+        Particularly useful when a team needs to share results through the
+        magnetic field system.
         
         Args:
-            responses: List of responses to combine
+            responses: List of responses and tool outputs to combine
+        
+        Returns:
+            A formatted message suitable for team-to-team communication
         """
         if not responses:
             return "No response generated"
@@ -843,7 +598,7 @@ Current Input:
         """Get history file path"""
         os.makedirs(self.workspace_dir, exist_ok=True)
         return os.path.join(self.workspace_dir, "chat_history.json")
-
+    
     def _save_history(self) -> None:
         """Save history if sticky"""
         if not self.sticky:
@@ -852,7 +607,7 @@ Current Input:
         path = self._get_history_path()
         with open(path, 'w') as f:
             json.dump(self.history, f, indent=2)
-
+    
     def _load_history(self) -> None:
         """Load history if sticky"""
         if not self.sticky:
@@ -862,11 +617,11 @@ Current Input:
         if os.path.exists(path):
             with open(path, 'r') as f:
                 self.history = json.load(f)
-
+    
     def get_history(self) -> List[Dict[str, Any]]:
         """Get conversation history"""
         return self.history
-
+    
     def clear_history(self) -> None:
         """Clear history"""
         self.history = []
@@ -875,21 +630,21 @@ Current Input:
             path = self._get_history_path()
             if os.path.exists(path):
                 os.remove(path)
-
+    
     def save_state(self) -> Dict[str, Any]:
         """Save manager state"""
         state = {
             "history": self.history,
             "active_conversation": self.active_conversation,
             "model_states": self.model_states,
-            "interaction_success": self.interaction_success,
             "tool_usage": self.tool_usage,
-            "resource_pool": self.resource_pool
+            "resource_pool": self.resource_pool,
+            "interaction_success": self.interaction_success
         }
         if self.sticky:
             self._save_history()
         return state
-
+    
     def load_state(self, state: Dict[str, Any]) -> None:
         """Load manager state"""
         if self.sticky:
@@ -898,6 +653,6 @@ Current Input:
             self.history = state.get("history", [])
         self.active_conversation = state.get("active_conversation")
         self.model_states = state.get("model_states", {})
-        self.interaction_success = state.get("interaction_success", {})
         self.tool_usage = state.get("tool_usage", {})
         self.resource_pool = state.get("resource_pool", {})
+        self.interaction_success = state.get("interaction_success", {})

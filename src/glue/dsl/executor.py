@@ -15,8 +15,9 @@ from ..core.team import Team
 from ..core.workspace import WorkspaceManager
 from ..core.conversation import ConversationManager
 from ..core.tool_binding import ToolBinding
-from ..core.simple_group_chat import SimpleGroupChatManager as GroupChatManager
+from ..core.group_chat import GroupChatManager
 from ..core.logger import init_logger, get_logger
+from ..magnetic.field import MagneticField
 
 # Tool system imports
 from ..tools.base import BaseTool, ToolConfig as BaseToolConfig
@@ -29,15 +30,40 @@ from ..providers.base import BaseProvider
 from ..providers.openrouter import OpenRouterProvider
 
 class GlueExecutor:
-    """Executor for GLUE Applications"""
+    """
+    Executor for GLUE Applications.
+    
+    Core Features:
+    - Team Management
+      * Creates and configures teams from workflow definitions
+      * Sets up team relationships (attractions, repulsions, pulls)
+      * Manages tool sharing and persistence through adhesive types
+    
+    - Tool Configuration
+      * Handles specialized tool setups (code_interpreter, web_search, etc.)
+      * Manages tool bindings and workspaces
+      * Provides proper API key and environment handling
+    
+    - Model Integration
+      * Configures models with appropriate system prompts
+      * Sets up tool access with clear usage examples
+      * Manages model-tool bindings through adhesive system
+    
+    - Workflow Execution
+      * Processes user input through appropriate teams
+      * Follows magnetic field rules for team communication
+      * Maintains state persistence based on configuration
+    
+    This executor serves as the core runtime for GLUE applications,
+    orchestrating the interaction between teams, tools, and models
+    while respecting magnetic field rules and adhesive bindings.
+    """
     
     def __init__(self, app: GlueApp):
         self.app = app
         self.tools = {}
         self.models = {}
         self.teams = {}  # Initialize teams dict
-        self._registry = None
-        
         # Initialize logger
         self._setup_logger()
         self.logger = get_logger()
@@ -46,25 +72,25 @@ class GlueExecutor:
         self.workspace_manager = WorkspaceManager()
         
         # Initialize managers
-        self.conversation = ConversationManager(
-            sticky=app.config.get("sticky", False)
-        )
+        sticky = app.config.get("sticky", False)
+        
+        # Determine app complexity based on team count
+        is_complex = False
+        if app.workflow:
+            team_count = len(app.workflow.teams)
+            if team_count > 1:
+                self.logger.info(f"Complex app detected with {team_count} teams")
+                is_complex = True
+            else:
+                self.logger.info("Simple app detected with single team")
+        else:
+            self.logger.info("Simple app detected with no workflow")
+            
+        # Initialize managers
+        self.conversation = ConversationManager(sticky=sticky)
         self.group_chat = GroupChatManager(app.name)
+        self.logger.debug("Initializing conversation and group chat managers")
         self._setup_environment()
-    
-    @property
-    def registry(self) -> Optional['ResourceRegistry']:
-        """Get the resource registry"""
-        if not self._registry:
-            from ..core.registry import ResourceRegistry
-            from ..core.state import StateManager
-            self._registry = ResourceRegistry(StateManager())
-        return self._registry
-    
-    @registry.setter
-    def registry(self, value: 'ResourceRegistry') -> None:
-        """Set the resource registry"""
-        self._registry = value
     
     def _setup_logger(self):
         """Setup logging system"""
@@ -138,7 +164,24 @@ class GlueExecutor:
         return config
     
     async def _setup_tools(self, workspace_path: str):
-        """Setup tools"""
+        """
+        Set up and configure tools with appropriate bindings and workspaces.
+        
+        This method:
+        1. Creates tool instances with proper configurations
+        2. Handles specialized tool setups (code_interpreter, web_search)
+        3. Manages API keys and environment variables
+        4. Sets up workspace directories for each tool
+        
+        Args:
+            workspace_path: Base workspace directory for tools
+            
+        Tool Configuration:
+        - CodeInterpreterTool: Gets dedicated workspace and language support
+        - WebSearchTool: Configured with provider-specific API keys
+        - FileHandlerTool: Gets workspace-specific configuration
+        - Other tools: Configured with base settings
+        """
         self.logger.info("\nSetting up tools...")
         self.logger.info(f"Available tools: {list(self.app.tool_configs.keys())}")
         
@@ -193,7 +236,36 @@ class GlueExecutor:
                 raise
     
     async def _setup_models(self):
-        """Setup models"""
+        """
+        Set up and configure models with tools and system prompts.
+        
+        This method:
+        1. Configures models with provider-specific settings
+        2. Handles API key management and environment variables
+        3. Builds comprehensive system prompts that include:
+           - Base role definition
+           - Available tools with persistence levels
+           - Tool usage examples with proper syntax
+           - Input/output patterns
+        4. Sets up tool bindings with appropriate adhesive types
+        
+        Model Configuration:
+        - OpenRouter models get provider-specific setup
+        - Each model receives tool access based on config
+        - Tool bindings respect adhesive types (GLUE/VELCRO/TAPE)
+        - System prompts include natural tool usage examples
+        
+        Tool Integration:
+        - Tools are bound with persistence information
+        - GLUE: "(permanent access)"
+        - VELCRO: "(flexible access)"
+        - TAPE: "(temporary access)"
+        
+        The system prompt includes practical examples for:
+        - Web search operations
+        - File handling tasks
+        - Code execution patterns
+        """
         self.logger.info("\nSetting up models...")
         self.logger.info(f"Available models: {list(self.app.model_configs.keys())}")
         
@@ -224,11 +296,61 @@ class GlueExecutor:
                             "in your environment or specify os.api_key in your GLUE file."
                         )
                 
+                # Build system prompt with tool info
+                system_prompt = config.role + "\n\n"
+                if config.tools:
+                    system_prompt += "You have access to the following tools:\n"
+                    for tool_name, adhesive in config.tools.items():
+                        if tool_name in self.tools:
+                            tool = self.tools[tool_name]
+                            persistence = {
+                                AdhesiveType.GLUE: "(permanent access)",
+                                AdhesiveType.VELCRO: "(flexible access)", 
+                                AdhesiveType.TAPE: "(temporary access)"
+                            }
+                            system_prompt += f"- {tool_name}: {tool.description} {persistence[adhesive]}\n"
+                            
+                    system_prompt += """
+To use a tool:
+<think>Explain why you need this tool</think>
+<tool>tool_name</tool>
+<input>what you want the tool to do</input>
+
+Examples:
+
+1. Web Search:
+<think>I need to search for recent news about AI</think>
+<tool>web_search</tool>
+<input>latest developments in open source AI models</input>
+
+2. File Handling:
+<think>I need to save this information</think>
+<tool>file_handler</tool>
+<input>Title: AI News Summary
+Latest developments in open source AI:
+1. ...
+2. ...</input>
+
+3. Code Execution:
+<think>I need to analyze some data with Python</think>
+<tool>code_interpreter</tool>
+<input>
+import pandas as pd
+
+# Create sample data
+data = {'Model': ['GPT-4', 'Claude', 'Llama'],
+        'Score': [95, 92, 88]}
+df = pd.DataFrame(data)
+
+# Calculate average
+print(f"Average score: {df['Score'].mean()}")
+</input>"""
+                
                 # Extract model configuration
                 model_settings = {
                     "api_key": api_key,
-                    "system_prompt": config.role,
-                    "name": model_name,  # Use role name instead of model name
+                    "system_prompt": system_prompt,
+                    "name": model_name,
                     "temperature": config.config.get("temperature", 0.7),
                     "model": config.config.get("model", "gpt-4")
                 }
@@ -240,17 +362,57 @@ class GlueExecutor:
                 # Create model with settings
                 model = OpenRouterProvider(**model_settings)
                 
-                # Set role
+                # Set role and tools
                 model.role = config.role
-                
-                # Initialize tools dictionary
                 model._tools = {}
+                model._tool_bindings = {}
+                
+                # Add tools with bindings
+                for tool_name, adhesive in config.tools.items():
+                    if tool_name in self.tools:
+                        model._tools[tool_name] = self.tools[tool_name]
+                        model._tool_bindings[tool_name] = adhesive
                 
                 self.models[model_name] = model
                 self.logger.info(f"Model {model_name} setup complete")
     
     async def _setup_workflow(self):
-        """Setup workflow with teams and flows"""
+        """
+        Set up teams, their relationships, and tool bindings in the workflow.
+        
+        This method:
+        1. Team Creation and Configuration
+           - Creates teams with specified members
+           - Assigns team leads and roles
+           - Sets up team-specific workspaces
+        
+        2. Tool Distribution
+           - Creates tool instances per team member
+           - Configures tool bindings based on adhesive types
+           - Manages workspace isolation between teams
+        
+        3. Team Relationships
+           - Attractions: Enables bidirectional flow (><)
+           - Repulsions: Prevents team interaction (<>)
+           - Pulls: Sets up GLUE-based result sharing (<-)
+        
+        4. Resource Management
+           - Tool instances are created per team member
+           - Workspaces are isolated between teams
+           - Resource sharing follows adhesive rules:
+             * GLUE: Team-level persistence
+             * VELCRO: Session-level sharing
+             * TAPE: Temporary usage
+        
+        5. Adhesive Handling
+           - Respects model's allowed adhesives
+           - Prioritizes stronger bindings (GLUE > VELCRO > TAPE)
+           - Configures appropriate resource sharing
+        
+        The workflow setup ensures proper isolation and communication
+        between teams while respecting magnetic field rules and
+        adhesive-based resource sharing patterns.
+        """
         if not self.app.workflow:
             return
         
@@ -292,35 +454,67 @@ class GlueExecutor:
                     self.logger.info(f"Adding tool: {tool_name}")
                     await team.add_tool(tool_name)
                     
-                    # Create tool instance for each team member
+                    # Create tool instance for each team member with proper adhesive binding
                     base_tool = self.tools[tool_name]
                     tool_config = self.app.tool_configs[tool_name]
                     base_config = self._create_tool_config(tool_name, tool_config)
                     
                     for member_name in team.members:
                         member = self.models[member_name]
-                        # Create a new instance with the same config
+                        # Get model's allowed adhesives
+                        model_config = self.app.model_configs[member_name]
+                        allowed_adhesives = model_config.config.get('adhesives', [])
+                        
+                        # Create tool instance with appropriate binding
+                        workspace_dir = self.workspace_manager.get_workspace(
+                            f"{self.app.name}-{member_name}",
+                            sticky=self.app.config.get("sticky", False)
+                        )
+                        
+                        # Create tool instance based on type
                         if tool_name == 'web_search':
-                            # Pass api_key when creating web search instance
                             provider = tool_config.provider.upper()
                             api_key = os.getenv(f'{provider}_API_KEY')
                             if not api_key:
                                 raise ValueError(f"No {provider}_API_KEY found in environment")
-                            member._tools[tool_name] = WebSearchTool(api_key=api_key, **base_config)
+                            tool = WebSearchTool(api_key=api_key, **base_config)
                         elif tool_name == 'code_interpreter':
-                            # Create new CodeInterpreterConfig for this instance
                             instance_config = CodeInterpreterConfig(
-                                workspace_dir=self.workspace_manager.get_workspace(
-                                    f"{self.app.name}-{member_name}",
-                                    sticky=self.app.config.get("sticky", False)
-                                ),
+                                workspace_dir=workspace_dir,
                                 supported_languages=base_config.get("languages"),
                                 **{k: v for k, v in base_config.items() 
                                    if k in CodeInterpreterConfig.__annotations__}
                             )
-                            member._tools[tool_name] = CodeInterpreterTool(config=instance_config)
+                            tool = CodeInterpreterTool(config=instance_config)
+                        elif tool_name == 'file_handler':
+                            tool = FileHandlerTool(
+                                workspace_dir=workspace_dir,
+                                **base_config
+                            )
                         else:
-                            member._tools[tool_name] = type(base_tool)(**base_config)
+                            tool = type(base_tool)(**base_config)
+                        
+                        # Set tool binding based on model's allowed adhesives
+                        # Priority: GLUE > VELCRO > TAPE
+                        binding_type = None
+                        if AdhesiveType.GLUE in allowed_adhesives:
+                            binding_type = AdhesiveType.GLUE
+                        elif AdhesiveType.VELCRO in allowed_adhesives:
+                            binding_type = AdhesiveType.VELCRO
+                        elif AdhesiveType.TAPE in allowed_adhesives:
+                            binding_type = AdhesiveType.TAPE
+                        else:
+                            # Default to VELCRO if no adhesives specified
+                            binding_type = AdhesiveType.VELCRO
+                        
+                        # Create binding with appropriate type
+                        tool.binding = ToolBinding(
+                            type=binding_type,
+                            shared_resources=["file_content", "file_path", "file_format"]
+                            if binding_type != AdhesiveType.TAPE else None
+                        )
+                        
+                        member._tools[tool_name] = tool
         
         # Setup flows between teams
         for source, target in self.app.workflow.attractions:
@@ -359,12 +553,17 @@ class GlueExecutor:
                     # Can pull from any non-repelled team
                     for other_name, other_team in self.teams.items():
                         if other_name != target and other_name not in target_team._repelled_by:
-                            # Enable pulling from non-repelled team
-                            target_team.set_relationship(other_name, None)  # Adhesive-agnostic
+                            # Enable pulling from non-repelled team with GLUE adhesive
+                            # This ensures pulled results are permanently stored
+                            target_team.set_relationship(other_name, AdhesiveType.GLUE)
+                            # Also set up the source team to use GLUE for shared results
+                            other_team.set_relationship(target, AdhesiveType.GLUE)
                 elif source in self.teams:
                     # Regular pull from specific team
-                    # Enable specific pull relationship
-                    target_team.set_relationship(source, None)  # Adhesive-agnostic
+                    # Enable specific pull relationship with GLUE adhesive
+                    target_team.set_relationship(source, AdhesiveType.GLUE)
+                    # Also set up the source team to use GLUE for shared results
+                    self.teams[source].set_relationship(target, AdhesiveType.GLUE)
 
     
     async def execute(self) -> Any:
@@ -377,10 +576,29 @@ class GlueExecutor:
             )
             
             # Setup components
-            await self._setup_models()
-            await self._setup_tools(workspace_path)
-            await self._setup_workflow()
+            await self._setup_tools(workspace_path)  # Tools first for SmolAgents integration
+            await self._setup_models()  # Models can use tools during setup
             
+            # Setup workflow if defined
+            if self.app.workflow:
+                await self._setup_workflow()
+            
+            # Initialize team chats
+            team_chats = {}
+            for team_name, team in self.teams.items():
+                # Start chat between team members
+                if len(team.members) > 1:
+                    members = list(team.members)
+                    lead = members[0]  # First member is lead
+                    for member in members[1:]:
+                        chat_id = await self.group_chat.start_chat(
+                            lead,
+                            member,
+                            team_name=team_name,
+                            target_teams=team.get_team_flows()
+                        )
+                        team_chats[f"{team_name}_{lead}_{member}"] = chat_id
+
             # Interactive prompt loop
             while True:
                 print("\nprompt:", flush=True)
@@ -394,21 +612,55 @@ class GlueExecutor:
                 if user_input.lower() in ['exit', 'quit']:
                     break
                 
-                # Process input
+                # Process input through research team first
                 print("\nthinking...", flush=True)
                 
-                # Get first defined team and its lead model
-                first_team = next(iter(self.teams.values()))
-                if first_team and first_team.members:
-                    lead_name = next(iter(first_team.members))
-                    lead_model = self.models[lead_name]
-                    response = await lead_model.generate(user_input)
-                else:
-                    # Fallback to first available model
-                    model = next(iter(self.models.values()))
-                    response = await model.generate(user_input)
+                # Get research team and its lead
+                research_team = self.teams.get("researchers")
+                if not research_team:
+                    research_team = next(iter(self.teams.values()))
                 
-                print(f"\nresponse: {response}", flush=True)
+                lead_name = next(iter(research_team.members))
+                lead_model = self.models[lead_name]
+                
+                # Process through all teams based on their flows
+                responses = {}
+                processed_teams = set()
+                
+                # Start with first team
+                current_team = next(iter(self.teams.values()))
+                while current_team and current_team.name not in processed_teams:
+                    # Process within team
+                    team_chat_id = next(
+                        (chat_id for chat_id in team_chats 
+                         if chat_id.startswith(f"{current_team.name}_")),
+                        None
+                    )
+                    
+                    if team_chat_id:
+                        lead_name = next(iter(current_team.members))
+                        content = responses.get(current_team.name, user_input)
+                        response = await self.group_chat.process_message(
+                            team_chats[team_chat_id],
+                            content,
+                            from_model=lead_name
+                        )
+                        responses[current_team.name] = response
+                        print(f"\n{current_team.name} Team Response: {response}", flush=True)
+                    
+                    # Mark as processed
+                    processed_teams.add(current_team.name)
+                    
+                    # Find next team based on flows
+                    team_flows = current_team.get_team_flows()
+                    next_team_name = next(
+                        (team for team in team_flows 
+                         if team not in processed_teams 
+                         and team_flows[team] in ["><", "->"]  # Only follow push/attract flows
+                         and team in self.teams),
+                        None
+                    )
+                    current_team = self.teams.get(next_team_name)
                 
         finally:
             # Save state if sticky
@@ -442,14 +694,14 @@ def _infer_tool_type(name: str) -> Optional[Type[BaseTool]]:
         )
     return tool_type
 
-async def execute_glue_app(app: GlueApp, registry: Optional['ResourceRegistry'] = None) -> Any:
+async def execute_glue_app(app: GlueApp) -> Any:
     """Execute GLUE application
     
     Args:
         app: The GLUE application to execute
-        registry: Optional ResourceRegistry to use for resource management
+        
+    Returns:
+        Any: Result of application execution
     """
     executor = GlueExecutor(app)
-    if registry:
-        executor.registry = registry
     return await executor.execute()

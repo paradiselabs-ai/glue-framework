@@ -3,7 +3,6 @@
 from functools import wraps
 from typing import Any, List, Dict, Union, Optional, Set
 from .chain import Chain
-from ..core.registry import ResourceRegistry
 from ..magnetic.field import MagneticField
 
 def glue_app(name: str):
@@ -47,39 +46,36 @@ def team(
 
 class field:
     """
-    Magnetic field context with registry integration.
+    Team field context for managing team interactions.
     
     Features:
-    - Resource tracking
-    - Field operations
-    - Rule validation
-    - Event handling
-    - Registry integration
-    - Team management
+    - Team member management
+    - Team communication flows
     - Tool distribution
+    - Event handling
+    - Flow validation
     
     Example:
         ```python
         async with field("research") as f:
             # Add team lead
-            await f.add_resource(researcher, is_lead=True)
+            await f.add_member(researcher, is_lead=True)
             
             # Add team members
-            await f.add_resource(assistant)
+            await f.add_member(assistant)
             
             # Add team tools
-            await f.add_resource(web_search)
-            await f.add_resource(file_handler)
+            await f.add_tool(web_search)
+            await f.add_tool(file_handler)
         ```
     """
     def __init__(self, name: str):
         self.name = name
-        self.registry = ResourceRegistry()
         self._field: Optional[MagneticField] = None
     
     async def __aenter__(self) -> MagneticField:
-        """Enter field context with registry"""
-        self._field = MagneticField(self.name, self.registry)
+        """Enter field context"""
+        self._field = MagneticField(self.name)
         return self._field
     
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -102,49 +98,43 @@ class field:
                 return await func(*args, **kwargs)
         return wrapper
 
-def magnet(
+def bind_tool(
     name: str,
-    sticky: bool = False,
     shared_resources: Optional[List[str]] = None,
     tags: Optional[Set[str]] = None,
     **kwargs
 ) -> Dict[str, Any]:
     """
-    Create magnetic component with resource integration.
+    Create tool configuration with adhesive binding.
     
     Features:
-    - Resource system integration
-    - Magnetic API compatibility
-    - Tag-based capabilities
-    - Resource sharing
+    - Adhesive binding system integration
+    - Resource sharing capabilities
+    - Tag-based configuration
+    - Workspace persistence
     
     Args:
-        name: Component name
-        sticky: Whether component persists
+        name: Tool name
         shared_resources: Resources to share
         tags: Additional capability tags
         **kwargs: Additional configuration
     
     Returns:
-        Dict with magnetic configuration
+        Dict with tool binding configuration
     """
-    # Start with basic magnetic config
+    # Start with basic binding config
     config = {
         "name": name,
-        "magnetic": True,  # For Resource system
-        "__magnet__": True  # For API compatibility
+        "binding_enabled": True,  # For adhesive system
+        "__binding__": True  # For API compatibility
     }
     
-    # Add magnetic capabilities
-    if sticky:
-        config["sticky"] = True
+    # Add binding capabilitie
     if shared_resources:
         config["shared_resources"] = shared_resources
     
     # Add tags
-    all_tags = {"magnetic"}  # Always magnetic
-    if sticky:
-        all_tags.add("sticky")
+    all_tags = {"binding"}  # Always has binding
     if tags:
         all_tags.update(tags)
     config["tags"] = all_tags
@@ -154,29 +144,29 @@ def magnet(
     
     return config
 
-def magnetize(
+def bind_tools(
     tools: Union[List[str], Dict[str, Any]],
     shared_resources: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """
-    Make tools magnetic with resource integration.
+    Configure tools with adhesive bindings for result sharing.
     
     Features:
-    - Resource system integration
-    - Magnetic API compatibility
+    - Adhesive binding system integration
     - Shared resource configuration
     - Tag-based capabilities
+    - Workspace persistence options
     
     Args:
-        tools: Tools to magnetize
+        tools: Tools to configure with bindings
         shared_resources: Resources to share between tools
     
     Returns:
-        Dict mapping tool names to magnetic configurations
+        Dict mapping tool names to binding configurations
     """
     if isinstance(tools, list):
         return {
-            t: magnet(
+            t: bind_tool(
                 t,
                 shared_resources=shared_resources
             ) for t in tools
@@ -185,14 +175,14 @@ def magnetize(
     result = {}
     for k, v in tools.items():
         if isinstance(v, dict):
-            # Merge existing config with magnet defaults
+            # Merge existing config with binding defaults
             config = v.copy()
             config["name"] = k
             if shared_resources and "shared_resources" not in config:
                 config["shared_resources"] = shared_resources
-            result[k] = magnet(**config)
+            result[k] = bind_tool(**config)
         else:
-            result[k] = magnet(
+            result[k] = bind_tool(
                 k,
                 shared_resources=shared_resources
             )

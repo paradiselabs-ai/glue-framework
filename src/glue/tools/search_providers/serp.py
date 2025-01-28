@@ -21,11 +21,14 @@ class SerpSearchProvider(SearchProvider):
     
     async def initialize(self) -> None:
         """Initialize aiohttp session"""
-        await super().initialize()
+        if not self._session:
+            self._session = aiohttp.ClientSession()
     
     async def cleanup(self) -> None:
         """Clean up aiohttp session"""
-        await super().cleanup()
+        if self._session:
+            await self._session.close()
+            self._session = None
     
     async def search(
         self,
@@ -48,9 +51,8 @@ class SerpSearchProvider(SearchProvider):
         Returns:
             List of SearchResult objects
         """
-        # Initialize session if needed
-        if not self._session:
-            await self.initialize()
+        # Ensure session is initialized
+        await self.initialize()
         
         # Build search parameters
         params = {

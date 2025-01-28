@@ -272,31 +272,23 @@ class GlueParser:
                         # Set defaults
                         agent_type = 'code'  # Default to CodeAgent
                         model_type = 'hf'    # Default to HuggingFace
+                elif key == 'adhesives':
+                    # Parse adhesives list
+                    adhesives_str = value.strip('[]')
+                    allowed_adhesives = set()
+                    for adhesive in adhesives_str.split(','):
+                        adhesive = adhesive.strip().lower()
+                        if adhesive == 'glue':
+                            allowed_adhesives.add(AdhesiveType.GLUE)
+                        elif adhesive == 'velcro':
+                            allowed_adhesives.add(AdhesiveType.VELCRO)
+                        elif adhesive == 'tape':
+                            allowed_adhesives.add(AdhesiveType.TAPE)
+                    config['adhesives'] = list(allowed_adhesives)  # Convert to list for JSON serialization
                 elif key == 'tools':
-                    # Parse tools block
-                    tools_block = self._extract_blocks(value)
-                    if tools_block:
-                        # Parse tool bindings from block
-                        for line in tools_block[0][1].split('\n'):
-                            line = line.strip()
-                            if '=' in line:
-                                tool_name, strength = [x.strip() for x in line.split('=', 1)]
-                                try:
-                                    # Convert string to AdhesiveType
-                                    if strength.lower() == 'tape':
-                                        tools[tool_name] = AdhesiveType.TAPE
-                                    elif strength.lower() == 'velcro':
-                                        tools[tool_name] = AdhesiveType.VELCRO
-                                    elif strength.lower() == 'glue':
-                                        tools[tool_name] = AdhesiveType.GLUE
-                                    else:
-                                        raise ValueError(f"Invalid binding type: {strength} - must be tape, velcro, or glue")
-                                except ValueError:
-                                    self.logger.warning(f"Invalid binding strength: {strength}")
-                    else:
-                        # Legacy format: comma-separated list
-                        tools = {t.strip(): AdhesiveType.VELCRO 
-                               for t in value.strip('[]').split(',')}
+                    # Parse tools list
+                    tools_str = value.strip('[]')
+                    tools = {t.strip(): None for t in tools_str.split(',')}
                 elif key == 'role':
                     role = value.strip('"')
                 elif key.startswith('os.'):

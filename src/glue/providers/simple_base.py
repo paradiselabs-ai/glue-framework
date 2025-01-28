@@ -1,14 +1,11 @@
-# src/glue/providers/simple_base.py
-
 """Simplified Base Provider"""
 
 from typing import Dict, Any, Optional
 from abc import ABC, abstractmethod
 from ..core.model import ModelConfig
-from ..core.simple_resource import SimpleResource
 
-class SimpleBaseProvider(SimpleResource, ABC):
-    """Base class for provider implementations using SimpleResource"""
+class SimpleBaseProvider(ABC):
+    """Base class for provider implementations"""
     def __init__(
         self,
         name: str,
@@ -16,14 +13,9 @@ class SimpleBaseProvider(SimpleResource, ABC):
         config: Optional[ModelConfig] = None,
         base_url: Optional[str] = None
     ):
-        # Initialize simple resource
-        SimpleResource.__init__(
-            self,
-            name=name,
-            category="provider"
-        )
-        
-        # Provider-specific initialization
+        # Basic provider attributes
+        self.name = name
+        self.category = "provider"  # For type identification
         self.api_key = api_key
         self.config = config or ModelConfig()
         self.base_url = base_url
