@@ -8,28 +8,29 @@ import csv
 import re
 import asyncio
 from pathlib import Path
-from .base import ToolConfig, ToolPermission
-from .base import BaseTool
+from .base import BaseTool, ToolConfig, ToolPermission
 from ..core.types import AdhesiveType
 from ..core.logger import get_logger
 from ..core.tool_binding import ToolBinding
 
 # ==================== Constants ====================
-SUPPORTED_FORMATS = {
-    ".txt": "text",
-    ".json": "json",
-    ".yaml": "yaml",
-    ".yml": "yaml",
-    ".csv": "csv",
-    ".py": "text",     # Added Python support as text
-    ".js": "text",     # Added JavaScript support as text
-    ".html": "text",   # Added HTML support as text
-    ".css": "text",    # Added CSS support as text
-    ".md": "text"      # Added Markdown support as text
-}
-
-DEFAULT_FORMAT = ".md"  # Default to markdown
-VALID_OPERATIONS = {"read", "write", "append", "delete"}
+class FileFormats:
+    """Supported file formats and operations"""
+    FORMATS = {
+        ".txt": "text",
+        ".json": "json",
+        ".yaml": "yaml",
+        ".yml": "yaml",
+        ".csv": "csv",
+        ".py": "text",     # Python support as text
+        ".js": "text",     # JavaScript support as text
+        ".html": "text",   # HTML support as text
+        ".css": "text",    # CSS support as text
+        ".md": "text"      # Markdown support as text
+    }
+    
+    DEFAULT = ".md"  # Default to markdown
+    OPERATIONS = {"read", "write", "append", "delete"}
 
 # ==================== File Handler Tool ====================
 class FileHandlerTool(BaseTool):
@@ -46,39 +47,44 @@ class FileHandlerTool(BaseTool):
         shared_resources: Optional[List[str]] = None,
         **kwargs
     ):
-        # Initialize base tool
+        # Initialize base tool with permissions and config
         super().__init__(
             name=name,
             description=description,
+            adhesive_type=binding_type or AdhesiveType.VELCRO,
             config=ToolConfig(
                 required_permissions=[
-                    ToolPermission.FILE_SYSTEM,
-                    ToolPermission.READ,
-                    ToolPermission.WRITE
+                    ToolPermission.FILE_SYSTEM,  # For workspace access
+                    ToolPermission.READ,         # For reading files
+                    ToolPermission.WRITE         # For writing files
                 ],
-                cache_results=False
-            )
+                tool_specific_config={
+                    "workspace_dir": workspace_dir,
+                    "base_path": base_path,
+                    "allowed_formats": allowed_formats,
+                    "shared_resources": shared_resources or ["file_content", "file_path", "file_format"]
+                }
+            ),
+            tags={"file_handler", "io", "filesystem"}
         )
         
-        # Create tool binding with shared resources
-        self.binding = ToolBinding(
-            type=binding_type or AdhesiveType.VELCRO,
-            shared_resources=shared_resources or ["file_content", "file_path", "file_format"]
+        # Initialize configuration
+        config = self.config.tool_specific_config
+        self.base_path = os.path.abspath(
+            config["workspace_dir"] or 
+            config["base_path"] or 
+            os.getcwd()
         )
-        self._registry = registry
-        
-        # Use workspace_dir if provided, otherwise use base_path or cwd
-        self.base_path = os.path.abspath(workspace_dir or base_path or os.getcwd())
         self.allowed_formats = (
-            {fmt: SUPPORTED_FORMATS[fmt] 
-             for fmt in allowed_formats if fmt in SUPPORTED_FORMATS}
-            if allowed_formats
-            else SUPPORTED_FORMATS
+            {fmt: FileFormats.FORMATS[fmt] 
+             for fmt in config["allowed_formats"] if fmt in FileFormats.FORMATS}
+            if config["allowed_formats"]
+            else FileFormats.FORMATS
         )
+        
+        # Initialize logger
         self.logger = get_logger()
         self.logger.debug(f"Initialized file handler with base_path: {self.base_path}")
-        # Track pending write tasks
-        self._pending_writes: List[asyncio.Task] = []
 
     def _validate_path(self, file_path: str) -> Path:
         """Validate and resolve file path"""
@@ -106,7 +112,7 @@ class FileHandlerTool(BaseTool):
         
         # Add default extension if no extension present
         if not os.path.splitext(file_path)[1]:
-            file_path = f"{file_path}{DEFAULT_FORMAT}"
+            file_path = f"{file_path}{FileFormats.DEFAULT}"
             self.logger.debug(f"Added default extension: {file_path}")
         
         # Convert to absolute path if relative
@@ -190,7 +196,7 @@ class FileHandlerTool(BaseTool):
             content_str = content.get('content', '')
             
             # Validate operation
-            if operation not in VALID_OPERATIONS:
+            if operation not in FileFormats.OPERATIONS:
                 raise ValueError(f"Invalid operation: {operation}")
             
             return operation, file_path, content_str
@@ -235,7 +241,7 @@ class FileHandlerTool(BaseTool):
         
         # Look for explicit file path (must contain slash or valid extension)
         for word in content_str.lower().split():
-            if '/' in word or any(word.endswith(ext) for ext in SUPPORTED_FORMATS):
+            if '/' in word or any(word.endswith(ext) for ext in FileFormats.FORMATS):
                 file_path = word
                 self.logger.debug(f"Found explicit file path: {file_path}")
                 break
@@ -291,7 +297,7 @@ class FileHandlerTool(BaseTool):
         self.logger.debug(f"Inferred operation: {operation}, path: {file_path}")
         
         # Validate operation
-        if operation not in VALID_OPERATIONS:
+        if operation not in FileFormats.OPERATIONS:
             raise ValueError(f"Invalid operation: {operation}")
         
         # For write operations, ensure content is provided
@@ -458,9 +464,6 @@ class FileHandlerTool(BaseTool):
 
     async def cleanup(self) -> None:
         """Clean up resources when tool is done"""
-        # Wait for any pending write operations to complete
-        if self._pending_writes:
-            await asyncio.gather(*self._pending_writes)
         await super().cleanup()
 
     def __str__(self) -> str:

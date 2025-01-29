@@ -5,7 +5,7 @@ from datetime import datetime
 from .types import Message, MessageType, WorkflowState, IntentAnalysis, AdhesiveType, ToolResult
 
 if TYPE_CHECKING:
-    from ..tools.simple_base import SimpleBaseTool
+    from ..tools.base import BaseTool
     from .tool_binding import ToolBinding
 
 @dataclass

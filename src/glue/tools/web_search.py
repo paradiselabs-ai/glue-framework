@@ -1,10 +1,10 @@
 """Web Search Tool Implementation"""
 
 import re
+import os
 import aiohttp
 from typing import Dict, List, Optional, Any, Type, Union
-from .base import ToolConfig, ToolPermission
-from .base import BaseTool
+from .base import BaseTool, ToolConfig, ToolPermission
 from .search_providers import get_provider, SearchProvider, GenericSearchProvider
 from ..core.logger import get_logger
 from ..core.tool_binding import ToolBinding
@@ -22,9 +22,17 @@ class WebSearchTool(BaseTool):
     - Field interactions
     """
     
+    def _get_api_key(self, provider: str) -> str:
+        """Get API key from environment based on provider name"""
+        # Convert provider name to environment variable format (e.g., "serp" -> "SERP_API_KEY")
+        env_var = f"{provider.upper()}_API_KEY"
+        api_key = os.getenv(env_var)
+        if not api_key:
+            raise ValueError(f"No API key found for {provider}. Please set {env_var} in your environment.")
+        return api_key
+
     def __init__(
         self,
-        api_key: str,
         name: str = "web_search",
         description: str = "Performs web searches and returns results",
         provider: str = "serp",
@@ -32,32 +40,39 @@ class WebSearchTool(BaseTool):
         binding_type: Optional[AdhesiveType] = None,
         **provider_config
     ):
+        # Get API key from environment
+        api_key = self._get_api_key(provider)
+
+        # Initialize base tool
         super().__init__(
             name=name,
             description=description,
+            adhesive_type=binding_type or AdhesiveType.VELCRO,
             config=ToolConfig(
-                required_permissions=[ToolPermission.NETWORK, ToolPermission.READ],
-                timeout=10.0,
-                cache_results=True
-            )
+                required_permissions=[ToolPermission.NETWORK],
+                tool_specific_config={
+                    "max_results": max_results,
+                    "provider": provider,
+                    "provider_config": provider_config,
+                    "api_key": api_key
+                }
+            ),
+            tags={"web_search", "network", "research"}
         )
         
-        # Create tool binding
-        self.binding = ToolBinding(
-            type=binding_type or AdhesiveType.VELCRO  # Default to VELCRO if no binding type specified
-        )
-        
-        # If endpoint not in config but provider has default endpoint, add it
+        # Set up provider endpoints
         provider_endpoints = {
             "tavily": "https://api.tavily.com/search",
             "serp": "https://serpapi.com/search",
             "bing": "https://api.bing.microsoft.com/v7.0/search",
             "you": "https://api.you.com/search",
         }
+        
+        # Update provider config with default endpoint if needed
         if provider in provider_endpoints and "endpoint" not in provider_config:
             provider_config["endpoint"] = provider_endpoints[provider]
         
-        # Get provider instance with config
+        # Initialize provider and session
         self.provider = get_provider(provider, api_key, **provider_config)
         self.max_results = max_results
         self.logger = get_logger()
@@ -113,22 +128,12 @@ class WebSearchTool(BaseTool):
         
         return queries[:2]  # Limit to original query + 1 concept
 
-    async def prepare_input(self, input_data: Any) -> str:
-        """Prepare input for search"""
-        # Check for stored query in binding
-        stored_query = self.binding.get_resource("query")
-        if stored_query:
-            return stored_query
-        
-        # If input is a string, use it directly
+    def _prepare_query(self, input_data: Any) -> str:
+        """Convert input to search query"""
         if isinstance(input_data, str):
             return input_data
-        
-        # If input is a dict with a 'query' field, use that
         if isinstance(input_data, dict) and 'query' in input_data:
             return input_data['query']
-        
-        # Otherwise, convert to string
         return str(input_data)
 
     def _format_results_as_markdown(self, results: List[Dict[str, Any]], query: str) -> str:
@@ -161,78 +166,52 @@ class WebSearchTool(BaseTool):
         return "\n".join(lines)
 
     async def _execute(self, *args, **kwargs) -> Union[str, List[Dict[str, str]]]:
-        """Execute web search with resource state tracking"""
+        """Execute web search with team resource sharing"""
         try:
-            # Handle positional arguments
+            # Get and prepare query
             input_data = args[0] if args else kwargs.get("input_data", "")
-            # Get base query from input
-            base_query = await self.prepare_input(input_data)
+            base_query = self._prepare_query(input_data)
             self.logger.debug(f"Base query: {base_query}")
             
-            # Generate optimized queries
-            queries = self._optimize_query(base_query)
-            self.logger.debug(f"Optimized queries: {queries}")
-            
-            # Track all results
+            # Try optimized queries
             all_results = []
+            queries = self._optimize_query(base_query)
             
-            # Try each query until we get good results
             for query in queries:
-                # Store query in binding
-                self.binding.store_resource("query", query)
-                
-                # Perform search
                 try:
-                    self.logger.debug(f"Searching with query: {query}")
+                    # Search with current query
                     results = await self.provider.search(
                         query=query,
                         max_results=self.max_results,
                         **kwargs
                     )
                     
-                    # Convert to dictionary format
-                    results_dict = [result.to_dict() for result in results]
-                    self.logger.debug(f"Got {len(results_dict)} results")
-                    
                     # Add results
-                    all_results.extend(results_dict)
-                    
-                    # If we have enough relevant results, stop
+                    all_results.extend([r.to_dict() for r in results])
                     if len(all_results) >= self.max_results:
                         break
+                        
                 except Exception as e:
                     self.logger.error(f"Search failed for query '{query}': {str(e)}")
                     continue
             
+            # Handle no results
             if not all_results:
-                raise RuntimeError("No search results found for any query")
+                raise RuntimeError("No search results found")
             
-            # Take top results
+            # Format and store results
             final_results = all_results[:self.max_results]
-            
-            # Format results as markdown
             formatted_results = self._format_results_as_markdown(final_results, base_query)
             
-            # Store results in binding
-            self.binding.store_resource("search_results", formatted_results)
+            # Share with team if using GLUE adhesive
+            if self.adhesive_type == AdhesiveType.GLUE:
+                self.binding.store_resource("search_results", formatted_results)
             
-            # Return formatted results
             return formatted_results
             
         except Exception as e:
-            self.logger.error(f"Search request failed: {str(e)}")
-            raise RuntimeError(f"Search request failed: {str(e)}")
-
-    def create_instance(self, api_key: Optional[str] = None, binding_type: Optional[AdhesiveType] = None) -> 'WebSearchTool':
-        """Create a new instance with the same API key"""
-        # Create new instance with api_key
-        instance = self.__class__(
-            api_key=api_key or self.provider.api_key,
-            name=self.name,
-            description=self.description,
-            binding_type=binding_type or self.binding.type
-        )
-        return instance
+            self.logger.error(f"Search failed: {str(e)}")
+            raise RuntimeError(f"Search failed: {str(e)}")
 
     def __str__(self) -> str:
         """String representation"""

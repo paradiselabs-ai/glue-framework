@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 from dataclasses import dataclass
 
-from .base import BaseTool
+from .base import BaseTool, ToolConfig, ToolPermission
 from ..core.types import AdhesiveType
 from ..core.context import ContextState, ComplexityLevel
 from ..core.logger import get_logger
@@ -119,34 +119,54 @@ class CodeInterpreterTool(BaseTool):
         max_file_size_kb: int = 10240,
         max_subprocess_count: int = 2
     ):
+        # Initialize base tool
         super().__init__(
             name=name,
             description=description,
-            adhesive_type=adhesive_type
+            adhesive_type=adhesive_type,
+            config=ToolConfig(
+                required_permissions=[
+                    ToolPermission.EXECUTE,  # For running code
+                    ToolPermission.FILE_SYSTEM,  # For workspace management
+                    ToolPermission.READ,  # For reading files
+                    ToolPermission.WRITE  # For writing temp files
+                ],
+                tool_specific_config={
+                    "enable_security_checks": enable_security_checks,
+                    "enable_code_analysis": enable_code_analysis,
+                    "enable_error_suggestions": enable_error_suggestions,
+                    "max_memory_mb": max_memory_mb,
+                    "max_execution_time": max_execution_time,
+                    "max_file_size_kb": max_file_size_kb,
+                    "max_subprocess_count": max_subprocess_count,
+                    "supported_languages": supported_languages,
+                    "workspace_dir": workspace_dir
+                }
+            ),
+            tags={"code_interpreter", "execute", "sandbox"}
         )
         
         # Initialize logger
         self.logger = get_logger()
         
-        # Feature flags
-        self.enable_security_checks = enable_security_checks
-        self.enable_code_analysis = enable_code_analysis
-        self.enable_error_suggestions = enable_error_suggestions
-        
-        # Resource limits
-        self.max_memory_mb = max_memory_mb
-        self.max_execution_time = max_execution_time
-        self.max_file_size_kb = max_file_size_kb
-        self.max_subprocess_count = max_subprocess_count
+        # Initialize configuration from tool_specific_config
+        config = self.config.tool_specific_config
+        self.enable_security_checks = config["enable_security_checks"]
+        self.enable_code_analysis = config["enable_code_analysis"]
+        self.enable_error_suggestions = config["enable_error_suggestions"]
+        self.max_memory_mb = config["max_memory_mb"]
+        self.max_execution_time = config["max_execution_time"]
+        self.max_file_size_kb = config["max_file_size_kb"]
+        self.max_subprocess_count = config["max_subprocess_count"]
         
         # Initialize languages and workspace
         self.supported_languages = (
             {lang: SUPPORTED_LANGUAGES[lang] 
-             for lang in supported_languages if lang in SUPPORTED_LANGUAGES}
-            if supported_languages
+             for lang in config["supported_languages"] if lang in SUPPORTED_LANGUAGES}
+            if config["supported_languages"]
             else SUPPORTED_LANGUAGES
         )
-        self.workspace_dir = os.path.abspath(workspace_dir or "workspace")
+        self.workspace_dir = os.path.abspath(config["workspace_dir"] or "workspace")
         self._temp_files: List[str] = []
         
         # Ensure workspace exists
@@ -235,68 +255,69 @@ class CodeInterpreterTool(BaseTool):
             stdout_str = stdout.decode().strip()
             stderr_str = stderr.decode().strip()
 
+            # Process execution results
             result = {
                 "success": process.returncode == 0,
                 "output": stdout_str,
-                "error": stderr_str,
-                "exit_code": process.returncode,
+                "error": stderr_str if stderr_str else None,  # Only include error if present
                 "language": language,
-                "execution_time": None  # TODO: Add execution time tracking
+                "execution_info": {
+                    "exit_code": process.returncode,
+                    "time_limit": timeout,
+                    "memory_limit": limits["memory_mb"] if self.enable_security_checks else None
+                }
             }
 
-            # Add analysis information if enabled
+            # Add analysis if enabled and context provided
             if self.enable_code_analysis and context:
+                # Get code complexity
                 complexity = await self.analyze_complexity(code)
+                result["analysis"] = {"complexity": complexity.name}
+                
+                # Add security analysis if enabled
                 if self.enable_security_checks:
                     security = await self.assess_security(code)
-                    result.update({
-                        "complexity": complexity,
-                        "security": security,
-                        "resource_usage": {
-                            "time_seconds": timeout,
-                            "memory_mb": limits["memory_mb"]
-                        },
-                        "safety_checks": {
-                            "memory_limit": limits["memory_mb"],
-                            "time_limit": timeout,
-                            "complexity_level": complexity.name,
-                            "security_level": security["level"]
-                        }
-                    })
-                else:
-                    result.update({
-                        "complexity": complexity,
-                        "resource_usage": {
-                            "time_seconds": timeout,
-                            "memory_mb": limits["memory_mb"]
-                        }
-                    })
+                    result["analysis"]["security"] = {
+                        "level": security["level"],
+                        "concerns": security["concerns"] if security["concerns"] else None
+                    }
 
-                # Add error suggestions if enabled
-                if not result["success"] and self.enable_error_suggestions and context.complexity >= ComplexityLevel.MODERATE:
-                    result.update({
-                        "traceback": stderr_str,
-                        "suggestions": self._generate_error_suggestions(stderr_str)
-                    })
+                # Add suggestions if execution failed
+                if not result["success"] and self.enable_error_suggestions:
+                    result["suggestions"] = self._generate_error_suggestions(stderr_str)
+                    # Add context-specific suggestions for moderate/complex code
+                    if context.complexity >= ComplexityLevel.MODERATE:
+                        result["suggestions"].extend([
+                            "Consider breaking down complex operations",
+                            "Add more error handling",
+                            "Use logging for debugging"
+                        ])
 
             return result
 
         except TimeoutError:
-            raise  # Re-raise timeout errors directly
+            return {
+                "success": False,
+                "error": f"Code execution timed out after {timeout} seconds",
+                "language": language,
+                "suggestions": [
+                    "Check for infinite loops",
+                    "Add timeout handling",
+                    "Consider optimizing long-running operations"
+                ]
+            }
         except Exception as e:
             error_msg = str(e)
             error_result = {
                 "success": False,
                 "error": error_msg,
-                "language": language
+                "language": language,
+                "suggestions": self._generate_error_suggestions(error_msg)
             }
             
-            # Add detailed error info for complex contexts
+            # Add traceback for debugging
             if context and context.complexity >= ComplexityLevel.MODERATE:
-                error_result.update({
-                    "traceback": traceback.format_exc(),
-                    "suggestions": self._generate_error_suggestions(error_msg)
-                })
+                error_result["traceback"] = traceback.format_exc()
             
             return error_result
 

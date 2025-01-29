@@ -11,12 +11,10 @@ from ..tools.base import BaseTool
 @dataclass
 class AppMemory:
     """Application memory entry"""
-    type: str
+    type: str  # 'prompt', 'response', or 'error'
     content: Any
     field: Optional[str] = None
     timestamp: Optional[datetime] = None
-
-    adhesive_type: Optional[AdhesiveType] = None
 
     def __post_init__(self):
         if self.timestamp is None:
@@ -26,7 +24,6 @@ class AppMemory:
 class AppConfig:
     """Application configuration"""
     name: str
-    default_adhesive: AdhesiveType = AdhesiveType.VELCRO
     memory_limit: int = 1000
     enable_persistence: bool = False
 
@@ -35,9 +32,8 @@ class GlueApp:
     Main GLUE application class.
     
     Features:
-    - Simple field management with adhesive types
-    - Basic memory management with adhesive tracking
-    - Tool distribution with adhesive bindings
+    - Field management for models and tools
+    - Basic memory for user interactions
     - Clean resource handling
     """
     
@@ -54,41 +50,28 @@ class GlueApp:
         self._memory: List[AppMemory] = []
         self._default_field: Optional[str] = None
         
-        # Track active tools and their adhesive types
-        self._tool_adhesives: Dict[str, Dict[str, AdhesiveType]] = {}
-        
     def add_field(
         self,
         name: str,
         lead: Optional[Model] = None,
         members: Optional[List[Model]] = None,
-        tools: Optional[List[BaseTool]] = None,
-        adhesive_type: Optional[AdhesiveType] = None
+        tools: Optional[List[BaseTool]] = None
     ) -> None:
         """Add a new field to the app"""
         if name in self.fields:
             raise ValueError(f"Field {name} already exists")
             
-        field_resources = []
-        
-        # Add lead first if provided
+        # Collect resources
+        resources = []
         if lead:
-            field_resources.append(lead)
-            
-        # Add other members
+            resources.append(lead)
         if members:
-            field_resources.extend(members)
-                
-        # Add tools with adhesive types
+            resources.extend(members)
         if tools:
-            self._tool_adhesives[name] = {}
-            for tool in tools:
-                tool_adhesive = adhesive_type or self.config.default_adhesive
-                self._tool_adhesives[name][tool.name] = tool_adhesive
-                field_resources.append(tool)
+            resources.extend(tools)
                 
         # Store field
-        self.fields[name] = field_resources
+        self.fields[name] = resources
         
         # Set as default if first field
         if not self._default_field:
@@ -100,46 +83,38 @@ class GlueApp:
             raise ValueError("No default field available")
             
         try:
-            # Store prompt in memory with default adhesive
+            # Store prompt in memory
             self._add_memory(AppMemory(
                 type='prompt',
-                content=prompt,
-                adhesive_type=self.config.default_adhesive
+                content=prompt
             ))
             
-            # Get lead model from default field
+            # Get lead model
             field_resources = self.fields[self._default_field]
             lead_model = next(
                 (r for r in field_resources if isinstance(r, Model)),
                 None
             )
-            
             if not lead_model:
                 raise ValueError("No model available in default field")
             
-            # Let model process prompt
+            # Generate response
             response = await lead_model.generate(prompt)
             
-            # Store response in memory with adhesive type
-            adhesive_type = self._tool_adhesives.get(self._default_field, {}).get(
-                lead_model.name,
-                self.config.default_adhesive
-            )
+            # Store response
             self._add_memory(AppMemory(
                 type='response',
                 content=response,
-                field=self._default_field,
-                adhesive_type=adhesive_type
+                field=self._default_field
             ))
             
             return response
             
         except Exception as e:
-            # Store error in memory
+            # Store error
             self._add_memory(AppMemory(
                 type='error',
-                content=str(e),
-                adhesive_type=AdhesiveType.VELCRO  # Errors are temporary
+                content=str(e)
             ))
             raise
         
@@ -147,40 +122,18 @@ class GlueApp:
         """Add entry to memory with limit handling"""
         self._memory.append(entry)
         
-        # Enforce memory limit based on adhesive type
-        if entry.adhesive_type == AdhesiveType.VELCRO:
-            # Keep only recent VELCRO entries
-            velcro_entries = [m for m in self._memory if m.adhesive_type == AdhesiveType.VELCRO]
-            if len(velcro_entries) > self.config.memory_limit // 2:  # Use half the limit for VELCRO
-                self._memory.remove(velcro_entries[0])
-        else:
-            # Enforce overall limit
-            while len(self._memory) > self.config.memory_limit:
-                # Remove oldest VELCRO entry first, then others
-                velcro_entry = next(
-                    (m for m in self._memory if m.adhesive_type == AdhesiveType.VELCRO),
-                    None
-                )
-                if velcro_entry:
-                    self._memory.remove(velcro_entry)
-                else:
-                    self._memory.pop(0)
+        # Enforce memory limit
+        while len(self._memory) > self.config.memory_limit:
+            self._memory.pop(0)  # Remove oldest entry
         
     def get_memory(
         self,
-        limit: Optional[int] = None,
-        adhesive_type: Optional[AdhesiveType] = None
+        limit: Optional[int] = None
     ) -> List[AppMemory]:
-        """Get filtered app memory"""
-        # Filter by adhesive type if specified
+        """Get app memory up to limit"""
         memory = self._memory
-        if adhesive_type:
-            memory = [m for m in memory if m.adhesive_type == adhesive_type]
-            
-        # Apply limit
         if limit:
             memory = memory[-limit:]
-            
         return memory
         
     def get_field_resources(self, name: str) -> Optional[List[Any]]:
@@ -209,16 +162,10 @@ class GlueApp:
                 if hasattr(resource, 'cleanup'):
                     await resource.cleanup()
         
-        # Clear all tracking
+        # Clear fields
         self.fields.clear()
-        self._tool_adhesives.clear()
-        
-        # Clear memory based on persistence and adhesive types
-        if not self.config.enable_persistence:
-            self._memory = [
-                m for m in self._memory
-                if m.adhesive_type == AdhesiveType.GLUE  # Keep only GLUE memories
-            ]
-            
-        # Clear default field
         self._default_field = None
+        
+        # Clear memory if not persistent
+        if not self.config.enable_persistence:
+            self._memory.clear()
