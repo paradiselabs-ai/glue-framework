@@ -5,18 +5,7 @@ from typing import Any, Dict, List, Optional, Set, Type, Union
 from dataclasses import dataclass
 from functools import wraps
 
-from ..core.types import AdhesiveType, AdhesiveState, AdhesiveProperties
-
-class AdhesiveType(Enum):
-    """Types of adhesive bonds for model-to-tool bindings"""
-    # Temporary binding - breaks after use
-    TAPE = "tape"          # Single-use binding that breaks after use
-    
-    # Flexible binding - persists for session
-    VELCRO = "velcro"      # Session-level binding that can be reattached
-    
-    # Permanent binding - persists across sessions
-    GLUE = "glue"          # Permanent binding with full context sharing
+from ..core.types import AdhesiveType
 
 def tape(tools: List[Any], **config) -> Dict[str, Any]:
     """Configure tools with temporary (TAPE) binding

@@ -27,7 +27,6 @@ import asyncio
 from typing import List, Optional, Any, Dict, Type
 from dataclasses import dataclass, field
 from ..core.types import AdhesiveType, ResourceState
-from ..core.context import InteractionType
 from ..core.tool_binding import ToolBinding
 from ..tools.base import BaseTool
 

@@ -23,7 +23,10 @@ dependencies = [
     "smolagents>=1.4.1",  # Core agent framework - https://github.com/huggingface/smolagents
     "transformers>=4.0.0",  # For local model support
     "litellm>=1.0.0",      # For multiple model providers
-    "mcp>=0.1.0"           # For MCP integration
+    "mcp>=0.1.0",          # For MCP integration
+    "pytest>=7.0.0",       # For testing
+    "pytest-asyncio>=0.21.0",  # For async test support
+    "pytest-cov>=4.1.0"    # For test coverage
 ]
 
 [project.urls]
@@ -38,5 +41,22 @@ glue = "glue.cli:main"
 asyncio_mode = "strict"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short --cov=glue"  # Added coverage
 asyncio_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+source = ["glue"]
+omit = [
+    "tests/*",
+    "setup.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "pass",
+    "raise ImportError",
+]

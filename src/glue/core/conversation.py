@@ -15,7 +15,7 @@ from pathlib import Path
 from .model import Model
 from .memory import MemoryManager
 from .logger import get_logger
-from .context import ContextAnalyzer, ContextState, InteractionType
+from .context import ContextAnalyzer, ContextState, ComplexityLevel
 from .role import DynamicRole, RoleState
 from ..tools.chain import ToolChainOptimizer
 from .types import AdhesiveType
@@ -269,11 +269,11 @@ class ConversationManager:
                 # Get model context
                 model_context = self._get_model_context(model.name)
                 
-                # Enhance input with context and interaction type
+                # Enhance input with context and complexity
                 enhanced_input = self._enhance_input_with_context(
                     current_input=current_input,
                     context=model_context,
-                    interaction_type=context.interaction_type if context else InteractionType.CHAT
+                    complexity=context.complexity if context else ComplexityLevel.SIMPLE
                 )
                 
                 # Get model's response
@@ -297,8 +297,8 @@ class ConversationManager:
                     self.logger.debug(f"Thought: {thought}")
                     self.logger.debug(f"Input: {tool_input}")
                     
-                    # Skip if tool not needed in current context
-                    if (context.interaction_type == InteractionType.CHAT and
+                    # Skip if tool not needed for simple tasks
+                    if (context.complexity == ComplexityLevel.SIMPLE and
                         tool_name not in context.tools_required):
                         continue
                     
@@ -415,7 +415,7 @@ class ConversationManager:
         self,
         current_input: str,
         context: Dict[str, Any],
-        interaction_type: InteractionType = InteractionType.CHAT
+        complexity: ComplexityLevel = ComplexityLevel.SIMPLE
     ) -> str:
         """
         Format context like a natural conversation
@@ -423,7 +423,7 @@ class ConversationManager:
         Args:
             current_input: The current user input
             context: The conversation context
-            patterns: Optional interaction patterns for the conversation
+            complexity: The task complexity level
         """
         # Format recent messages like chat
         history = []
@@ -447,14 +447,14 @@ class ConversationManager:
                 shared_items.append(f"- {key}: {value}")
         shared_str = "\n".join(shared_items)
         
-        # Format interaction style
+        # Format interaction style based on complexity
         style_str = ""
-        if interaction_type == InteractionType.CHAT:
-            style_str = "Interaction style:\n- You can engage in free-form conversation"
-        elif interaction_type == InteractionType.TASK:
-            style_str = "Interaction style:\n- You should focus on completing specific tasks"
-        elif interaction_type == InteractionType.RESEARCH:
-            style_str = "Interaction style:\n- You should focus on gathering and analyzing information"
+        if complexity == ComplexityLevel.SIMPLE:
+            style_str = "Interaction style:\n- Keep responses direct and straightforward"
+        elif complexity == ComplexityLevel.MODERATE:
+            style_str = "Interaction style:\n- Provide detailed analysis and context"
+        else:  # COMPLEX
+            style_str = "Interaction style:\n- Break down complex tasks into clear steps"
         
         # Combine everything naturally
         context_parts = []

@@ -128,6 +128,13 @@ class WebSearchTool(BaseTool):
         
         return queries[:2]  # Limit to original query + 1 concept
 
+    async def _validate_input(self, *args, **kwargs) -> bool:
+        """Validate tool input"""
+        input_data = args[0] if args else kwargs.get("input_data", "")
+        if not input_data:
+            return False
+        return True
+
     def _prepare_query(self, input_data: Any) -> str:
         """Convert input to search query"""
         if isinstance(input_data, str):

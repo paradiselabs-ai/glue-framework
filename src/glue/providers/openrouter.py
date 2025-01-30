@@ -1,17 +1,30 @@
-"""OpenRouter Provider Implementation"""
+"""OpenRouter Provider Implementation
+
+This provider intentionally maintains comprehensive features that are essential for a framework:
+- Tool configuration and management
+- Conversation history with context
+- Detailed error handling and logging
+- State management and transitions
+- Intent analysis and parsing
+
+While these features add complexity, they are necessary for a robust framework
+that others will use to build AI applications. This is different from a simple
+provider that might be used in a single application.
+"""
 
 import os
 import re
 import json
 import aiohttp
 from typing import Dict, List, Any, Optional, Set
-from .simple_base import SimpleBaseProvider
+from ..core.types import AdhesiveType
+from .base import BaseProvider
 from ..core.model import ModelConfig
 from ..core.logger import get_logger
 from ..core.state import ResourceState, StateManager
 from ..core.types import IntentAnalysis
 
-class OpenRouterProvider(SimpleBaseProvider):
+class OpenRouterProvider(BaseProvider):
     """
     Provider for OpenRouter API.
     
@@ -24,44 +37,41 @@ class OpenRouterProvider(SimpleBaseProvider):
     
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for API request"""
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
+        # Get base headers from parent
+        headers = super()._get_headers()
+        # Add OpenRouter-specific headers
+        headers.update({
             "HTTP-Referer": "https://github.com/paradiseLabs-ai/glue-framework",
             "Accept": "application/json",
             "X-Title": "GLUE Framework"
-        }
+        })
         return headers
 
-    def _configure_tools(self) -> None:
-        """Configure tools and update system prompt"""
-        if not hasattr(self, "_tools"):
-            self._tools = {}
-            self._tool_bindings = {}  # Initialize tool bindings dict
+    def _format_tool_info(self) -> str:
+        """Format tool information for system prompt"""
+        if not hasattr(self, "team") or not self.team:
+            return "No tools available - not part of a team"
             
-        # If inheriting from parent, copy tools and role
-        if hasattr(self, "_parent"):
-            parent = self._parent
-            self._tools = parent._tools.copy()
-            self._tool_bindings = parent._tool_bindings.copy()  # Copy bindings
-            self.role = parent.role
-            self.config.system_prompt = parent.config.system_prompt
-            
-        # Update system prompt with tool info
-        if self._tools and self.messages and self.messages[0]["role"] == "system":
-            system_prompt = self.messages[0]["content"]
-            tool_info = "\n\nYou have access to the following tools:\n"
-            for name, tool in self._tools.items():
-                binding_type = self._tool_bindings.get(name, "unknown")
+        tool_info = "\n\nYou have access to the following tools:\n"
+        
+        # Get tools from team
+        member_tools = self.team.get_member_tools(self.name)
+        for tool_name in member_tools:
+            tool = self.team.tools.get(tool_name)  # Access team's tool instance
+            if tool:
+                # For now, just use GLUE as default binding type
+                binding_type = "glue"  # We'll enhance this later with proper binding types
                 persistence = {
                     "glue": "(permanent access)",
                     "velcro": "(flexible access)",
                     "tape": "(temporary access)",
                     "unknown": ""
                 }
-                tool_info += f"- {name}: {tool.description} {persistence.get(binding_type, '')}\n"
+                tool_info += f"- {tool_name}: {tool.description} {persistence.get(binding_type, '')}\n"
             
-            tool_info += """
+        # Add tool usage examples
+        tool_info += """
+
 To use a tool:
 <think>Explain why you need this tool</think>
 <tool>tool_name</tool>
@@ -96,16 +106,33 @@ df = pd.DataFrame(data)
 # Calculate average
 print(f"Average score: {df['Score'].mean()}")
 </input>"""
-            self.messages[0]["content"] = system_prompt + tool_info
+        return tool_info
+
+    def _update_system_prompt(self) -> None:
+        """Update system prompt with tool information"""
+        if not self.messages:
+            return
+            
+        # Get base system prompt
+        system_prompt = self.messages[0]["content"]
+        
+        # Add tool information
+        tool_info = self._format_tool_info()
+        
+        # Update system message
+        self.messages[0]["content"] = system_prompt + tool_info
 
     def __init__(
         self,
+        name: str,
+        team: str,
+        available_adhesives: Set[AdhesiveType],
+        config: Optional[ModelConfig] = None,
         api_key: Optional[str] = None,
         model: str = "meta-llama/llama-3.1-70b-instruct:free",
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
-        max_tokens: int = 1000,
-        name: Optional[str] = None
+        max_tokens: int = 1000
     ):
         # Create model config
         config = ModelConfig(
@@ -116,11 +143,14 @@ print(f"Average score: {df['Score'].mean()}")
         
         # Initialize base provider
         super().__init__(
-            name=name or model,
+            name=name,
+            provider="openrouter",
+            team=team,
+            available_adhesives=available_adhesives,
             api_key=api_key or os.getenv("OPENROUTER_API_KEY"),
-            config=config,
-            base_url="https://openrouter.ai/api/v1"
+            config=config
         )
+        self.base_url = "https://openrouter.ai/api/v1"
         
         # Store model ID separately
         self.model_id = model
@@ -165,12 +195,13 @@ print(f"Average score: {df['Score'].mean()}")
             "content": system_prompt
         })
         
-        # Initialize tools and bindings
-        self._tools = {}
-        self._tool_bindings = {}
-        
-        # Configure tools (will update system prompt if needed)
-        self._configure_tools()
+        # Initialize with team's tools and update prompt
+        if hasattr(self, "team") and self.team:
+            self._tools = {}
+            for name in self.team.get_member_tools(self.name):
+                if name in self.team.tools:
+                    self._tools[name] = self.team.tools[name]
+            self._update_system_prompt()
         
         # Log final configuration
         self.logger.debug(f"Provider initialized: {self.name}")
@@ -404,16 +435,8 @@ print(f"Average score: {df['Score'].mean()}")
     
     async def generate(self, prompt: str) -> str:
         """Generate a response using OpenRouter API"""
-        # Simple state transition
-        await self.transition_to_active()
-        
-        try:
-            request_data = await self._prepare_request(prompt)
-            response = await self._make_request(request_data)
-            return await self._process_response(response)
-        finally:
-            # Always return to IDLE
-            await self.transition_to_idle()
+        # Use base class's generate method which handles state transitions
+        return await super().generate(prompt)
     
     def clear_history(self) -> None:
         """Clear conversation history"""
@@ -423,13 +446,13 @@ print(f"Average score: {df['Score'].mean()}")
                 "role": "system",
                 "content": self.config.system_prompt
             })
-            # Reconfigure tools to update prompt
-            self._configure_tools()
+            # Update system prompt with tool info
+            self._update_system_prompt()
     
     async def cleanup(self) -> None:
         """Cleanup provider resources"""
         self.clear_history()
-        await super().exit_field()
+        await super().cleanup()
     
     def __str__(self) -> str:
         """String representation"""

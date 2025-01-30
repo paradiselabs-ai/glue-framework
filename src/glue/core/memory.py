@@ -1,4 +1,5 @@
-# src/glue/core/memory.py
+"""GLUE Memory Management System"""
+
 from typing import Dict, Any, Optional, List, Set, TypeVar, Generic
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
@@ -6,7 +7,7 @@ from collections import defaultdict
 import json
 import os
 from pathlib import Path
-from .context import ContextState, InteractionType, ComplexityLevel
+from .context import ContextState, ComplexityLevel
 
 @dataclass
 class MemorySegment:
@@ -17,7 +18,6 @@ class MemorySegment:
     metadata: Dict[str, Any] = field(default_factory=dict)
     access_count: int = 0
     last_accessed: Optional[datetime] = None
-    # Added for context awareness
     context: Optional[ContextState] = None
     tags: Set[str] = field(default_factory=set)
 
@@ -28,7 +28,7 @@ class InteractionPattern:
     sequence: List[str]  # Sequence of actions/responses
     success_rate: float
     usage_count: int
-    contexts: Set[InteractionType]
+    complexities: Set[ComplexityLevel]  # Track what complexity levels work
     last_used: datetime
 
 @dataclass
@@ -43,16 +43,15 @@ class LearningOutcome:
 class MemoryManager:
     """Manages different types of memory for models"""
     def __init__(self, persistence_dir: Optional[str] = None):
-        # Existing memory stores
+        # Memory stores
         self.short_term: Dict[str, MemorySegment] = {}
         self.long_term: Dict[str, MemorySegment] = {}
         self.working: Dict[str, MemorySegment] = {}
         self.shared: Dict[str, Dict[str, MemorySegment]] = {}
         
-        # New learning components
+        # Learning components
         self.patterns: Dict[str, InteractionPattern] = {}
         self.outcomes: List[LearningOutcome] = []
-        self.context_triggers: Dict[InteractionType, Set[str]] = defaultdict(set)
         
         # Performance tracking
         self.recall_success: Dict[str, bool] = {}
@@ -63,7 +62,7 @@ class MemoryManager:
         if self.persistence_dir:
             self.persistence_dir.mkdir(parents=True, exist_ok=True)
             self._load_persistent_memory()
-        
+    
     def store(
         self,
         key: str,
@@ -71,8 +70,8 @@ class MemoryManager:
         memory_type: str = "short_term",
         duration: Optional[timedelta] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        context: Optional[ContextState] = None,  # Added context parameter
-        tags: Optional[Set[str]] = None  # Added tags parameter
+        context: Optional[ContextState] = None,
+        tags: Optional[Set[str]] = None
     ) -> None:
         """Store content in specified memory type"""
         expires_at = datetime.now() + duration if duration else None
@@ -80,15 +79,15 @@ class MemoryManager:
             content=content,
             expires_at=expires_at,
             metadata=metadata or {},
-            context=context,  # Store context
-            tags=tags or set()  # Store tags
+            context=context,
+            tags=tags or set()
         )
         
         if memory_type == "short_term":
             self.short_term[key] = segment
         elif memory_type == "long_term":
             self.long_term[key] = segment
-            if self.persistence_dir:  # Save to disk if persistence enabled
+            if self.persistence_dir:
                 self._save_segment(key, segment)
         elif memory_type == "working":
             self.working[key] = segment
@@ -130,8 +129,8 @@ class MemoryManager:
         content: Any,
         duration: Optional[timedelta] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        context: Optional[ContextState] = None,  # Added context
-        tags: Optional[Set[str]] = None  # Added tags
+        context: Optional[ContextState] = None,
+        tags: Optional[Set[str]] = None
     ) -> None:
         """Share memory between models"""
         if from_model not in self.shared:
@@ -169,10 +168,8 @@ class MemoryManager:
             self.long_term.clear()
             self.working.clear()
             self.shared.clear()
-            # Clear learning components too
             self.patterns.clear()
             self.outcomes.clear()
-            self.context_triggers.clear()
             self.recall_success.clear()
             self.pattern_matches.clear()
 
@@ -208,7 +205,6 @@ class MemoryManager:
             for key in expired_keys:
                 del self.shared[model][key]
 
-    # New methods for learning and pattern recognition
     def learn_pattern(
         self,
         trigger: str,
@@ -227,7 +223,7 @@ class MemoryManager:
                 (pattern.success_rate * (pattern.usage_count - 1) + (1.0 if success else 0.0))
                 / pattern.usage_count
             )
-            pattern.contexts.add(context.interaction_type)
+            pattern.complexities.add(context.complexity)
             pattern.last_used = datetime.now()
         else:
             # Create new pattern
@@ -236,12 +232,9 @@ class MemoryManager:
                 sequence=sequence,
                 success_rate=1.0 if success else 0.0,
                 usage_count=1,
-                contexts={context.interaction_type},
+                complexities={context.complexity},
                 last_used=datetime.now()
             )
-        
-        # Record trigger for context
-        self.context_triggers[context.interaction_type].add(trigger)
         
         # Record learning outcome
         self.outcomes.append(LearningOutcome(
@@ -262,9 +255,9 @@ class MemoryManager:
         best_match = None
         best_score = min_similarity
         
-        # Check patterns with same trigger in similar contexts
+        # Check patterns with same trigger at similar complexity
         for pattern in self.patterns.values():
-            if pattern.trigger == trigger and context.interaction_type in pattern.contexts:
+            if pattern.trigger == trigger and context.complexity in pattern.complexities:
                 score = pattern.success_rate
                 if score > best_score:
                     best_match = pattern
@@ -275,15 +268,15 @@ class MemoryManager:
         
         return best_match
 
-    def get_context_patterns(
+    def get_complexity_patterns(
         self,
-        context_type: InteractionType,
+        complexity: ComplexityLevel,
         min_success_rate: float = 0.5
     ) -> List[InteractionPattern]:
-        """Get patterns that work well in a context"""
+        """Get patterns that work well at a complexity level"""
         return [
             pattern for pattern in self.patterns.values()
-            if (context_type in pattern.contexts and
+            if (complexity in pattern.complexities and
                 pattern.success_rate >= min_success_rate)
         ]
 
@@ -322,9 +315,12 @@ class MemoryManager:
                 pattern.trigger: pattern.usage_count
                 for pattern in self.patterns.values()
             },
-            "context_distribution": {
-                context_type.name: len(triggers)
-                for context_type, triggers in self.context_triggers.items()
+            "complexity_distribution": {
+                complexity.name: len([
+                    p for p in self.patterns.values()
+                    if complexity in p.complexities
+                ])
+                for complexity in ComplexityLevel
             },
             "success_rate": (
                 sum(1 for o in relevant_outcomes if o.success)

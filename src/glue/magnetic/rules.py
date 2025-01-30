@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from ..core.types import AdhesiveType
-from ..core.context import InteractionType
+from ..core.context import ComplexityLevel
 from ..core.team import Team
 
 # ==================== Constants ====================
@@ -16,6 +16,13 @@ PULL = "<-"    # One-way pull
 REPEL = "<>"   # Repulsion
 
 # ==================== Enums ====================
+class InteractionPattern(Enum):
+    """Patterns for team interactions"""
+    ATTRACT = ATTRACT  # Bidirectional attraction
+    PUSH = PUSH       # One-way push
+    PULL = PULL      # One-way pull
+    REPEL = REPEL    # Repulsion
+
 class AttractionPolicy(Enum):
     """Policies for handling attraction between teams"""
     ALLOW_ALL = auto()     # Allow all attractions
@@ -50,7 +57,7 @@ class AttractionRule:
         self,
         source: Team,
         target: Team,
-        pattern: Optional[str] = None,  # "><", "->", "<-", "<>"
+        pattern: Optional[InteractionPattern] = None,
         binding: Optional[AdhesiveType] = None
     ) -> bool:
         """
@@ -123,7 +130,7 @@ class RuleSet:
         self,
         source: Team,
         target: Team,
-        pattern: Optional[str] = None,  # "><", "->", "<-", "<>"
+        pattern: Optional[InteractionPattern] = None,
         binding: Optional[AdhesiveType] = None
     ) -> bool:
         """
@@ -189,11 +196,11 @@ DEFAULT_RULES = RuleSet(
             custom_validator=lambda source, target: (
                 # Check if source has context
                 not hasattr(source, '_context') or
-                # If it does, validate based on interaction type
-                (source._context.interaction_type == InteractionType.PULL and
+                # If it does, validate based on complexity
+                (source._context.complexity >= ComplexityLevel.MODERATE and
                  hasattr(source, 'is_pull_team') and source.is_pull_team) or
-                # Allow normal interactions for other types
-                source._context.interaction_type != InteractionType.PULL
+                # Allow normal interactions for simple tasks
+                source._context.complexity <= ComplexityLevel.MODERATE
             ),
             description="Context-aware validation"
         )

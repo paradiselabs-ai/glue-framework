@@ -1,9 +1,9 @@
 """GLUE Core Types"""
 
 from enum import Enum, auto
-from typing import Dict, Set, Optional, Any, List, Protocol, TYPE_CHECKING, Union, Sequence
+from typing import Dict, Set, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
 @dataclass
 class IntentAnalysis:
@@ -21,14 +21,8 @@ class MessageType(Enum):
     SYSTEM = auto()      # System messages
     USER = auto()        # User messages
     ASSISTANT = auto()   # Assistant messages
-    TOOL = auto()        # Tool output
+    TOOL = auto()        # Tool output/results
     ERROR = auto()       # Error messages
-    QUERY = auto()       # Query messages
-    TOOL_REQUEST = auto()  # Tool request messages
-    TOOL_RESULT = auto()  # Tool result messages
-    RESPONSE = auto()     # Response messages
-    WORKFLOW = auto()     # Workflow messages
-    SYNC = auto()        # Synchronization messages
 
 @dataclass
 class Message:
@@ -38,9 +32,6 @@ class Message:
     receiver: str
     content: Any
     context: Optional['ContextState'] = None
-    workflow_id: Optional[str] = None
-    requires_response: bool = False
-    response_timeout: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
 
@@ -49,35 +40,16 @@ class ResourceState(Enum):
     IDLE = auto()     # Resource is available
     ACTIVE = auto()   # Resource is being used
 
-class BindingState(Enum):
-    """States for bindings"""
-    ACTIVE = auto()    # Binding is active and usable
-    DEGRADED = auto()  # Binding is weakened but still usable
-    FAILED = auto()    # Binding has failed and needs to be recreated
-
-class AdhesiveState(Enum):
-    """States for adhesive bindings"""
-    INACTIVE = auto()  # Not yet activated
-    ACTIVE = auto()    # Ready for use
-    DEGRADED = auto()  # Weakened but still usable
-    EXPIRED = auto()   # No longer usable
+class ToolState(Enum):
+    """Tool execution states"""
+    IDLE = auto()     # Tool is ready for use
+    ACTIVE = auto()   # Tool is currently executing
 
 class AdhesiveType(Enum):
     """Types of adhesive bindings"""
     TAPE = auto()    # One-time use, no persistence
     VELCRO = auto()  # Session-based persistence
     GLUE = auto()    # Team-wide persistence
-
-@dataclass
-class AdhesiveProperties:
-    """Properties for adhesive bindings"""
-    strength: float = 1.0
-    durability: float = 1.0
-    flexibility: float = 1.0
-    duration: Optional[timedelta] = None
-    is_reusable: bool = True
-    max_uses: Optional[int] = None
-    resource_pool: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class ToolResult:
@@ -87,32 +59,5 @@ class ToolResult:
     adhesive: AdhesiveType
     timestamp: datetime = field(default_factory=datetime.now)
     metadata: Dict[str, Any] = field(default_factory=dict)
-
-@dataclass
-class TransitionLog:
-    """Log entry for a state transition"""
-    resource: str
-    from_state: ResourceState
-    to_state: ResourceState
-    timestamp: datetime = field(default_factory=datetime.now)
-    success: bool = True
-    error: Optional[str] = None
-
-@dataclass
-class WorkflowState:
-    """State of a multi-model workflow"""
-    workflow_id: str
-    initiator: str
-    participants: Set[str]
-    current_stage: str
-    context: Optional['ContextState']
-    started_at: datetime = field(default_factory=datetime.now)
-    updated_at: datetime = field(default_factory=datetime.now)
-
-@dataclass
-class ResourceMetadata:
-    """Resource metadata"""
-    category: str
-    tags: Set[str] = field(default_factory=set)
 
 # Team is defined in team.py to avoid circular imports

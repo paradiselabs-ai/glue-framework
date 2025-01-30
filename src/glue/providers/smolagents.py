@@ -54,56 +54,82 @@ class SmoLAgentsProvider(BaseProvider):
         
         self.logger.debug(f"Initialized SmoLAgents provider: {name}")
         
+    async def create_tool(self, description: str) -> AdhesiveTool:
+        """Create a new tool from natural language description"""
+        # Use SmolAgents to create tool implementation
+        @tool
+        async def dynamic_tool(*args, **kwargs):
+            """Dynamic tool created from description"""
+            # Get tool name from first line
+            name = description.split('\n')[0].strip().lower().replace(' ', '_')
+            
+            # Create SmolAgents tool
+            agent = self._code_agent
+            result = await agent.run(
+                f"Create a tool that {description}\n"
+                f"Input: {args[0] if args else kwargs}"
+            )
+            return result
+            
+        # Create GLUE tool wrapper
+        tool = AdhesiveTool(
+            name=description.split('\n')[0].strip().lower().replace(' ', '_'),
+            description=description,
+            execute=dynamic_tool
+        )
+        
+        # Add to team's tools
+        await self.team.add_tool(tool.name, tool)
+        
+        return tool
+        
+    async def create_mcp_tool(self, description: str) -> AdhesiveTool:
+        """Create a new MCP tool from natural language description"""
+        # Use SmolAgents to analyze description and create MCP tool
+        agent = self._code_agent
+        analysis = await agent.run(
+            f"Analyze this tool request and determine:\n"
+            f"1. Which MCP server to use\n"
+            f"2. What tool to create\n"
+            f"Request: {description}"
+        )
+        
+        # Extract server and tool info
+        server_name = analysis.get('server')
+        tool_name = analysis.get('tool')
+        
+        # Create MCP tool
+        @tool
+        async def mcp_tool(*args, **kwargs):
+            """MCP tool created from description"""
+            return await use_mcp_tool(
+                server_name=server_name,
+                tool_name=tool_name,
+                arguments=kwargs
+            )
+            
+        # Create GLUE tool wrapper
+        tool = AdhesiveTool(
+            name=f"{server_name}_{tool_name}",
+            description=description,
+            execute=mcp_tool
+        )
+        
+        # Add to team's tools
+        await self.team.add_tool(tool.name, tool)
+        
+        return tool
+        
     def _convert_tool(self, glue_tool: AdhesiveTool) -> Any:
-        """Convert a GLUE tool to a SmoLAgents tool"""
+        """Convert a GLUE tool to a SmolAgents tool"""
         @tool
         async def smol_tool(*args, **kwargs):
             """Wrapper for GLUE tool with enhanced documentation"""
             return await glue_tool.execute(*args, **kwargs)
             
-        # Enhanced documentation with examples and usage patterns
-        doc = f"""
-        {glue_tool.description}
-
-        Usage:
-        <think>Explain why you need this tool</think>
-        <tool>{glue_tool.name}</tool>
-        <input>what you want the tool to do</input>
-
-        Examples:
-        1. Web Search:
-        <think>I need to search for recent news about AI</think>
-        <tool>web_search</tool>
-        <input>latest developments in open source AI models</input>
-
-        2. File Handler:
-        <think>I need to save this information</think>
-        <tool>file_handler</tool>
-        <input>Title: AI News Summary
-        Latest developments in open source AI:
-        1. ...
-        2. ...</input>
-
-        3. Code Interpreter:
-        <think>I need to analyze some data with Python</think>
-        <tool>code_interpreter</tool>
-        <input>
-        import pandas as pd
-        data = {'Model': ['GPT-4', 'Claude', 'Llama'],
-                'Score': [95, 92, 88]}
-        df = pd.DataFrame(data)
-        print(f"Average score: {df['Score'].mean()}")
-        </input>
-
-        Notes:
-        - Always explain your reasoning in <think> tags
-        - Be specific about what you want the tool to do
-        - Check tool results before proceeding
-        """
-            
-        # Copy metadata with enhanced docs
+        # Copy metadata
         smol_tool.__name__ = glue_tool.name
-        smol_tool.__doc__ = doc
+        smol_tool.__doc__ = glue_tool.description
         
         return smol_tool
         

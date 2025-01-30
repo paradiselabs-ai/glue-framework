@@ -1,20 +1,26 @@
-"""GLUE Context Analysis System"""
+"""GLUE Context Analysis System
+
+This system analyzes user input to provide helpful context to models, but does not
+restrict or control model behavior. Models remain free to:
+1. Communicate and collaborate as they choose
+2. Share tools according to adhesive bindings
+3. Delegate tasks based on complexity
+4. Make their own decisions about persistence
+
+The analysis helps models understand tasks better by providing:
+- Complexity assessment (SIMPLE, MODERATE, COMPLEX)
+- Tool suggestions based on task requirements
+- Persistence recommendations for data/results
+- Memory requirements for context history
+"""
 
 import re
 from typing import Dict, List, Optional, Set, Any
 from dataclasses import dataclass
 from enum import Enum, auto
 
-class InteractionType(Enum):
-    """Types of user interactions"""
-    CHAT = auto()          # Simple conversation
-    RESEARCH = auto()      # Information gathering
-    TASK = auto()          # Specific task execution
-    PULL = auto()          # One-way data flow
-    UNKNOWN = auto()       # Fallback type
-
 class ComplexityLevel(Enum):
-    """Task complexity levels"""
+    """Task complexity levels (suggestions only)"""
     SIMPLE = 1        # Single-step, straightforward
     MODERATE = 2      # Multi-step, clear path
     COMPLEX = 3       # Multi-step, unclear path
@@ -42,209 +48,87 @@ class ComplexityLevel(Enum):
 
 @dataclass
 class ContextState:
-    """Represents the current context state"""
-    interaction_type: InteractionType
+    """
+    Represents the current context state.
+    Note: These are suggestions to help models, not restrictions.
+    """
     complexity: ComplexityLevel
     tools_required: Set[str]
-    requires_research: bool
-    requires_memory: bool
-    requires_persistence: bool
-    confidence: float  # 0.0 to 1.0
-    requires_pull: bool = False  # Whether this interaction might need pulling
-    pull_confidence: float = 0.0  # Confidence in pull requirement
+    requires_persistence: bool  # Whether results should persist (GLUE/VELCRO vs TAPE)
+    requires_memory: bool      # Whether context history is needed
+    confidence: float          # 0.0 to 1.0
+    magnetic_flow: Optional[str] = None  # Suggested magnetic operator if needed
 
 class ContextAnalyzer:
-    """Analyzes user input to determine context and requirements"""
+    """Analyzes user input to provide helpful context to models"""
     
-    # Patterns indicating research needs (expanded)
-    RESEARCH_PATTERNS = {
-        # Direct research indicators
-        r"(?i)research": 0.8,
-        r"(?i)find (?:information|details|data) (?:about|on|for)": 0.8,
-        r"(?i)look up": 0.7,
-        r"(?i)search for": 0.7,
-        
-        # Indirect research indicators
-        r"(?i)tell me about": 0.6,
-        r"(?i)what (?:is|are|was|were)": 0.6,
-        r"(?i)how (?:does|do|did)": 0.6,
-        
-        # Topic exploration indicators
-        r"(?i)learn about": 0.7,
-        r"(?i)explain": 0.6,
-        r"(?i)describe": 0.6,
-        
-        # Information gathering indicators
-        r"(?i)gather": 0.7,
-        r"(?i)collect": 0.7,
-        r"(?i)compile": 0.7,
-        
-        # Analysis indicators
-        r"(?i)analyze": 0.7,
-        r"(?i)investigate": 0.7,
-        r"(?i)study": 0.7
-    }
-    
-    # Patterns indicating task execution
-    TASK_PATTERNS = {
-        r"(?i)create(?: a)?": 0.8,
-        r"(?i)generate": 0.8,
-        r"(?i)make(?: a)?": 0.7,
-        r"(?i)build": 0.7,
-        r"(?i)execute": 0.8,
-        r"(?i)run": 0.7,
-        r"(?i)analyze": 0.7,
-        r"(?i)save": 0.8,
-        r"(?i)write": 0.8
-    }
-    
-    # Patterns indicating chat (reduced priority)
-    CHAT_PATTERNS = {
-        r"(?i)^(?:hi|hello|hey)(?:\s|$)": 0.9,
-        r"(?i)^(?:thanks|thank you)": 0.9,
-        r"(?i)how are you": 0.9,
-        r"(?i)nice to": 0.8,
-        r"(?i)good (?:morning|afternoon|evening)": 0.9
-    }
-    
-    # Patterns indicating pull needs
-    PULL_PATTERNS = {
-        # Uncertainty indicators
-        r"(?i)(?:not sure|uncertain|maybe|possibly)": 0.7,
-        r"(?i)(?:could|might|may) (?:need|require|want)": 0.6,
-        r"(?i)(?:help|assistance) (?:from|with)": 0.7,
-        r"(?i)(?:difficult|complex|challenging)": 0.6,
-        r"(?i)(?:don't|do not|cant|cannot) (?:know|understand|figure)": 0.8,
-        r"(?i)need more (?:information|details|context)": 0.7,
-        
-        # Explicit pull requests
-        r"(?i)(?:get|pull) (?:from|information)": 0.9,
-        r"(?i)(?:ask|consult) (?:other|another)": 0.8,
-        r"(?i)(?:check|verify) with": 0.8,
-        r"(?i)need (?:input|feedback) from": 0.8
-    }
-    
-    # Tool requirement patterns (expanded)
+    # Tool requirement patterns
     TOOL_PATTERNS = {
         "web_search": [
-            # Direct search indicators
-            r"(?i)search",
-            r"(?i)look up",
-            r"(?i)find (?:information|details|data)",
-            r"(?i)research",
-            
-            # Information requests
-            r"(?i)tell me about",
-            r"(?i)what (?:is|are|was|were)",
-            r"(?i)how (?:does|do|did)",
-            
-            # Topic exploration
-            r"(?i)learn about",
-            r"(?i)explain",
-            r"(?i)describe",
-            
-            # Analysis requests
-            r"(?i)analyze",
-            r"(?i)investigate",
-            r"(?i)study"
+            r"(?i)search|look up|find",  # Direct search
+            r"(?i)research|investigate|study",  # Research
+            r"(?i)what|how|why|when|where|who",  # Questions
+            r"(?i)tell me about|explain|describe"  # Information requests
         ],
         "file_handler": [
-            # Direct file operations
-            r"(?i)save",
-            r"(?i)create (?:a )?(?:file|document)",
-            r"(?i)write (?:to|a) (?:file|document)",
-            r"(?i)store",
-            
-            # Content management
-            r"(?i)organize",
-            r"(?i)compile",
-            r"(?i)document",
-            
-            # File requests
-            r"(?i)make a (?:file|document)",
-            r"(?i)generate a (?:file|document)"
+            r"(?i)save|store|keep",  # Storage
+            r"(?i)create|make|generate|write",  # Creation
+            r"(?i)organize|compile|document"  # Organization
         ],
         "code_interpreter": [
-            r"(?i)run",
-            r"(?i)execute",
-            r"(?i)analyze code",
-            r"(?i)debug"
+            r"(?i)run|execute",  # Execution
+            r"(?i)analyze code|debug"  # Code analysis
         ]
     }
+    
+    # Persistence requirement patterns
+    PERSISTENCE_PATTERNS = [
+        r"(?i)save|store|keep",  # Direct storage
+        r"(?i)remember|recall",  # Memory
+        r"(?i)build (?:on|upon)|continue|update"  # Continuation
+    ]
     
     def __init__(self):
         """Initialize the context analyzer"""
         self.interaction_history: List[ContextState] = []
     
     def analyze(self, input_text: str, available_tools: Optional[List[str]] = None) -> ContextState:
-        """
-        Analyze input text to determine context and requirements
-        
-        Args:
-            input_text: The user's input text
-            available_tools: List of available tool names
-            
-        Returns:
-            ContextState object representing the analysis results
-        """
-        # First check for research and pull requirements
-        requires_research = self._requires_research(input_text)
-        requires_pull, pull_confidence = self._requires_pull(input_text)
-        
-        # Determine interaction type and confidence
-        interaction_type, confidence = self._determine_type(
-            input_text,
-            requires_research=requires_research,
-            requires_pull=requires_pull,
-            pull_confidence=pull_confidence
-        )
-        
+        """Analyze input text to provide helpful context"""
         # Determine complexity
         complexity = self._assess_complexity(input_text)
         
         # Initialize requirements
         tools_required = set()
-        requires_memory = False
         requires_persistence = False
+        requires_memory = False
+        magnetic_flow = None
         
-        # Only analyze tool requirements if not a chat interaction
-        if interaction_type != InteractionType.CHAT:
-            # Identify required tools based on both patterns and context
-            tools_required = self._identify_tools(input_text, available_tools, requires_research)
+        # Identify required tools
+        if available_tools:
+            tools_required = self._identify_tools(input_text, available_tools)
             
-            # Analyze additional requirements
-            requires_memory = self._requires_memory(input_text)
-            requires_persistence = self._requires_persistence(input_text)
+        # Analyze persistence needs
+        requires_persistence = self._requires_persistence(input_text)
             
-            # Adjust for research context
-            if requires_research:
-                # Ensure research tools are included
-                if available_tools and "web_search" in available_tools:
-                    tools_required.add("web_search")
-                # Increase complexity for research tasks
-                if complexity == ComplexityLevel.SIMPLE:
-                    complexity = ComplexityLevel.MODERATE
-            
-            # Adjust for pull context
-            if requires_pull:
-                # Complex tasks are more likely to need pull
-                if complexity >= ComplexityLevel.MODERATE:
-                    pull_confidence = max(pull_confidence, 0.7)
-                # Research tasks might need pull for completeness
-                if requires_research:
-                    pull_confidence = max(pull_confidence, 0.6)
+        # Analyze memory needs
+        requires_memory = self._requires_memory(input_text)
+        
+        # Determine confidence
+        confidence = self._calculate_confidence(
+            input_text,
+            tools_required,
+            requires_persistence,
+            complexity
+        )
         
         # Create context state
         state = ContextState(
-            interaction_type=interaction_type,
             complexity=complexity,
             tools_required=tools_required,
-            requires_research=requires_research,
-            requires_memory=requires_memory,
             requires_persistence=requires_persistence,
+            requires_memory=requires_memory,
             confidence=confidence,
-            requires_pull=requires_pull,
-            pull_confidence=pull_confidence
+            magnetic_flow=magnetic_flow
         )
         
         # Update history
@@ -252,87 +136,21 @@ class ContextAnalyzer:
         
         return state
     
-    def _determine_type(
-        self,
-        text: str,
-        requires_research: bool,
-        requires_pull: bool,
-        pull_confidence: float
-    ) -> tuple[InteractionType, float]:
-        """Determine the type of interaction and confidence level"""
-        text_lower = text.lower()
-        
-        # Simple greeting check (only obvious greetings)
-        if re.match(r"^(?:hi|hello|hey|thanks?|thank you)(?:\s.*)?$", text, re.I):
-            return InteractionType.CHAT, 0.9
-            
-        # Check for pull requirements first (highest priority)
-        if requires_pull and pull_confidence > 0.7:
-            return InteractionType.PULL, pull_confidence
-            
-        # Information seeking check
-        if any(word in text_lower for word in [
-            "what", "how", "why", "when", "where", "who",
-            "find", "search", "look up", "tell me about"
-        ]):
-            # If high uncertainty or complexity, might need pull
-            if requires_pull and pull_confidence > 0.6:
-                return InteractionType.PULL, pull_confidence
-            return InteractionType.RESEARCH, 0.8
-            
-        # Task execution check
-        if any(word in text_lower for word in [
-            "write", "create", "make", "generate", "run", "execute"
-        ]):
-            # Complex tasks might need pull
-            if requires_pull and pull_confidence > 0.6:
-                return InteractionType.PULL, pull_confidence
-            return InteractionType.TASK, 0.8
-            
-        # Default to research for any other question-like input
-        if "?" in text or requires_research:
-            # Questions with uncertainty might need pull
-            if requires_pull and pull_confidence > 0.5:
-                return InteractionType.PULL, pull_confidence
-            return InteractionType.RESEARCH, 0.7
-            
-        # Default to unknown for anything else
-        return InteractionType.UNKNOWN, 0.3
-    
-    def _requires_pull(self, text: str) -> tuple[bool, float]:
-        """
-        Determine if the interaction requires pulling from other teams
-        
-        Returns:
-            Tuple of (requires_pull: bool, confidence: float)
-        """
-        max_confidence = 0.0
-        
-        # Check each pull pattern
-        for pattern, confidence in self.PULL_PATTERNS.items():
-            if re.search(pattern, text):
-                max_confidence = max(max_confidence, confidence)
-        
-        # Consider complexity indicators
-        complexity_indicators = len(re.findall(
-            r"(?i)(?:complex|difficult|challenging|advanced|sophisticated)",
-            text
-        ))
-        if complexity_indicators > 0:
-            max_confidence = max(max_confidence, 0.6)
-        
-        # Consider uncertainty indicators
-        uncertainty_indicators = len(re.findall(
-            r"(?i)(?:maybe|perhaps|possibly|might|could|not sure|uncertain)",
-            text
-        ))
-        if uncertainty_indicators > 0:
-            max_confidence = max(max_confidence, 0.5)
-        
-        return max_confidence > 0.5, max_confidence
-    
     def _assess_complexity(self, text: str) -> ComplexityLevel:
-        """Assess the complexity of the interaction"""
+        """
+        Assess the task's structural complexity based on:
+        1. Number of steps/operations required
+        2. Information-seeking requirements
+        3. Linguistic complexity
+        
+        This helps models understand if a task is:
+        - SIMPLE: One-shot operation ("search for X")
+        - MODERATE: Clear sequence ("search for X then save it")
+        - COMPLEX: Multiple steps or unclear path
+        
+        Note: This is just to help models understand the task.
+        They remain free to collaborate regardless of complexity.
+        """
         # Count potential steps/requirements
         steps = len(re.findall(r"(?i)(?:and|then|after|next|finally)", text))
         
@@ -361,71 +179,28 @@ class ContextAnalyzer:
     def _identify_tools(
         self, 
         text: str, 
-        available_tools: Optional[List[str]] = None,
-        requires_research: bool = False
+        available_tools: List[str]
     ) -> Set[str]:
-        """Identify required tools based on input text and context"""
+        """
+        Suggest tools that might be helpful based on input text.
+        Models can use other tools if they choose.
+        """
         required_tools = set()
         text_lower = text.lower()
         
-        # Only process available tools
-        if not available_tools:
-            return required_tools
-            
-        # Research/Information tools
-        if "web_search" in available_tools:
-            # Add web_search for any information seeking or research intent
-            if requires_research or any(word in text_lower for word in [
-                "what", "how", "why", "when", "where", "who",
-                "find", "search", "look up", "tell me about"
-            ]):
-                required_tools.add("web_search")
-        
-        # Code execution tools
-        if "code_interpreter" in available_tools:
-            # Add code_interpreter for any code or execution intent
-            if any(word in text_lower for word in [
-                "code", "script", "program",
-                "run", "execute", "debug"
-            ]):
-                required_tools.add("code_interpreter")
-        
-        # File handling tools
-        if "file_handler" in available_tools:
-            # Add file_handler for any file operation intent
-            if any(word in text_lower for word in [
-                "file", "document", "save",
-                "write", "read", "store"
-            ]):
-                required_tools.add("file_handler")
+        # Check each available tool
+        for tool_name in available_tools:
+            if tool_name in self.TOOL_PATTERNS:
+                # Check tool's patterns
+                for pattern in self.TOOL_PATTERNS[tool_name]:
+                    if re.search(pattern, text):
+                        required_tools.add(tool_name)
+                        break
         
         return required_tools
     
-    def _requires_research(self, text: str) -> bool:
-        """Determine if the interaction requires research or information gathering"""
-        text_lower = text.lower()
-        
-        # Check for question words
-        if any(word in text_lower for word in [
-            "what", "how", "why", "when", "where", "who"
-        ]):
-            return True
-            
-        # Check for research/information verbs
-        if any(word in text_lower for word in [
-            "find", "search", "look up", "research",
-            "learn", "explain", "tell me about"
-        ]):
-            return True
-            
-        # Check for question mark
-        if "?" in text:
-            return True
-            
-        return False
-    
     def _requires_memory(self, text: str) -> bool:
-        """Determine if the interaction requires memory of past interactions"""
+        """Suggest whether context history might be helpful"""
         memory_patterns = [
             r"(?i)(?:like|as) (?:before|previously|last time)",
             r"(?i)(?:again|repeat)",
@@ -435,16 +210,32 @@ class ContextAnalyzer:
         return any(re.search(pattern, text) for pattern in memory_patterns)
     
     def _requires_persistence(self, text: str) -> bool:
-        """Determine if the interaction requires persistent storage"""
-        persistence_patterns = [
-            r"(?i)save",
-            r"(?i)store",
-            r"(?i)keep",
-            r"(?i)remember this",
-            r"(?i)create a (?:file|document)",
-            r"(?i)write (?:to|a) (?:file|document)"
-        ]
-        return any(re.search(pattern, text) for pattern in persistence_patterns)
+        """Suggest whether results should persist"""
+        return any(re.search(pattern, text) for pattern in self.PERSISTENCE_PATTERNS)
+    
+    def _calculate_confidence(
+        self,
+        text: str,
+        tools_required: Set[str],
+        requires_persistence: bool,
+        complexity: ComplexityLevel
+    ) -> float:
+        """Calculate confidence in the suggestions"""
+        confidence = 0.5  # Base confidence
+        
+        # Tool requirement confidence
+        if tools_required:
+            confidence += 0.2
+            
+        # Persistence confidence
+        if requires_persistence:
+            confidence += 0.1
+            
+        # Complexity confidence
+        if complexity != ComplexityLevel.UNKNOWN:
+            confidence += 0.2
+            
+        return min(confidence, 1.0)
     
     def get_recent_context(self, n: int = 5) -> List[ContextState]:
         """Get the n most recent context states"""

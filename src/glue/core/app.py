@@ -1,12 +1,12 @@
 """GLUE Application Core"""
 
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any
 from datetime import datetime
-from dataclasses import dataclass, field, Field
+from dataclasses import dataclass
 
 from .model import Model
-from .types import ResourceState, Message, MessageType, AdhesiveType
 from ..tools.base import BaseTool
+from ..magnetic.field import MagneticField
 
 @dataclass
 class AppMemory:
@@ -47,6 +47,10 @@ class GlueApp:
         
         # Core components
         self.fields: Dict[str, List[Any]] = {}
+        self.tools: Dict[str, BaseTool] = {}
+        self.models: Dict[str, Model] = {}
+        self.teams: Dict[str, Any] = {}  # Will store Team objects
+        self.magnetic_field: Optional[MagneticField] = None
         self._memory: List[AppMemory] = []
         self._default_field: Optional[str] = None
         
@@ -61,17 +65,17 @@ class GlueApp:
         if name in self.fields:
             raise ValueError(f"Field {name} already exists")
             
-        # Collect resources
-        resources = []
+        # Collect field resources
+        field_resources = []
         if lead:
-            resources.append(lead)
+            field_resources.append(lead)
         if members:
-            resources.extend(members)
+            field_resources.extend(members)
         if tools:
-            resources.extend(tools)
+            field_resources.extend(tools)
                 
         # Store field
-        self.fields[name] = resources
+        self.fields[name] = field_resources
         
         # Set as default if first field
         if not self._default_field:
@@ -144,6 +148,22 @@ class GlueApp:
         """List all field names"""
         return list(self.fields.keys())
         
+    def register_model(self, name: str, model: Model) -> None:
+        """Register a model with the app"""
+        if name in self.models:
+            raise ValueError(f"Model {name} already registered")
+        self.models[name] = model
+
+    def register_team(self, name: str, team: Any) -> None:
+        """Register a team with the app"""
+        if name in self.teams:
+            raise ValueError(f"Team {name} already registered")
+        self.teams[name] = team
+        
+    def set_magnetic_field(self, field: MagneticField) -> None:
+        """Set the magnetic field for team interactions"""
+        self.magnetic_field = field
+
     def get_default_field(self) -> Optional[str]:
         """Get the default field name"""
         return self._default_field

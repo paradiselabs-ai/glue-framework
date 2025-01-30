@@ -1,7 +1,18 @@
-# src/glue/providers/base.py
+"""GLUE Provider Base System
 
-# ==================== Imports ====================
-from typing import Dict, Any, Optional, List
+This base class intentionally maintains features that are essential for a framework:
+- Model inheritance: Required for model capabilities and type safety
+- Workspace formatting: Needed for providing tool context to models
+- Team context: Required for multi-model collaboration
+- Conversation history: Needed for context preservation
+- Detailed system prompts: Required for consistent model behavior
+
+While these features add complexity, they are necessary for a robust framework
+that others will use to build AI applications. This is different from a simple
+provider base that might be used in a single application.
+"""
+
+from typing import Dict, Any, Optional, List, Set
 from abc import ABC, abstractmethod
 from datetime import datetime
 from ..core.model import Model, ModelConfig
@@ -13,13 +24,18 @@ class BaseProvider(Model, ABC):
     def __init__(
         self,
         name: str,
+        provider: str,
+        team: str,
+        available_adhesives: Set[AdhesiveType],
         api_key: str,
         config: Optional[ModelConfig] = None,
         base_url: Optional[str] = None
     ):
         super().__init__(
             name=name,
-            provider=self.__class__.__name__,
+            provider=provider,
+            team=team,
+            available_adhesives=available_adhesives,
             api_key=api_key,
             config=config
         )
@@ -96,29 +112,60 @@ Work naturally with your team. If you need to use a tool, think about why you ne
     # ==================== Shared Methods ====================
     async def generate(self, prompt: str) -> str:
         """Generate a response using the provider's API"""
+        if not self._validate_api_key():
+            raise ValueError("Invalid API key")
+            
         try:
+            # Prepare and validate request
             request_data = await self._prepare_request(prompt)
-            response = await self._make_request(request_data)
-            return await self._process_response(response)
+            if not request_data:
+                raise ValueError("Failed to prepare request")
+                
+            # Make request with error handling
+            try:
+                response = await self._make_request(request_data)
+            except Exception as e:
+                await self._handle_error(e)
+                raise
+                
+            # Process response
+            result = await self._process_response(response)
+            if not result:
+                raise ValueError("Failed to process response")
+                
+            return result
+            
         except Exception as e:
-            raise RuntimeError(f"Generation failed: {str(e)}")
+            # Log error details
+            error_msg = f"Generation failed for {self.name}: {str(e)}"
+            if hasattr(self, 'logger'):
+                self.logger.error(error_msg)
+            raise RuntimeError(error_msg)
 
+    @abstractmethod
     async def _make_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
         """Make the actual API request"""
-        raise NotImplementedError("Provider must implement _make_request")
+        pass
 
+    @abstractmethod
     async def _handle_error(self, error: Exception) -> None:
         """Handle provider-specific errors"""
-        raise NotImplementedError("Provider must implement _handle_error")
+        pass
 
     # ==================== Utility Methods ====================
     def _validate_api_key(self) -> bool:
         """Validate the API key format"""
-        return bool(self.api_key and isinstance(self.api_key, str))
+        if not self.api_key:
+            return False
+        if not isinstance(self.api_key, str):
+            return False
+        if len(self.api_key.strip()) == 0:
+            return False
+        return True
 
     def _get_headers(self) -> Dict[str, str]:
         """Get the common headers for API requests"""
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers

@@ -1,12 +1,10 @@
-# src/glue/tools/chain.py
-
 """GLUE Tool Chain Optimization System"""
 
 from typing import Dict, List, Optional, Set, Tuple, Any
 from dataclasses import dataclass, field
 from collections import defaultdict
 import asyncio
-from ..core.context import ContextState, InteractionType, ComplexityLevel
+from ..core.context import ContextState, ComplexityLevel
 
 @dataclass
 class ToolUsage:
@@ -16,7 +14,6 @@ class ToolUsage:
     output_type: str
     success: bool
     execution_time: float
-    context_type: InteractionType
     complexity: ComplexityLevel
 
 @dataclass
@@ -25,7 +22,6 @@ class ChainPattern:
     tools: List[str]
     success_rate: float
     avg_execution_time: float
-    contexts: Set[InteractionType]
     complexities: Set[ComplexityLevel]
     usage_count: int = 0
 
@@ -73,7 +69,6 @@ class ToolChainOptimizer:
             output_type=output_type,
             success=success,
             execution_time=execution_time,
-            context_type=context.interaction_type,
             complexity=context.complexity
         )
         
@@ -104,7 +99,6 @@ class ToolChainOptimizer:
                 (pattern.avg_execution_time * (pattern.usage_count - 1) + execution_time)
                 / pattern.usage_count
             )
-            pattern.contexts.add(context.interaction_type)
             pattern.complexities.add(context.complexity)
         else:
             # Create new pattern
@@ -112,7 +106,6 @@ class ToolChainOptimizer:
                 tools=tools,
                 success_rate=1.0 if success else 0.0,
                 avg_execution_time=execution_time,
-                contexts={context.interaction_type},
                 complexities={context.complexity},
                 usage_count=1
             )
@@ -142,7 +135,6 @@ class ToolChainOptimizer:
         # Check cache first
         cache_key = (
             f"{'>'.join(proposed_tools)}:"
-            f"{context.interaction_type.name}:"
             f"{context.complexity.name}"
         )
         if cache_key in self.context_cache:
@@ -222,8 +214,7 @@ class ToolChainOptimizer:
             
         relevant_usage = [
             usage for usage in self.tool_usage[tool]
-            if usage.context_type == context.interaction_type
-            and usage.complexity == context.complexity
+            if usage.complexity == context.complexity
         ]
         
         if not relevant_usage:
@@ -235,7 +226,7 @@ class ToolChainOptimizer:
         """Invalidate relevant cache entries"""
         invalid_keys = set()
         for key in self.context_cache:
-            if tool in key or str(context.interaction_type) in key:
+            if tool in key or str(context.complexity) in key:
                 invalid_keys.add(key)
         
         for key in invalid_keys:
@@ -265,7 +256,6 @@ class ToolChainOptimizer:
             "total_uses": total,
             "success_rate": successful / total if total > 0 else 0.0,
             "avg_execution_time": sum(u.execution_time for u in usage) / total if total > 0 else 0.0,
-            "contexts": {u.context_type for u in usage},
             "complexities": {u.complexity for u in usage},
             "complementary_tools": list(self.complementary[tool]),
             "redundant_tools": list(self.redundant[tool])
@@ -282,7 +272,6 @@ class ToolChainOptimizer:
             "success_rate": pattern.success_rate,
             "avg_execution_time": pattern.avg_execution_time,
             "usage_count": pattern.usage_count,
-            "contexts": list(pattern.contexts),
             "complexities": list(pattern.complexities)
         }
     

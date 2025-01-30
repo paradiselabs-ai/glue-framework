@@ -86,6 +86,30 @@ class FileHandlerTool(BaseTool):
         self.logger = get_logger()
         self.logger.debug(f"Initialized file handler with base_path: {self.base_path}")
 
+    async def _validate_input(self, *args, **kwargs) -> bool:
+        """Validate tool input"""
+        content = args[0] if args else kwargs
+        
+        # Handle string input
+        if isinstance(content, str):
+            return bool(content.strip())
+            
+        # Handle dictionary input
+        if isinstance(content, dict):
+            # Must have either content or operation
+            if not (content.get('content') or content.get('operation')):
+                return False
+            # If operation specified, must be valid
+            if 'operation' in content and content['operation'] not in FileFormats.OPERATIONS:
+                return False
+            return True
+            
+        # Handle list input (for CSV data)
+        if isinstance(content, list):
+            return bool(content) and all(isinstance(item, dict) for item in content)
+            
+        return False
+
     def _validate_path(self, file_path: str) -> Path:
         """Validate and resolve file path"""
         self.logger.debug(f"Validating path: {file_path}")

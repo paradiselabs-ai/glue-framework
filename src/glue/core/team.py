@@ -7,6 +7,8 @@ from enum import Enum
 
 from .types import ToolResult, AdhesiveType
 from .state import StateManager
+from .tool_binding import ToolBinding
+from ..tools.base import BaseTool
 
 class TeamRole(Enum):
     """Team member roles"""
@@ -52,13 +54,14 @@ class Team:
         self,
         name: str,
         members: Optional[Dict[str, TeamMember]] = None,
-        tools: Optional[Set[str]] = None,
+        tools: Optional[Dict[str, BaseTool]] = None,
         shared_results: Optional[Dict[str, ToolResult]] = None,
         state_manager: Optional[StateManager] = None
     ):
         self.name = name
         self.members = members or {}
-        self.tools = tools or set()
+        self.tools = tools or {}  # tool_name -> tool instance
+        self.tool_bindings = {}  # tool_name -> ToolBinding
         self.shared_results = shared_results or {}  # Only GLUE results
         self._state_manager = state_manager or StateManager()
         
@@ -99,16 +102,29 @@ class Team:
         
     async def add_tool(
         self,
-        tool_name: str,
+        tool: BaseTool,
+        binding_type: AdhesiveType = AdhesiveType.GLUE,
         members: Optional[List[str]] = None
     ) -> None:
         """Add a tool and optionally assign to specific members"""
-        self.tools.add(tool_name)
+        # Add tool instance
+        self.tools[tool.name] = tool
+            
+        # Create binding for tool
+        if binding_type == AdhesiveType.GLUE:
+            binding = ToolBinding.glue()
+        elif binding_type == AdhesiveType.VELCRO:
+            binding = ToolBinding.velcro()
+        else:
+            binding = ToolBinding.tape()
+            
+        binding.bind()  # Initialize binding
+        self.tool_bindings[tool.name] = binding
         
         # Add tool to specified members or all members if none specified
         target_members = [self.members[m] for m in (members or self.members.keys())]
         for member in target_members:
-            member.tools.add(tool_name)
+            member.tools.add(tool.name)
             member.last_active = datetime.now()
             
         # Update timestamp
@@ -124,12 +140,20 @@ class Team:
         if tool_name not in self.tools:
             raise ValueError(f"Unknown tool: {tool_name}")
             
-        # Only store GLUE results at team level
+        binding = self.tool_bindings.get(tool_name)
+        if not binding:
+            binding = ToolBinding.glue()
+            binding.bind()
+            self.tool_bindings[tool_name] = binding
+            
+        # Store result based on binding type
         if adhesive_type == AdhesiveType.GLUE:
             # Permanent team-wide storage
             self.shared_results[tool_name] = result
-        # VELCRO results stay in tool instance's resource_pool
-        # TAPE results are not stored anywhere
+        elif adhesive_type == AdhesiveType.VELCRO:
+            # Session storage in binding
+            binding.store_resource(tool_name, result)
+        # TAPE results are not stored
         
         # Update timestamp
         self.updated_at = datetime.now()

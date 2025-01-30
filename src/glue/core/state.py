@@ -1,21 +1,16 @@
 """GLUE State Management System
 
-Simplified state manager that only tracks IDLE/ACTIVE states and logs transitions.
+Simplified state manager that only tracks IDLE/ACTIVE states.
 Magnetic flow and adhesive persistence are handled separately by MagneticField
 and AdhesiveManager respectively.
 """
 
 import asyncio
-from typing import Dict, Optional, Any, List, TYPE_CHECKING
+from typing import Dict, Optional, Any
 from dataclasses import dataclass
 from datetime import datetime
 
-from .types import ResourceState, TransitionLog
-
-
-class TransitionError(Exception):
-    """Error during state transition"""
-    pass
+from .types import ResourceState
 
 @dataclass
 class StateContext:
@@ -30,7 +25,6 @@ class StateManager:
     Features:
     - Two states: IDLE and ACTIVE
     - Simple transitions
-    - Transition logging
     - Thread-safe state changes
     """
     
@@ -38,7 +32,6 @@ class StateManager:
         """Initialize state manager"""
         self._states: Dict[str, ResourceState] = {}
         self._contexts: Dict[str, StateContext] = {}
-        self._history: Dict[str, List[TransitionLog]] = {}
         self._state_locks: Dict[str, asyncio.Lock] = {}
     
     async def get_state(self, resource_name: str) -> ResourceState:
@@ -87,79 +80,9 @@ class StateManager:
             self._state_locks[resource_name] = asyncio.Lock()
         
         async with self._state_locks[resource_name]:
-            try:
-                # Get current state
-                old_state = await self.get_state(resource_name)
-                
-                # Set new state
-                await self.set_state(resource_name, new_state, context)
-                
-                # Log successful transition
-                self._log_transition(
-                    TransitionLog(
-                        resource=resource_name,
-                        from_state=old_state,
-                        to_state=new_state
-                    )
-                )
-                
-                return True
-                
-            except Exception as e:
-                # Log failed transition
-                self._log_transition(
-                    TransitionLog(
-                        resource=resource_name,
-                        from_state=old_state,
-                        to_state=new_state,
-                        success=False,
-                        error=str(e)
-                    )
-                )
-                raise
-    
-    def _log_transition(self, log: TransitionLog) -> None:
-        """Log a transition"""
-        if log.resource not in self._history:
-            self._history[log.resource] = []
-        self._history[log.resource].append(log)
-    
-    def get_history(
-        self,
-        resource: Optional[str] = None,
-        success_only: bool = False
-    ) -> List[TransitionLog]:
-        """
-        Get transition history
-        
-        Args:
-            resource: Optional resource name to filter by
-            success_only: Only return successful transitions
-            
-        Returns:
-            List of transition logs
-        """
-        if resource:
-            logs = self._history.get(resource, [])
-        else:
-            logs = [log for logs in self._history.values() for log in logs]
-        
-        if success_only:
-            logs = [log for log in logs if log.success]
-        
-        return sorted(logs, key=lambda x: x.timestamp)
-    
-    def clear_history(self, resource: Optional[str] = None) -> None:
-        """
-        Clear transition history
-        
-        Args:
-            resource: Optional resource name to clear history for
-        """
-        if resource:
-            self._history.pop(resource, None)
-        else:
-            self._history.clear()
+            # Set new state
+            await self.set_state(resource_name, new_state, context)
+            return True
     
     def __str__(self) -> str:
         """String representation"""

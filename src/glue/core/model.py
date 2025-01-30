@@ -2,7 +2,7 @@
 from typing import Dict, Any, Optional, List, Set, Union, TYPE_CHECKING
 from dataclasses import dataclass, field
 from datetime import datetime
-from .types import Message, MessageType, WorkflowState, IntentAnalysis, AdhesiveType, ToolResult
+from .types import IntentAnalysis, AdhesiveType, ToolResult
 
 if TYPE_CHECKING:
     from ..tools.base import BaseTool

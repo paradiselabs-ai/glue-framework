@@ -188,6 +188,15 @@ class WorkspaceManager:
             return age.days
         return None
 
+    def list_workspaces(self) -> Dict[str, Dict[str, Any]]:
+        """List all active workspaces"""
+        active_workspaces = {}
+        for workspace_id, info in self.workspaces.items():
+            workspace_path = self.base_dir / workspace_id
+            if workspace_path.exists():
+                active_workspaces[workspace_id] = info
+        return active_workspaces
+
 @asynccontextmanager
 async def workspace_context(name: str):
     """Context manager for workspaces"""

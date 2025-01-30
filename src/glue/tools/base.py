@@ -1,4 +1,16 @@
-"""GLUE Tool Base System"""
+"""GLUE Tool Base System
+
+This base class intentionally maintains features that are essential for a framework:
+- ToolPermission: Required for security and access control
+- ToolConfig: Needed for consistent tool configuration
+- Input validation: Required for safe tool execution
+- Async context management: Needed for proper resource cleanup
+- Logging: Required for debugging and monitoring
+
+While these features add some complexity, they are necessary for a robust framework
+that others will use to build AI applications. This is different from a simple tool
+base that might be used in a single application.
+"""
 
 import asyncio
 from typing import Any, Dict, Optional, List
@@ -6,7 +18,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
-from ..core.types import AdhesiveType
+from ..core.types import AdhesiveType, ToolState
 from ..core.logger import get_logger
 
 # ==================== Tool Permissions ====================
@@ -26,12 +38,6 @@ class ToolConfig:
     async_enabled: bool = True
     tool_specific_config: Dict[str, Any] = field(default_factory=dict)
     required_permissions: List[ToolPermission] = field(default_factory=list)
-
-# ==================== Tool States ====================
-class ToolState(Enum):
-    """Tool execution states"""
-    IDLE = "idle"      # Tool is ready for use
-    ACTIVE = "active"  # Tool is currently executing
 
 # ==================== Base Tool ====================
 class BaseTool(ABC):

@@ -1,11 +1,9 @@
-# src/glue/core/role.py
-
 """GLUE Dynamic Role System"""
 
 from enum import Enum, auto
 from typing import Dict, List, Optional, Set, Any
 from dataclasses import dataclass
-from .context import ContextState, InteractionType, ComplexityLevel
+from .context import ContextState, ComplexityLevel
 
 class RoleState(Enum):
     """States a role can be in"""
@@ -27,8 +25,8 @@ class DynamicRole:
     """
     Manages dynamic role adjustments based on context.
     
-    This system helps models naturally switch between conversation modes
-    and determine appropriate tool usage without explicit instructions.
+    This system helps models naturally switch between modes
+    and determine appropriate tool usage based on task complexity.
     """
     
     def __init__(self, base_role: str):
@@ -46,7 +44,7 @@ class DynamicRole:
         # Track successful patterns
         self.success_patterns: Dict[str, float] = {}
         
-        # New: Flag for roles that should never interact directly with users
+        # Flag for roles that should never interact directly with users
         self.no_direct_interaction = "You do not interact with the user" in base_role.lower()
     
     def adjust_for_context(self, context: ContextState) -> RoleContext:
@@ -73,7 +71,7 @@ class DynamicRole:
             context, should_be_active, tools_needed
         )
         
-        # Update current state with more flexible logic
+        # Update current state
         if should_be_active:
             self.current_state = RoleState.ACTIVE
         elif tools_needed:
@@ -100,24 +98,20 @@ class DynamicRole:
     
     def _should_be_active(self, context: ContextState) -> bool:
         """Determine if this role should be active"""
-        # Never activate roles that don't interact with users directly
+        # Never activate roles that don't interact with users
         if self.no_direct_interaction:
             return False
             
-        # In chat mode, be more inclusive
-        if context.interaction_type == InteractionType.CHAT:
-            # Allow roles with tools if they have relevant capabilities
-            return not self.no_direct_interaction
-            
-        # In research mode, prefer roles with relevant tools
-        if context.interaction_type == InteractionType.RESEARCH:
-            return bool(self.allowed_tools & context.tools_required)
-            
-        # In task mode, check tool requirements
-        if context.interaction_type == InteractionType.TASK:
+        # For simple tasks, only activate if we have required tools
+        if context.complexity == ComplexityLevel.SIMPLE:
             return bool(self.required_tools & context.tools_required)
             
-        return False
+        # For moderate tasks, activate if we have any relevant tools
+        if context.complexity == ComplexityLevel.MODERATE:
+            return bool(self.allowed_tools & context.tools_required)
+            
+        # For complex tasks, activate if we have any tools that could help
+        return bool(self.allowed_tools)
     
     def _needs_tools(self, context: ContextState) -> bool:
         """Determine if tools should be enabled"""
@@ -125,33 +119,22 @@ class DynamicRole:
         if self.required_tools & context.tools_required:
             return True
             
-        # In chat mode, be more flexible with tool usage
-        if context.interaction_type == InteractionType.CHAT:
-            return bool(self.allowed_tools)
+        # For simple tasks, only use required tools
+        if context.complexity == ComplexityLevel.SIMPLE:
+            return False
             
-        # In research mode, enable tools if we have any allowed tools
-        if context.interaction_type == InteractionType.RESEARCH:
-            return bool(self.allowed_tools)
-            
-        # In task mode, enable allowed tools if complexity warrants
-        if (context.interaction_type == InteractionType.TASK and
-            context.complexity in {ComplexityLevel.MODERATE, ComplexityLevel.COMPLEX}):
-            return bool(self.allowed_tools)
-            
-        return False
+        # For moderate/complex tasks, enable allowed tools
+        return bool(self.allowed_tools)
     
     def _determine_response_type(self, context: ContextState) -> str:
         """Determine appropriate response type"""
-        if context.interaction_type == InteractionType.CHAT:
-            return "conversational"
+        if context.complexity == ComplexityLevel.SIMPLE:
+            return "direct"
             
-        if context.interaction_type == InteractionType.RESEARCH:
+        if context.complexity == ComplexityLevel.MODERATE:
             return "analytical"
             
-        if context.interaction_type == InteractionType.TASK:
-            return "procedural"
-            
-        return "standard"
+        return "procedural"
     
     def _calculate_confidence(
         self,
@@ -163,7 +146,7 @@ class DynamicRole:
         confidence = 0.5  # Base confidence
         
         # Check if we've seen similar contexts
-        pattern_key = f"{context.interaction_type.name}:{active}:{tools_enabled}"
+        pattern_key = f"{context.complexity.name}:{active}:{tools_enabled}"
         if pattern_key in self.success_patterns:
             confidence = max(confidence, self.success_patterns[pattern_key])
         
@@ -173,11 +156,11 @@ class DynamicRole:
         if context.tools_required & self.allowed_tools:
             confidence += 0.1
             
-        # Adjust based on interaction type
-        if context.interaction_type == InteractionType.CHAT and not tools_enabled:
-            confidence += 0.1
-        if context.interaction_type != InteractionType.CHAT and tools_enabled:
-            confidence += 0.1
+        # Adjust based on complexity
+        if context.complexity == ComplexityLevel.SIMPLE and not tools_enabled:
+            confidence += 0.1  # More confident in simple tasks without tools
+        if context.complexity != ComplexityLevel.SIMPLE and tools_enabled:
+            confidence += 0.1  # More confident using tools for complex tasks
             
         return min(confidence, 1.0)
     
@@ -196,7 +179,7 @@ class DynamicRole:
         
         # Create pattern key
         pattern_key = (
-            f"{context.interaction_type.name}:"
+            f"{context.complexity.name}:"
             f"{last_context.state == RoleState.ACTIVE}:"
             f"{last_context.tools_enabled}"
         )
@@ -219,9 +202,8 @@ class DynamicRole:
         # Start with base role
         enhanced = f"{self.base_role}\n\n"
         
-        # Only add role guidance for non-chat interactions
-        if context.interaction_type != InteractionType.CHAT:
-            # Add context-specific guidance
+        # Add role guidance based on complexity
+        if context.complexity != ComplexityLevel.SIMPLE:
             if self.current_state == RoleState.ACTIVE:
                 enhanced += "You are the primary responder. "
             elif self.current_state == RoleState.TOOL_USER:
@@ -239,8 +221,8 @@ class DynamicRole:
                 enhanced += "Focus on direct interaction without using tools. "
             
             # Add response type guidance
-            if self.response_type == "conversational":
-                enhanced += "Maintain a natural conversational tone. "
+            if self.response_type == "direct":
+                enhanced += "Keep responses clear and concise. "
             elif self.response_type == "analytical":
                 enhanced += "Provide detailed analytical responses. "
             elif self.response_type == "procedural":
