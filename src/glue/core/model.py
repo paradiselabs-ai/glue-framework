@@ -168,8 +168,22 @@ class Model:
         await self.process_message(sender, content)
         
     async def process_message(self, sender: str, content: Any) -> None:
-        """Process a received message (to be implemented by provider)"""
-        raise NotImplementedError
+        """Process a received message from another team member"""
+        if isinstance(content, dict) and content.get('type') == 'tool_result':
+            # Store tool result in shared results if using GLUE
+            tool_name = content.get('tool')
+            result = content.get('result')
+            if tool_name and result:
+                tool_result = ToolResult(
+                    tool_name=tool_name,
+                    result=result,
+                    adhesive=AdhesiveType.GLUE,
+                    timestamp=datetime.now()
+                )
+                if hasattr(self, 'team') and hasattr(self.team, 'shared_results'):
+                    self.team.shared_results[tool_name] = tool_result
+                    # Update team context
+                    self._team_context[f"{tool_name}_result"] = tool_result
         
     async def generate(self, prompt: str) -> str:
         """Generate a response (to be implemented by provider)"""

@@ -60,29 +60,33 @@ class GlueExecutor:
     """
     
     def __init__(self, app_config: GlueAppConfig):
-        # Create GlueApp instance from config
-        self.app = GlueApp(
-            name=app_config.name,
-            config=AppConfig(
-                name=app_config.name,
-                memory_limit=1000,
-                enable_persistence=app_config.config.get("sticky", False)
-            )
-        )
+        # Store app config first
         self.app_config = app_config
-        self.tools = {}
-        self.models = {}
-        self.teams = {}
         
         # Initialize logger
         self._setup_logger()
         self.logger = get_logger()
         
-        # Initialize workspace manager
+        # Initialize workspace manager and get workspace path
         self.workspace_manager = WorkspaceManager()
+        sticky = self.app_config.config.get("sticky", False)
+        self.workspace_path = self.workspace_manager.get_workspace(self.app_config.name, sticky)
+        self.logger.info(f"Using workspace: {self.workspace_path}")
         
-        # Initialize managers
-        sticky = app_config.config.get("sticky", False)
+        # Create GlueApp instance with workspace path
+        self.app = GlueApp(
+            name=app_config.name,
+            config=AppConfig(
+                name=app_config.name,
+                memory_limit=1000,
+                enable_persistence=sticky
+            ),
+            workspace_path=self.workspace_path
+        )
+        self.app_config = app_config
+        self.tools = {}
+        self.models = {}
+        self.teams = {}
         
         # Determine app complexity based on team count
         is_complex = False
@@ -104,12 +108,21 @@ class GlueExecutor:
     
     def _setup_logger(self):
         """Setup logging"""
-        init_logger()
+        # Create output directory if it doesn't exist
+        output_dir = Path("output")
+        output_dir.mkdir(exist_ok=True)
+        
+        # Initialize logger with development mode and log directory
+        init_logger(
+            name=self.app_config.name,
+            log_dir=str(output_dir),
+            development=self.app_config.config.get("development", False)
+        )
     
     def _setup_environment(self):
         """Setup execution environment"""
-        # Create workspace if needed
-        os.makedirs("workspace", exist_ok=True)
+        # Ensure workspace exists
+        os.makedirs(self.workspace_path, exist_ok=True)
     
     async def execute(self) -> GlueApp:
         """Execute the GLUE application
@@ -119,88 +132,92 @@ class GlueExecutor:
         """
         # Initialize components
         await self._init_tools()
-        # First pass: Initialize models without teams
-        await self._init_models(with_teams=False)
-        # Initialize teams with models
+        # Initialize models first
+        await self._init_models()
+        # Initialize teams and link models
         await self._init_teams()
-        # Second pass: Update models with their teams
-        await self._init_models(with_teams=True)
         
         # Return configured app
         return self.app
     
     async def _init_tools(self):
         """Initialize tools"""
+        self.logger.info("Initializing tools...")
         for name, config in self.app_config.tool_configs.items():
+            self.logger.info(f"Setting up tool: {name}")
             # Create tool instance based on type
             if name == "code_interpreter":
                 tool = CodeInterpreterTool(
                     name=name,
                     description="Execute code in various languages",
-                    config=config
+                    workspace_dir=str(Path(self.workspace_path)),
+                    supported_languages=config.config.get("supported_languages"),
+                    adhesive_type=config.config.get("adhesive_type"),
+                    enable_security_checks=config.config.get("enable_security_checks", True),
+                    enable_code_analysis=config.config.get("enable_code_analysis", True),
+                    enable_error_suggestions=config.config.get("enable_error_suggestions", True),
+                    max_memory_mb=config.config.get("max_memory_mb", 500),
+                    max_execution_time=config.config.get("max_execution_time", 30),
+                    max_file_size_kb=config.config.get("max_file_size_kb", 10240),
+                    max_subprocess_count=config.config.get("max_subprocess_count", 2)
                 )
             elif name == "web_search":
                 tool = WebSearchTool(
                     name=name,
                     description="Search the web for information",
-                    config=config
+                    adhesive_type=config.config.get("adhesive_type")
                 )
             elif name == "file_handler":
                 tool = FileHandlerTool(
                     name=name,
                     description="Handle file operations",
-                    config=config
+                    workspace_dir=str(Path(self.workspace_path)),
+                    adhesive_type=config.config.get("adhesive_type")
                 )
             else:
                 tool = BaseTool(
                     name=name,
                     description=f"Generic tool: {name}",
-                    config=config
+                    adhesive_type=config.config.get("adhesive_type")
                 )
             
             self.tools[name] = tool
             self.app.tools[name] = tool
     
-    async def _init_models(self, with_teams: bool = True):
+    async def _init_models(self):
         """Initialize models"""
+        self.logger.info("Initializing models...")
         for name, config in self.app_config.model_configs.items():
-            # Only get team object if with_teams is True
-            team = None
-            if with_teams and self.app_config.workflow:
-                for team_name, team_config in self.app_config.workflow.teams.items():
-                    if name in [team_config.lead] + team_config.members:
-                        team = self.teams[team_name]  # Use team object instead of name
-                        break
+            self.logger.info(f"Setting up model: {name} with provider {config.provider}")
+            available_adhesives = set(config.config.get("adhesives", []))
             
-            # Only create new provider if it doesn't exist or we're adding teams
-            if name not in self.models or with_teams:
-                available_adhesives = set(config.config.get("adhesives", []))
-                
-                if config.provider == "openrouter":
-                    provider = OpenRouterProvider(
-                        name=name,
-                        team=team,
-                        available_adhesives=available_adhesives,
-                        config=config
-                    )
-                else:
-                    provider = BaseProvider(
-                        name=name,
-                        team=team,
-                        available_adhesives=available_adhesives,
-                        config=config
-                    )
-                
-                self.models[name] = provider
-                self.app.register_model(name, provider)
+            if config.provider == "openrouter":
+                provider = OpenRouterProvider(
+                    name=name,
+                    team=None,  # Team will be set during team initialization
+                    available_adhesives=available_adhesives,
+                    config=config
+                )
+            else:
+                provider = BaseProvider(
+                    name=name,
+                    team=None,  # Team will be set during team initialization
+                    available_adhesives=available_adhesives,
+                    config=config
+                )
+            
+            self.models[name] = provider
+            self.app.register_model(name, provider)
     
     async def _init_teams(self):
         """Initialize teams"""
         if not self.app_config.workflow:
             return
             
+        self.logger.info("Initializing teams...")
         # Create teams
         for name, config in self.app_config.workflow.teams.items():
+            self.logger.info(f"Setting up team: {name}")
             # Create team
             team = Team(name=name)
             
@@ -212,17 +229,29 @@ class GlueExecutor:
             for member_name in config.members:
                 await team.add_member(member_name)
             
-            # Add tools
+            # Add tools to team
             for tool_name in config.tools:
                 if tool_name in self.tools:
-                    await team.add_tool(self.tools[tool_name])
+                    tool = self.tools[tool_name]
+                    # Add tool to team without binding - models will use their own adhesives
+                    await team.add_tool(tool)
+                    self.logger.debug(f"Added tool {tool_name} to team {name}")
                 else:
                     self.logger.error(f"Tool {tool_name} not found")
+            
+            # Store team
             self.teams[name] = team
             self.app.register_team(name, team)
-        
+            
+            # Link models to team
+            if config.lead:
+                self.models[config.lead].team = team
+            for member_name in config.members:
+                self.models[member_name].team = team
+            
         # Setup magnetic field
         if self.app_config.workflow:
+            self.logger.info("Setting up magnetic field...")
             field = MagneticField(name=self.app.name)
             
             # Add attractions (push flow)

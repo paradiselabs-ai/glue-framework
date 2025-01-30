@@ -20,6 +20,7 @@ from .core.state import StateManager, ResourceState
 from .tools.base import BaseTool, ToolConfig, ToolPermission
 from .magnetic.field import MagneticField
 from .core.workspace import WorkspaceManager
+from .core.logger import get_logger
 
 def print_version(ctx, param, value):
     if not value or ctx.resilient_parsing:
@@ -455,7 +456,26 @@ def run(file, env):
         app = parse_glue_file(file)
         
         # Execute application
-        asyncio.run(execute_glue_app(app))
+        app = asyncio.run(execute_glue_app(app))
+        
+        # Enter interactive mode
+        click.echo(f"\nGLUE App '{app.name}' is running. Enter prompts or 'exit' to quit.")
+        while True:
+            try:
+                prompt = click.prompt("\nPrompt")
+                if prompt.lower() == 'exit':
+                    break
+                    
+                result = asyncio.run(app.process_prompt(prompt))
+                click.echo(f"\nResponse: {result}")
+                
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                click.echo(f"Error: {str(e)}", err=True)
+                
+        # Cleanup
+        asyncio.run(app.cleanup())
         
     except Exception as e:
         import traceback

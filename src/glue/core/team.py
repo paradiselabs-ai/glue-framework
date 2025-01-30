@@ -103,23 +103,11 @@ class Team:
     async def add_tool(
         self,
         tool: BaseTool,
-        binding_type: AdhesiveType = AdhesiveType.GLUE,
         members: Optional[List[str]] = None
     ) -> None:
         """Add a tool and optionally assign to specific members"""
         # Add tool instance
         self.tools[tool.name] = tool
-            
-        # Create binding for tool
-        if binding_type == AdhesiveType.GLUE:
-            binding = ToolBinding.glue()
-        elif binding_type == AdhesiveType.VELCRO:
-            binding = ToolBinding.velcro()
-        else:
-            binding = ToolBinding.tape()
-            
-        binding.bind()  # Initialize binding
-        self.tool_bindings[tool.name] = binding
         
         # Add tool to specified members or all members if none specified
         target_members = [self.members[m] for m in (members or self.members.keys())]

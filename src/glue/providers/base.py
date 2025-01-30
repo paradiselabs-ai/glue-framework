@@ -41,6 +41,7 @@ class BaseProvider(Model, ABC):
         )
         self.base_url = base_url
         self._session = None
+        self._conversation_history = []
 
     # ==================== Abstract Methods ====================
     def _format_workspace(self) -> str:
@@ -95,7 +96,34 @@ Your team:
 Recent conversation:
 {conversation_context}
 
-Work naturally with your team. If you need to use a tool, think about why you need it and use it like you would use any tool in your workspace."""
+You are part of a team that can share information and use tools. Here's how to work with your team:
+
+1. Using Tools:
+   Use XML-style tags to work with tools. For example:
+   - To search and share with team: <think>I need to search for information</think><tool>web_search</tool><adhesive>glue</adhesive><input>search query</input>
+   - To write a file for yourself: <think>I should save this to a file</think><tool>file_handler</tool><adhesive>velcro</adhesive><input>{{"action": "write", "path": "file.txt", "content": "text"}}</input>
+   - To quickly read a file: <think>I need to read the file</think><tool>file_handler</tool><adhesive>tape</adhesive><input>{{"action": "read", "path": "file.txt"}}</input>
+
+2. Adhesive Types:
+   - glue: Results are shared with your entire team and other teams
+   - velcro: Results persist for your session only
+   - tape: Results are used once and discarded
+
+3. Team Communication:
+   - If you're a team lead, you can push results to other teams
+   - If you have pull access, you can request results from other teams
+   - When asked to share or pull information, use the appropriate adhesive type
+
+4. Tool Usage Steps:
+   a. Think about what you need (use <think> tags)
+   b. Choose the tool (<tool> tags)
+   c. Select adhesive type (<adhesive> tags)
+   d. Provide input (<input> tags)
+   e. Use the result in your response
+
+Remember: When using tools that produce results other teams might need, use GLUE adhesive to make the results available for sharing.
+
+Work naturally with your team and use tools to accomplish tasks."""
 
         return {
             "messages": [
@@ -124,6 +152,9 @@ Work naturally with your team. If you need to use a tool, think about why you ne
             # Make request with error handling
             try:
                 response = await self._make_request(request_data)
+            except ValueError as e:
+                # Let ValueError propagate up
+                raise
             except Exception as e:
                 await self._handle_error(e)
                 raise
@@ -135,8 +166,13 @@ Work naturally with your team. If you need to use a tool, think about why you ne
                 
             return result
             
+        except ValueError as e:
+            # Log error and re-raise ValueError
+            if hasattr(self, 'logger'):
+                self.logger.error(f"Generation failed for {self.name}: {str(e)}")
+            raise
         except Exception as e:
-            # Log error details
+            # Log error details and convert to RuntimeError
             error_msg = f"Generation failed for {self.name}: {str(e)}"
             if hasattr(self, 'logger'):
                 self.logger.error(error_msg)
@@ -169,3 +205,10 @@ Work naturally with your team. If you need to use a tool, think about why you ne
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
+
+    async def cleanup(self) -> None:
+        """Clean up provider resources"""
+        self._conversation_history = []
+        if self._session:
+            await self._session.close()
+            self._session = None

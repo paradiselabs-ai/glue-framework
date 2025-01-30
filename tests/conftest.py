@@ -18,9 +18,11 @@ def setup_test_env():
     # Create test workspace
     os.makedirs("workspace/test", exist_ok=True)
     
-    # Set test environment variables
-    os.environ["OPENROUTER_API_KEY"] = "test_key"
-    os.environ["SERP_API_KEY"] = "test_key"
+    # Set test environment variables only if they don't exist
+    if not os.getenv("OPENROUTER_API_KEY"):
+        os.environ["OPENROUTER_API_KEY"] = "test_key"
+    if not os.getenv("SERP_API_KEY"):
+        os.environ["SERP_API_KEY"] = "test_key"
     
     yield
     

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from .model import Model
 from ..tools.base import BaseTool
 from ..magnetic.field import MagneticField
+from .team import TeamRole
 
 @dataclass
 class AppMemory:
@@ -40,10 +41,12 @@ class GlueApp:
     def __init__(
         self,
         name: str,
-        config: Optional[AppConfig] = None
+        config: Optional[AppConfig] = None,
+        workspace_path: Optional[str] = None
     ):
         self.name = name
         self.config = config or AppConfig(name=name)
+        self.workspace_path = workspace_path
         
         # Core components
         self.fields: Dict[str, List[Any]] = {}
@@ -77,8 +80,11 @@ class GlueApp:
         # Store field
         self.fields[name] = field_resources
         
-        # Set as default if first field
-        if not self._default_field:
+        # Set researchers as default field if it exists
+        if name == "researchers":
+            self._default_field = name
+        # Otherwise set as default if first field
+        elif not self._default_field:
             self._default_field = name
         
     async def process_prompt(self, prompt: str) -> str:
@@ -93,26 +99,58 @@ class GlueApp:
                 content=prompt
             ))
             
-            # Get lead model
-            field_resources = self.fields[self._default_field]
-            lead_model = next(
-                (r for r in field_resources if isinstance(r, Model)),
+            # Get team lead
+            team = self.teams[self._default_field]
+            lead_name = next(
+                (m for m in team.members if team.get_member_role(m) == TeamRole.LEAD),
                 None
             )
-            if not lead_model:
-                raise ValueError("No model available in default field")
+            if not lead_name:
+                raise ValueError("No team lead available")
+                
+            lead_model = self.models[lead_name]
             
-            # Generate response
+            # Generate response through team lead
             response = await lead_model.generate(prompt)
             
-            # Store response
+            # Store full response in memory
             self._add_memory(AppMemory(
-                type='response',
+                type='internal',
                 content=response,
                 field=self._default_field
             ))
             
-            return response
+            # Extract final result
+            if "File saved at" in response:
+                # File operation result
+                start = response.find("File saved at")
+                end = response.find("\n", start)
+                if end == -1:
+                    end = len(response)
+                final_response = response[start:end]
+            elif "Tool output:" in response:
+                # Tool usage result
+                start = response.find("Tool output:") + len("Tool output:")
+                end = response.find("\n", start)
+                if end == -1:
+                    end = len(response)
+                final_response = response[start:end].strip()
+            else:
+                # Default to last line that's not a thought or tool usage
+                lines = [line.strip() for line in response.split("\n") 
+                        if line.strip() and 
+                        not line.strip().startswith("<") and 
+                        not line.strip().endswith(">")]
+                final_response = lines[-1] if lines else "Task completed"
+            
+            # Store final response
+            self._add_memory(AppMemory(
+                type='response',
+                content=final_response,
+                field=self._default_field
+            ))
+            
+            return final_response
             
         except Exception as e:
             # Store error
@@ -155,10 +193,27 @@ class GlueApp:
         self.models[name] = model
 
     def register_team(self, name: str, team: Any) -> None:
-        """Register a team with the app"""
+        """Register a team with the app and create corresponding field"""
         if name in self.teams:
             raise ValueError(f"Team {name} already registered")
+            
+        # Register team
         self.teams[name] = team
+        
+        # Get team's lead and members
+        lead = next((self.models[m] for m in team.members if team.get_member_role(m) == TeamRole.LEAD), None)
+        members = [self.models[m] for m in team.members if team.get_member_role(m) != TeamRole.LEAD]
+        
+        # Get team's tools
+        tools = [self.tools[t] for t in team.tools]
+        
+        # Add field for team
+        self.add_field(
+            name=name,
+            lead=lead,
+            members=members,
+            tools=tools
+        )
         
     def set_magnetic_field(self, field: MagneticField) -> None:
         """Set the magnetic field for team interactions"""

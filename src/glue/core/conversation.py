@@ -101,17 +101,20 @@ class ConversationManager:
         if self.sticky:
             self._load_history()
     
-    def _extract_tool_usage(self, response: str) -> Optional[Tuple[str, str, str]]:
-        """Extract tool name, thought, and input from response"""
+    def _extract_tool_usage(self, response: str) -> Optional[Tuple[str, str, str, AdhesiveType]]:
+        """Extract tool name, thought, input, and adhesive type from response"""
         tool_match = re.search(r'<tool>(.*?)</tool>', response)
         input_match = re.search(r'<input>(.*?)</input>', response)
         thought_match = re.search(r'<think>(.*?)</think>', response)
+        adhesive_match = re.search(r'<adhesive>(.*?)</adhesive>', response)
         
-        if tool_match and input_match:
+        if tool_match and input_match and adhesive_match:
             tool_name = tool_match.group(1).strip()
             tool_input = input_match.group(1).strip()
             thought = thought_match.group(1).strip() if thought_match else ""
-            return (tool_name, thought, tool_input)
+            adhesive_str = adhesive_match.group(1).strip().upper()
+            adhesive = getattr(AdhesiveType, adhesive_str)
+            return (tool_name, thought, tool_input, adhesive)
             
         return None
     
@@ -290,12 +293,13 @@ class ConversationManager:
                 # Check for tool usage
                 tool_usage = self._extract_tool_usage(response)
                 if tool_usage and tools:
-                    tool_name, thought, tool_input = tool_usage
+                    tool_name, thought, tool_input, adhesive = tool_usage
                     
                     # Log the attempt
                     self.logger.debug(f"Tool usage detected: {tool_name}")
                     self.logger.debug(f"Thought: {thought}")
                     self.logger.debug(f"Input: {tool_input}")
+                    self.logger.debug(f"Adhesive: {adhesive.name}")
                     
                     # Skip if tool not needed for simple tasks
                     if (context.complexity == ComplexityLevel.SIMPLE and
@@ -311,11 +315,32 @@ class ConversationManager:
                         try:
                             tool = tools[tool_name]
                             tool_start = datetime.now()
-                            result = await tool.execute(tool_input)
+                            # Initialize tool with binding
+                            await self._initialize_tool(
+                                tool=tool,
+                                binding_type=adhesive,
+                                conversation_id=self.active_conversation,
+                                model_name=model.name
+                            )
+                            
+                            # Execute tool through model
+                            result = await model.use_tool(tool_name, adhesive, tool_input)
                             tool_duration = (datetime.now() - tool_start).total_seconds()
                             
                             # Record usage
                             self.tool_usage[tool_name] = self.tool_usage.get(tool_name, 0) + 1
+
+                            # If using GLUE adhesive, share with team members
+                            if adhesive == AdhesiveType.GLUE and hasattr(model, 'team'):
+                                team = model.team
+                                # Share result with all team members
+                                for member_name in team.members:
+                                    if member_name != model.name:  # Don't send to self
+                                        await model.send_message(member_name, {
+                                            'type': 'tool_result',
+                                            'tool': tool_name,
+                                            'result': result
+                                        })
                             
                             # Record success
                             self.tool_optimizer.record_usage(
