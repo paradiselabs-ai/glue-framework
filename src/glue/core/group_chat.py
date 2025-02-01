@@ -51,7 +51,7 @@ class GroupChatManager:
         
         # Core components
         self.models: Dict[str, Model] = {}
-        self.conversation_manager = ConversationManager()
+        self.conversation_manager = ConversationManager(sticky=True)  # Enable persistence
         
         # Chat tracking
         self.active_chats: Dict[str, ChatGroup] = {}
@@ -61,7 +61,7 @@ class GroupChatManager:
         self.tools: Dict[str, Any] = {}
         self.tool_bindings: Dict[str, Dict[str, AdhesiveType]] = {}
     
-    async def add_model(self, model: Model) -> None:
+    def add_model(self, model: Model) -> None:
         """Add a model to the chat system"""
         self.logger.debug(f"Adding model: {model.name}")
         self.models[model.name] = model

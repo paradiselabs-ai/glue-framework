@@ -98,6 +98,18 @@ class ToolBinding:
                 "context_duration": "permanent"
             }
         )
+
+    @classmethod
+    def create(cls, adhesive_type: AdhesiveType) -> 'ToolBinding':
+        """Create a binding of any adhesive type"""
+        if adhesive_type == AdhesiveType.TAPE:
+            return cls.tape()
+        elif adhesive_type == AdhesiveType.VELCRO:
+            return cls.velcro()
+        elif adhesive_type == AdhesiveType.GLUE:
+            return cls.glue()
+        else:
+            raise ValueError(f"Unknown adhesive type: {adhesive_type}")
     
     def maintains_context(self) -> bool:
         """Check if binding maintains context between uses"""

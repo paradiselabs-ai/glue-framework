@@ -9,6 +9,7 @@ from .types import ToolResult, AdhesiveType
 from .state import StateManager
 from .tool_binding import ToolBinding
 from ..tools.base import BaseTool
+from .model import Model
 
 class TeamRole(Enum):
     """Team member roles"""
@@ -53,12 +54,14 @@ class Team:
     def __init__(
         self,
         name: str,
+        models: Optional[Dict[str, Model]] = None,
         members: Optional[Dict[str, TeamMember]] = None,
         tools: Optional[Dict[str, BaseTool]] = None,
         shared_results: Optional[Dict[str, ToolResult]] = None,
         state_manager: Optional[StateManager] = None
     ):
         self.name = name
+        self.models = models or {}  # model_name -> Model instance
         self.members = members or {}
         self.tools = tools or {}  # tool_name -> tool instance
         self.tool_bindings = {}  # tool_name -> ToolBinding
@@ -83,17 +86,20 @@ class Team:
         if model_name in self.members:
             raise ValueError(f"Model {model_name} is already a team member")
             
-        # Validate tools
-        if tools:
-            invalid_tools = tools - self.tools
-            if invalid_tools:
-                raise ValueError(f"Invalid tools: {invalid_tools}")
+        # Get model instance
+        if model_name not in self.models:
+            raise ValueError(f"Model {model_name} not found")
+        model = self.models[model_name]
+        
+        # Give model access to team's tools
+        for tool_name, tool in self.tools.items():
+            model._tools[tool_name] = tool
         
         # Create member
         member = TeamMember(
             name=model_name,
             role=role,
-            tools=tools or set()
+            tools=set(self.tools.keys())  # Give access to all team tools
         )
         self.members[model_name] = member
         
@@ -109,11 +115,13 @@ class Team:
         # Add tool instance
         self.tools[tool.name] = tool
         
-        # Add tool to specified members or all members if none specified
-        target_members = [self.members[m] for m in (members or self.members.keys())]
-        for member in target_members:
-            member.tools.add(tool.name)
-            member.last_active = datetime.now()
+        # Add tool to all team members' models
+        for member_name in self.members:
+            if member_name in self.models:
+                model = self.models[member_name]
+                model._tools[tool.name] = tool
+                self.members[member_name].tools.add(tool.name)
+                self.members[member_name].last_active = datetime.now()
             
         # Update timestamp
         self.updated_at = datetime.now()

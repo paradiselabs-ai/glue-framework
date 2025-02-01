@@ -307,6 +307,53 @@ async def test_sticky_persistence(app):
         await new_app.cleanup()
 
 @pytest.mark.asyncio
+async def test_internal_team_sharing(app):
+    """Test sharing tool results between team members"""
+    # Test that researcher's GLUE results are shared with assistant
+    result = await app.process_prompt(
+        "Research quantum computing and have the researcher share findings with assistant"
+    )
+    
+    # Get researcher's shared results
+    researcher = app.models["researcher"]
+    assistant = app.models["assistant"]
+    
+    # Verify assistant received the shared results
+    assert len(assistant._team_context) > 0
+    assert any("web_search" in key for key in assistant._team_context.keys())
+    
+    # Verify results were stored with GLUE adhesive
+    team = app.teams["researchers"]
+    assert len(team.shared_results) > 0
+    assert any("web_search" in key for key in team.shared_results.keys())
+
+@pytest.mark.asyncio
+async def test_final_result_display(app):
+    """Test that only final results are shown to user"""
+    # Test file operation result
+    result = await app.process_prompt(
+        "Research quantum computing and save to a file"
+    )
+    
+    # Verify only the file operation result is shown
+    assert result.startswith("File saved at")
+    assert "<think>" not in result
+    assert "<tool>" not in result
+    assert "<adhesive>" not in result
+    assert "<input>" not in result
+    
+    # Test tool usage result
+    result = await app.process_prompt(
+        "What are the latest developments in AI?"
+    )
+    
+    # Verify only the final summary is shown
+    assert "<think>" not in result
+    assert "<tool>" not in result
+    assert "<adhesive>" not in result
+    assert "<input>" not in result
+
+@pytest.mark.asyncio
 async def test_error_handling(app):
     """Test error handling"""
     # Test invalid field

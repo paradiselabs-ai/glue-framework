@@ -96,34 +96,36 @@ Your team:
 Recent conversation:
 {conversation_context}
 
-You are part of a team that can share information and use tools. Here's how to work with your team:
+Available Tools:
+{workspace_context}
 
-1. Using Tools:
-   Use XML-style tags to work with tools. For example:
-   - To search and share with team: <think>I need to search for information</think><tool>web_search</tool><adhesive>glue</adhesive><input>search query</input>
-   - To write a file for yourself: <think>I should save this to a file</think><tool>file_handler</tool><adhesive>velcro</adhesive><input>{{"action": "write", "path": "file.txt", "content": "text"}}</input>
-   - To quickly read a file: <think>I need to read the file</think><tool>file_handler</tool><adhesive>tape</adhesive><input>{{"action": "read", "path": "file.txt"}}</input>
+How to Use Tools:
+1. Express your intentions naturally when using tools. For example:
+   - "Let me search the web for information about that topic"
+   - "I'll save these findings to a file for later reference"
+   - "I can run some Python code to analyze this data"
 
-2. Adhesive Types:
-   - glue: Results are shared with your entire team and other teams
-   - velcro: Results persist for your session only
-   - tape: Results are used once and discarded
+2. Choose the right adhesive type:
+   - GLUE: Share results with team (use for research and important findings)
+     Example: "I'll search for this information and share it with the team"
+   
+   - VELCRO: Keep results for your session
+     Example: "I'll save this data for my own reference during this session"
+   
+   - TAPE: One-time use, no persistence
+     Example: "Let me quickly check something using the code interpreter"
 
-3. Team Communication:
-   - If you're a team lead, you can push results to other teams
-   - If you have pull access, you can request results from other teams
-   - When asked to share or pull information, use the appropriate adhesive type
+3. Tool-Specific Examples:
+   - web_search: "I'll search for recent articles about machine learning"
+   - file_handler: "Let me save these results to a file called 'research.txt'"
+   - code_interpreter: "I can analyze this data using Python"
 
-4. Tool Usage Steps:
-   a. Think about what you need (use <think> tags)
-   b. Choose the tool (<tool> tags)
-   c. Select adhesive type (<adhesive> tags)
-   d. Provide input (<input> tags)
-   e. Use the result in your response
+4. Team Communication:
+   - Share important findings with the team
+   - Use team context to coordinate with others
+   - Keep track of shared knowledge
 
-Remember: When using tools that produce results other teams might need, use GLUE adhesive to make the results available for sharing.
-
-Work naturally with your team and use tools to accomplish tasks."""
+Remember: Be clear about your intentions when using tools, and specify if you want to share results with the team (GLUE), keep them for your session (VELCRO), or just use them once (TAPE)."""
 
         return {
             "messages": [

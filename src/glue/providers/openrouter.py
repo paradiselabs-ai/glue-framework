@@ -59,7 +59,8 @@ class OpenRouterProvider(BaseProvider):
             config=config
         )
         self.base_url = "https://openrouter.ai/api/v1"
-        self.model_id = model
+        # Use model from config if provided, otherwise use default
+        self.model_id = config.config.get("model") if config else model
         self.logger = get_logger()
     
     async def _prepare_request(self, prompt: str) -> Dict[str, Any]:
@@ -92,11 +93,19 @@ class OpenRouterProvider(BaseProvider):
             raise
     
     async def _handle_error(self, error: Any) -> None:
-        """Handle OpenRouter API errors"""
+        """Handle OpenRouter API errors with fallback"""
         if isinstance(error, dict) and "error" in error:
             error_data = error["error"]
             error_msg = error_data.get("message", "Unknown API error")
-            raise ValueError(f"OpenRouter API error: {error_msg}")
+            self.logger.error(f"OpenRouter API error: {error_msg}")
+            
+            # Try fallback model
+            if self.model_id != "meta-llama/llama-3.1-8b-instruct:free":
+                self.logger.info("Retrying with fallback model")
+                self.model_id = "meta-llama/llama-3.1-8b-instruct:free"
+                return  # Allow retry with fallback model
+            
+        # If fallback fails or other error, raise
         raise ValueError(f"OpenRouter API error: {error}")
     
     async def _make_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:

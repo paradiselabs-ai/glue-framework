@@ -191,20 +191,37 @@ class GlueExecutor:
             self.logger.info(f"Setting up model: {name} with provider {config.provider}")
             available_adhesives = set(config.config.get("adhesives", []))
             
+            # Convert parser config to runtime config
+            from ..core.model import ModelConfig as RuntimeConfig
+            runtime_config = RuntimeConfig(
+                temperature=config.config.get("temperature", 0.7),
+                max_tokens=config.config.get("max_tokens", 1000),
+                top_p=config.config.get("top_p", 1.0),
+                presence_penalty=config.config.get("presence_penalty", 0.0),
+                frequency_penalty=config.config.get("frequency_penalty", 0.0),
+                stop_sequences=config.config.get("stop_sequences", []),
+                system_prompt=None,  # Will be set by set_role
+                config=config.config  # Keep provider-specific config
+            )
+
+            # Create provider with role
             if config.provider == "openrouter":
                 provider = OpenRouterProvider(
                     name=name,
                     team=None,  # Team will be set during team initialization
                     available_adhesives=available_adhesives,
-                    config=config
+                    config=runtime_config
                 )
             else:
                 provider = BaseProvider(
                     name=name,
                     team=None,  # Team will be set during team initialization
                     available_adhesives=available_adhesives,
-                    config=config
+                    config=runtime_config
                 )
+            
+            # Set role and system prompt
+            provider.set_role(config.role)
             
             self.models[name] = provider
             self.app.register_model(name, provider)
@@ -218,8 +235,18 @@ class GlueExecutor:
         # Create teams
         for name, config in self.app_config.workflow.teams.items():
             self.logger.info(f"Setting up team: {name}")
-            # Create team
-            team = Team(name=name)
+            # Get team models
+            team_models = {}
+            if config.lead:
+                team_models[config.lead] = self.models[config.lead]
+            for member_name in config.members:
+                team_models[member_name] = self.models[member_name]
+
+            # Create team with models
+            team = Team(
+                name=name,
+                models=team_models
+            )
             
             # Add lead if specified
             if config.lead:
@@ -243,11 +270,18 @@ class GlueExecutor:
             self.teams[name] = team
             self.app.register_team(name, team)
             
-            # Link models to team
+            # Initialize shared results
+            team.shared_results = {}
+            
+            # Link models to team and connect to group chat
             if config.lead:
-                self.models[config.lead].team = team
+                lead_model = self.models[config.lead]
+                lead_model.team = team
+                self.group_chat.add_model(lead_model)
             for member_name in config.members:
-                self.models[member_name].team = team
+                member_model = self.models[member_name]
+                member_model.team = team
+                self.group_chat.add_model(member_model)
             
         # Setup magnetic field
         if self.app_config.workflow:
