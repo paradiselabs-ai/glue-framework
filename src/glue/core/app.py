@@ -1,246 +1,185 @@
 """GLUE Application Core"""
 
-from typing import Dict, List, Optional, Any
-from datetime import datetime
+import asyncio
+from typing import Dict, Any, Optional, List
+from pathlib import Path
 from dataclasses import dataclass
 
+from .team import Team
 from .model import Model
-from ..tools.base import BaseTool
+from .conversation import ConversationManager
+from .memory import MemoryManager
+from .workspace import WorkspaceManager
+from .group_chat import GroupChatManager
+from .state import StateManager
+from .logger import get_logger
+from ..tools.dynamic_tool_factory import DynamicToolFactory, ToolSpec, MCPServerSpec
 from ..magnetic.field import MagneticField
-from .team import TeamRole
-
-@dataclass
-class AppMemory:
-    """Application memory entry"""
-    type: str  # 'prompt', 'response', or 'error'
-    content: Any
-    field: Optional[str] = None
-    timestamp: Optional[datetime] = None
-
-    def __post_init__(self):
-        if self.timestamp is None:
-            self.timestamp = datetime.now()
 
 @dataclass
 class AppConfig:
-    """Application configuration"""
+    """Configuration for GLUE application"""
     name: str
-    memory_limit: int = 1000
-    enable_persistence: bool = False
+    memory_limit: int = 1000  # Maximum number of memory segments to store (conversations, tool results, etc.)
+    enable_persistence: bool = False  # Whether to persist memory between runs
+    development: bool = False  # Enable development mode with additional logging
+    sticky: bool = False  # Keep workspace between runs
+    config: Dict[str, Any] = None  # Additional provider-specific configuration
 
 class GlueApp:
-    """
-    Main GLUE application class.
-    
-    Features:
-    - Field management for models and tools
-    - Basic memory for user interactions
-    - Clean resource handling
-    """
+    """Core GLUE application"""
     
     def __init__(
         self,
         name: str,
-        config: Optional[AppConfig] = None,
-        workspace_path: Optional[str] = None
+        config: AppConfig,
+        workspace_dir: Optional[Path] = None
     ):
         self.name = name
-        self.config = config or AppConfig(name=name)
-        self.workspace_path = workspace_path
+        self.config = config
+        self.logger = get_logger()
         
         # Core components
-        self.fields: Dict[str, List[Any]] = {}
-        self.tools: Dict[str, BaseTool] = {}
+        self.teams: Dict[str, Team] = {}
         self.models: Dict[str, Model] = {}
-        self.teams: Dict[str, Any] = {}  # Will store Team objects
-        self.magnetic_field: Optional[MagneticField] = None
-        self._memory: List[AppMemory] = []
-        self._default_field: Optional[str] = None
+        self.tools: Dict[str, Any] = {}  # Store initialized tools
+        self.conversation_manager = ConversationManager()
+        self.memory_manager = MemoryManager()
+        self.workspace_manager = WorkspaceManager(workspace_dir)
+        self.state_manager = StateManager()
         
-    def add_field(
-        self,
-        name: str,
-        lead: Optional[Model] = None,
-        members: Optional[List[Model]] = None,
-        tools: Optional[List[BaseTool]] = None
-    ) -> None:
-        """Add a new field to the app"""
-        if name in self.fields:
-            raise ValueError(f"Field {name} already exists")
-            
-        # Collect field resources
-        field_resources = []
-        if lead:
-            field_resources.append(lead)
-        if members:
-            field_resources.extend(members)
-        if tools:
-            field_resources.extend(tools)
-                
-        # Store field
-        self.fields[name] = field_resources
+        # Team communication
+        self.group_chat_manager = GroupChatManager(name)
+        self.magnetic_field = MagneticField(name)
         
-        # Set researchers as default field if it exists
-        if name == "researchers":
-            self._default_field = name
-        # Otherwise set as default if first field
-        elif not self._default_field:
-            self._default_field = name
+        # Dynamic tool creation
+        self.tool_factory = DynamicToolFactory()
         
     async def process_prompt(self, prompt: str) -> str:
-        """Process a prompt using the default field"""
-        if not self._default_field or self._default_field not in self.fields:
-            raise ValueError("No default field available")
-            
+        """Process user prompt"""
+        self.logger.info(f"Processing prompt: {prompt}")
+        
         try:
-            # Store prompt in memory
-            self._add_memory(AppMemory(
-                type='prompt',
-                content=prompt
-            ))
+            # First check for tool/MCP creation request
+            if any(keyword in prompt.lower() for keyword in ["create", "make", "build"]):
+                if any(keyword in prompt.lower() for keyword in ["tool", "mcp", "server"]):
+                    # Get relevant team based on prompt context
+                    team = self._get_relevant_team(prompt)
+                    
+                    # Try to create tool/server
+                    result = await self.tool_factory.parse_natural_request(prompt, team)
+                    if result:
+                        if isinstance(result, dict):
+                            # MCP server created
+                            tools = ", ".join(result.keys())
+                            return f"Created MCP server with tools: {tools}"
+                        else:
+                            # Single tool created
+                            return f"Created tool: {result.name}\n{result.description}"
             
-            # Get team lead
-            team = self.teams[self._default_field]
-            lead_name = next(
-                (m for m in team.members if team.get_member_role(m) == TeamRole.LEAD),
-                None
+            # Check for tool enhancement request
+            elif any(keyword in prompt.lower() for keyword in ["enhance", "improve", "upgrade"]):
+                for tool_name in self.tool_factory.list_tools():
+                    if tool_name.lower() in prompt.lower():
+                        team = self._get_relevant_team(prompt)
+                        enhanced_tool = await self.tool_factory.enhance_tool(
+                            tool_name,
+                            prompt,
+                            team
+                        )
+                        return f"Enhanced tool: {enhanced_tool.name}\n{enhanced_tool.description}"
+            
+            # Process normal prompt through teams
+            team = self._get_relevant_team(prompt)
+            if team:
+                # Get team's lead model
+                lead_model = self.models.get(team.lead)
+                if lead_model:
+                    # Process through team's lead model
+                    response = await lead_model.process(
+                        prompt,
+                        context=self.state_manager.get_context()
+                    )
+                    
+                    # Store in memory
+                    await self.memory_manager.store(
+                        prompt=prompt,
+                        response=response,
+                        team=team.name
+                    )
+                    
+                    return response
+            
+            # Fallback to conversation manager
+            return await self.conversation_manager.process(
+                prompt,
+                context=self.state_manager.get_context()
             )
-            if not lead_name:
-                raise ValueError("No team lead available")
-                
-            lead_model = self.models[lead_name]
-            
-            # Generate response through team lead
-            response = await lead_model.generate(prompt)
-            
-            # Store full response in memory
-            self._add_memory(AppMemory(
-                type='internal',
-                content=response,
-                field=self._default_field
-            ))
-            
-            # Extract final result
-            if "File saved at" in response:
-                # File operation result
-                start = response.find("File saved at")
-                end = response.find("\n", start)
-                if end == -1:
-                    end = len(response)
-                final_response = response[start:end]
-            elif "Tool output:" in response:
-                # Tool usage result
-                start = response.find("Tool output:") + len("Tool output:")
-                end = response.find("\n", start)
-                if end == -1:
-                    end = len(response)
-                final_response = response[start:end].strip()
-            else:
-                # Default to last line that's not a thought or tool usage
-                lines = [line.strip() for line in response.split("\n") 
-                        if line.strip() and 
-                        not line.strip().startswith("<") and 
-                        not line.strip().endswith(">")]
-                final_response = lines[-1] if lines else "Task completed"
-            
-            # Store final response
-            self._add_memory(AppMemory(
-                type='response',
-                content=final_response,
-                field=self._default_field
-            ))
-            
-            return final_response
             
         except Exception as e:
-            # Store error
-            self._add_memory(AppMemory(
-                type='error',
-                content=str(e)
-            ))
+            self.logger.error(f"Error processing prompt: {str(e)}")
             raise
-        
-    def _add_memory(self, entry: AppMemory) -> None:
-        """Add entry to memory with limit handling"""
-        self._memory.append(entry)
-        
-        # Enforce memory limit
-        while len(self._memory) > self.config.memory_limit:
-            self._memory.pop(0)  # Remove oldest entry
-        
-    def get_memory(
-        self,
-        limit: Optional[int] = None
-    ) -> List[AppMemory]:
-        """Get app memory up to limit"""
-        memory = self._memory
-        if limit:
-            memory = memory[-limit:]
-        return memory
-        
-    def get_field_resources(self, name: str) -> Optional[List[Any]]:
-        """Get resources in a field by name"""
-        return self.fields.get(name)
-        
-    def list_fields(self) -> List[str]:
-        """List all field names"""
-        return list(self.fields.keys())
-        
-    def register_model(self, name: str, model: Model) -> None:
-        """Register a model with the app"""
-        if name in self.models:
-            raise ValueError(f"Model {name} already registered")
-        self.models[name] = model
-
-    def register_team(self, name: str, team: Any) -> None:
-        """Register a team with the app and create corresponding field"""
-        if name in self.teams:
-            raise ValueError(f"Team {name} already registered")
             
-        # Register team
-        self.teams[name] = team
+    def _get_relevant_team(self, prompt: str) -> Optional[Team]:
+        """Get most relevant team based on prompt context"""
+        # Check for explicit team mentions
+        for team_name, team in self.teams.items():
+            if team_name.lower() in prompt.lower():
+                return team
+                
+        # Check for model mentions
+        for model_name, model in self.models.items():
+            if model_name.lower() in prompt.lower():
+                # Find team containing this model
+                for team in self.teams.values():
+                    if model_name == team.lead or model_name in team.members:
+                        return team
+                        
+        # Check for tool mentions
+        for team in self.teams.values():
+            for tool_name in team.tools:
+                if tool_name.lower() in prompt.lower():
+                    return team
+                    
+        # Default to first team if none found
+        return next(iter(self.teams.values())) if self.teams else None
         
-        # Get team's lead and members
-        lead = next((self.models[m] for m in team.members if team.get_member_role(m) == TeamRole.LEAD), None)
-        members = [self.models[m] for m in team.members if team.get_member_role(m) != TeamRole.LEAD]
+    async def add_team(self, team: Team) -> None:
+        """Add team to app"""
+        self.teams[team.name] = team
+        await self.magnetic_field.add_team(team)
         
-        # Get team's tools
-        tools = [self.tools[t] for t in team.tools]
+    async def add_model(self, model: Model) -> None:
+        """Add model to app"""
+        self.models[model.name] = model
+        self.group_chat_manager.add_model(model)  # This is a synchronous method
         
-        # Add field for team
-        self.add_field(
-            name=name,
-            lead=lead,
-            members=members,
-            tools=tools
-        )
+    async def cleanup(self):
+        """Clean up resources"""
+        self.logger.info("Cleaning up app resources")
         
-    def set_magnetic_field(self, field: MagneticField) -> None:
-        """Set the magnetic field for team interactions"""
-        self.magnetic_field = field
-
-    def get_default_field(self) -> Optional[str]:
-        """Get the default field name"""
-        return self._default_field
-        
-    def set_default_field(self, field_name: str) -> None:
-        """Set the default field"""
-        if field_name not in self.fields:
-            raise ValueError(f"Field {field_name} not found")
-        self._default_field = field_name
-        
-    async def cleanup(self) -> None:
-        """Clean up app resources"""
-        # Clean up all resources
-        for field_resources in self.fields.values():
-            for resource in field_resources:
-                if hasattr(resource, 'cleanup'):
-                    await resource.cleanup()
-        
-        # Clear fields
-        self.fields.clear()
-        self._default_field = None
-        
-        # Clear memory if not persistent
-        if not self.config.enable_persistence:
-            self._memory.clear()
+        try:
+            # Clean up core components
+            await self.conversation_manager.cleanup()
+            await self.memory_manager.cleanup()
+            await self.workspace_manager.cleanup()
+            await self.state_manager.cleanup()
+            
+            # Clean up team communication
+            await self.group_chat_manager.cleanup()
+            await self.magnetic_field.cleanup()
+            
+            # Clean up dynamic tools
+            await self.tool_factory.cleanup()
+            
+            # Clean up teams
+            for team in self.teams.values():
+                await team.cleanup()
+                
+            # Clean up models
+            for model in self.models.values():
+                await model.cleanup()
+                
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {str(e)}")
+            raise

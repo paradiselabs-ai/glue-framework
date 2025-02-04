@@ -90,6 +90,52 @@ class SmolAgentsProvider(BaseProvider):
         self._dynamic_tools[tool.name] = tool
         
         return tool
+
+    async def handle_tool_creation_request(self, request: str) -> Optional[BaseTool]:
+        """Handle natural language tool creation requests"""
+        from smolagents import SmolAgent
+        agent = SmolAgent()
+        
+        # Parse tool creation intent
+        intent = await agent.parse_tool_intent(request)
+        if not intent:
+            return None
+            
+        if intent.get("type") == "tool":
+            # Generate tool implementation
+            implementation = await agent.generate_tool_implementation(
+                name=intent["name"],
+                description=intent["description"],
+                inputs=intent.get("inputs", {}),
+                output_type=intent.get("output_type", "string")
+            )
+            
+            # Create the tool
+            return await self.create_tool(
+                name=intent["name"],
+                description=intent["description"],
+                function=implementation
+            )
+            
+        elif intent.get("type") == "mcp":
+            # Generate MCP server implementation
+            server_impl = await agent.generate_mcp_server(
+                name=intent["server_name"],
+                tools=[{
+                    "name": intent["tool_name"],
+                    "description": intent["description"],
+                    "inputs": intent.get("inputs", {}),
+                    "output_type": intent.get("output_type", "string")
+                }]
+            )
+            
+            # Create MCP tool
+            return await self.create_mcp_tool(
+                server_name=intent["server_name"],
+                tool_name=intent["tool_name"]
+            )
+            
+        return None
         
     async def use_tool(self, tool_name: str, adhesive: AdhesiveType, input_data: Any) -> ToolResult:
         """Use tool with enhanced execution"""
@@ -191,6 +237,7 @@ When using tools, be clear about your intentions:
 You can also request new tools if needed:
 - "I need a tool that can format text in APA style"
 - "Could we create a tool to analyze sentiment?"
+- "Let's create an MCP server for weather data"
 
 Available Tools:
 {workspace_context}"""
@@ -211,7 +258,12 @@ Available Tools:
             from smolagents import SmolAgent
             agent = SmolAgent()
             
-            # Try to parse tool intent
+            # First check for tool creation request
+            tool = await self.handle_tool_creation_request(content)
+            if tool:
+                return f"Created new tool: {tool.name}\n{tool.description}"
+            
+            # Then try to parse tool usage intent
             try:
                 intent = await agent.parse_intent(
                     content,

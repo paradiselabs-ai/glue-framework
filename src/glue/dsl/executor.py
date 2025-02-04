@@ -73,15 +73,21 @@ class GlueExecutor:
         self.workspace_path = self.workspace_manager.get_workspace(self.app_config.name, sticky)
         self.logger.info(f"Using workspace: {self.workspace_path}")
         
+        # Convert parsed config to AppConfig
+        app_config_obj = AppConfig(
+            name=app_config.name,
+            memory_limit=app_config.config.get("memory_limit", 1000),
+            enable_persistence=sticky,
+            development=app_config.config.get("development", False),
+            sticky=sticky,
+            config=app_config.config
+        )
+        
         # Create GlueApp instance with workspace path
         self.app = GlueApp(
             name=app_config.name,
-            config=AppConfig(
-                name=app_config.name,
-                memory_limit=1000,
-                enable_persistence=sticky
-            ),
-            workspace_path=self.workspace_path
+            config=app_config_obj,
+            workspace_dir=self.workspace_path
         )
         self.app_config = app_config
         self.tools = {}
@@ -162,11 +168,8 @@ class GlueExecutor:
                     max_subprocess_count=config.config.get("max_subprocess_count", 2)
                 )
             elif name == "web_search":
-                tool = WebSearchTool(
-                    name=name,
-                    description="Search the web for information",
-                    adhesive_type=config.config.get("adhesive_type")
-                )
+                tool = WebSearchTool()
+                tool.adhesive_type = config.config.get("adhesive_type")
             elif name == "file_handler":
                 tool = FileHandlerTool(
                     name=name,
@@ -224,7 +227,7 @@ class GlueExecutor:
             provider.set_role(config.role)
             
             self.models[name] = provider
-            self.app.register_model(name, provider)
+            await self.app.add_model(provider)
     
     async def _init_teams(self):
         """Initialize teams"""
