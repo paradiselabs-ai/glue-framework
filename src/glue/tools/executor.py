@@ -29,41 +29,41 @@ class SmolAgentsToolExecutor:
         self.available_adhesives = available_adhesives
         self._dynamic_tools: Dict[str, BaseTool] = {}
         
-    async def execute(self, model_response: str) -> ToolResult:
+    async def execute(self, model_response: str) -> Union[ToolResult, str]:
         """Execute tools based on natural language intent"""
-        # Parse model's response into tool intent
-        tool_intent = await self._parse_tool_intent(model_response)
-        if not tool_intent:
-            raise ValueError("No tool usage intent found in response")
-            
-        # Get or create the tool
-        tool = await self._get_or_create_tool(tool_intent)
-        if not tool:
-            raise ValueError(f"Tool {tool_intent.tool_name} not available")
-            
-        # Validate adhesive
-        if tool_intent.adhesive not in self.available_adhesives:
-            raise ValueError(f"Adhesive {tool_intent.adhesive} not available")
-            
-        # Execute tool with proper binding
         try:
-            result = await tool.execute(tool_intent.input_data)
-        except Exception as e:
-            raise RuntimeError(f"Tool execution failed: {str(e)}")
+            # Parse natural language into tool intent
+            intent = await self._parse_tool_intent(model_response)
+            if not intent:
+                return model_response
+                
+            # Get or create tool
+            tool = await self._get_or_create_tool(intent)
+            if not tool:
+                return f"Tool {intent.tool_name} not available"
             
-        # Create tool result
-        tool_result = ToolResult(
-            tool_name=tool_intent.tool_name,
-            result=result,
-            adhesive=tool_intent.adhesive,
-            timestamp=datetime.now()
-        )
+            # Execute tool
+            try:
+                result = await tool.execute(intent.input_data)
+            except Exception as e:
+                return f"Tool execution failed: {str(e)}"
+                
+            # Create result
+            tool_result = ToolResult(
+                tool_name=intent.tool_name,
+                result=result,
+                adhesive=intent.adhesive,
+                timestamp=datetime.now()
+            )
         
-        # Handle result based on adhesive
-        if tool_intent.adhesive == AdhesiveType.GLUE:
-            await self.team.share_result(tool_result)
+            # Handle result based on adhesive
+            if intent.adhesive == AdhesiveType.GLUE:
+                await self.team.share_result(tool_result)
+                
+            return tool_result
             
-        return tool_result
+        except Exception as e:
+            return f"Failed to process tool intent: {str(e)}"
         
     async def _parse_tool_intent(self, response: str) -> Optional[ToolIntent]:
         """Use SmolAgents to parse natural language into tool intent"""

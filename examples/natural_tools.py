@@ -10,11 +10,13 @@ from glue.core.model import Model
 from glue.core.team import Team
 from glue.tools.web_search import WebSearchTool
 from glue.tools.file_handler import FileHandlerTool
-from glue.providers.openrouter import OpenRouterProvider
+from glue.providers.smolagents import SmolAgentsProvider
 
 async def main():
     # Create a team with tools
     team = Team("researchers")
+    
+    # Add base tools to team
     web_search = WebSearchTool()
     web_search.name = "web_search"
     file_handler = FileHandlerTool()
@@ -24,18 +26,15 @@ async def main():
     await team.add_tool(file_handler)
     
     # Create a model that can use tools
-    model = OpenRouterProvider(
+    model = SmolAgentsProvider(
         name="researcher",
-        team=team,  # Pass team instance instead of string
+        team=team,
         available_adhesives={AdhesiveType.GLUE, AdhesiveType.VELCRO, AdhesiveType.TAPE},
         api_key="your-api-key"  # Replace with actual key
     )
     
     # Set model's role
     model.set_role("Research topics and save findings")
-    
-    # Add model's tools from team
-    model._tools = team.tools
     
     # Example 1: Web search with GLUE
     response = await model.process(

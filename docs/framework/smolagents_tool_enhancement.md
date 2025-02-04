@@ -8,6 +8,46 @@ Use SmolAgents to enhance GLUE's tool system while preserving GLUE's core team a
 - Free team communication
 - Magnetic field for team interactions
 
+## Tool Implementation Details
+
+### Core Tool Structure
+```python
+from smolagents import Tool
+
+class CustomTool(Tool):
+    def __init__(self):
+        # Required SmolAgents attributes
+        self.name = "tool_name"
+        self.description = "Tool description for the LLM"
+        self.inputs = {
+            "param1": {
+                "type": "string",
+                "description": "Description of parameter 1",
+                "optional": False
+            },
+            "param2": {
+                "type": "number",
+                "description": "Description of parameter 2",
+                "optional": True
+            }
+        }
+        self.output_type = "string"  # All tools must return strings
+        
+    async def forward(self, *args, **kwargs) -> str:
+        """Main execution method required by SmolAgents"""
+        # Process inputs and execute tool logic
+        result = await self._process_inputs(*args, **kwargs)
+        # Must return string
+        return str(result)
+```
+
+### Key Requirements
+1. Must inherit from smolagents.Tool
+2. Must define name, description, inputs (with types and descriptions), and output_type
+3. Must implement forward method that returns a string
+4. Input validation is handled by SmolAgents based on input definitions
+5. Tool results must be converted to strings before returning
+
 ## Tool System Enhancements
 
 ### 1. Dynamic Tool Creation
@@ -97,7 +137,24 @@ class SmoLAgentsProvider(BaseProvider):
         return tool_result
 ```
 
-## Benefits
+## Benefits of SmolAgents Integration
+
+### 1. Natural Language Tool Usage
+- Models can use tools without XML tags
+- More natural interaction flow
+- Better error messages
+
+### 2. Input Validation
+- Automatic type checking
+- Required vs optional parameters
+- Input descriptions for models
+
+### 3. Standardized Interface
+- Consistent tool structure
+- String-based outputs
+- Clear input specifications
+
+### Original Benefits
 
 1. Dynamic Tool Creation
 - Create tools on demand

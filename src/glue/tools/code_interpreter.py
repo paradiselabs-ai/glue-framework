@@ -23,7 +23,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 from dataclasses import dataclass
 
-from .base import BaseTool, ToolConfig, ToolPermission
+from smolagents import Tool
+from .base import ToolConfig, ToolPermission
 from ..core.types import AdhesiveType
 from ..core.context import ContextState, ComplexityLevel
 from ..core.logger import get_logger
@@ -104,7 +105,7 @@ class CodeResult:
             self.resource_usage = {}
 
 # ==================== Code Interpreter Tool ====================
-class CodeInterpreterTool(BaseTool):
+class CodeInterpreterTool(Tool):
     """
     Advanced code interpreter tool with security and analysis features.
     
@@ -131,32 +132,49 @@ class CodeInterpreterTool(BaseTool):
         max_file_size_kb: int = 10240,
         max_subprocess_count: int = 2
     ):
-        # Initialize base tool
-        super().__init__(
-            name=name,
-            description=description,
-            adhesive_type=adhesive_type,
-            config=ToolConfig(
-                required_permissions=[
-                    ToolPermission.EXECUTE,  # For running code
-                    ToolPermission.FILE_SYSTEM,  # For workspace management
-                    ToolPermission.READ,  # For reading files
-                    ToolPermission.WRITE  # For writing temp files
-                ],
-                tool_specific_config={
-                    "enable_security_checks": enable_security_checks,
-                    "enable_code_analysis": enable_code_analysis,
-                    "enable_error_suggestions": enable_error_suggestions,
-                    "max_memory_mb": max_memory_mb,
-                    "max_execution_time": max_execution_time,
-                    "max_file_size_kb": max_file_size_kb,
-                    "max_subprocess_count": max_subprocess_count,
-                    "supported_languages": supported_languages,
-                    "workspace_dir": workspace_dir
-                }
-            ),
-            tags={"code_interpreter", "execute", "sandbox"}
+        # Initialize SmolAgents tool attributes
+        self.name = name
+        self.description = description
+        self.inputs = {
+            "code": {
+                "type": "string",
+                "description": "The code to execute"
+            },
+            "language": {
+                "type": "string",
+                "description": "Programming language (python/javascript)",
+                "nullable": True
+            },
+            "timeout": {
+                "type": "number",
+                "description": "Execution timeout in seconds",
+                "nullable": True
+            }
+        }
+        self.output_type = "string"
+        
+        # Initialize GLUE tool config
+        self.config = ToolConfig(
+            required_permissions=[
+                ToolPermission.EXECUTE,  # For running code
+                ToolPermission.FILE_SYSTEM,  # For workspace management
+                ToolPermission.READ,  # For reading files
+                ToolPermission.WRITE  # For writing temp files
+            ],
+            tool_specific_config={
+                "enable_security_checks": enable_security_checks,
+                "enable_code_analysis": enable_code_analysis,
+                "enable_error_suggestions": enable_error_suggestions,
+                "max_memory_mb": max_memory_mb,
+                "max_execution_time": max_execution_time,
+                "max_file_size_kb": max_file_size_kb,
+                "max_subprocess_count": max_subprocess_count,
+                "supported_languages": supported_languages,
+                "workspace_dir": workspace_dir
+            }
         )
+        self.adhesive_type = adhesive_type
+        self.tags = {"code_interpreter", "execute", "sandbox"}
         
         # Initialize logger
         self.logger = get_logger()
@@ -208,10 +226,19 @@ class CodeInterpreterTool(BaseTool):
                 
         return has_code_markers
 
-    async def _execute(self, code: str, language: Optional[str] = None, timeout: Optional[float] = None, context: Optional[ContextState] = None) -> Dict[str, Any]:
+    async def forward(self, code: str, language: Optional[str] = None, timeout: Optional[float] = None) -> str:
         """Execute code with automatic language detection and validation"""
+        context = None  # Context is now handled internally
         
-        # Validate code if enabled
+        # Set default limits
+        limits = {
+            "memory_mb": self.max_memory_mb,
+            "time_seconds": self.max_execution_time,
+            "file_size_kb": self.max_file_size_kb,
+            "subprocess_count": self.max_subprocess_count
+        }
+        
+        # Validate code if enabled and context is provided
         if self.enable_security_checks and context:
             validation = await self.validate_code(code, context)
             if not validation["valid"]:
@@ -221,9 +248,12 @@ class CodeInterpreterTool(BaseTool):
                     "validation": validation
                 }
             
-            # Apply resource limits
-            limits = await self.get_resource_limits(context)
-            timeout = min(timeout or self.max_execution_time, self.max_execution_time)
+            # Update limits based on context
+            context_limits = await self.get_resource_limits(context)
+            limits.update(context_limits)
+            
+        # Apply timeout limit
+        timeout = min(timeout or self.max_execution_time, limits["time_seconds"])
 
         # Infer language if not provided
         if not language:
@@ -325,33 +355,42 @@ class CodeInterpreterTool(BaseTool):
                             "Use logging for debugging"
                         ])
 
-            return result
+            # Convert result to string as required by SmolAgents
+            if isinstance(result, dict):
+                output = []
+                if result.get("output"):
+                    output.append(result["output"])
+                if result.get("error"):
+                    output.append(f"Error: {result['error']}")
+                if result.get("suggestions"):
+                    output.append("\nSuggestions:")
+                    output.extend(f"- {s}" for s in result["suggestions"])
+                return "\n".join(output)
+            return str(result)
 
         except TimeoutError:
-            return {
-                "success": False,
-                "error": f"Code execution timed out after {timeout} seconds",
-                "language": language,
-                "suggestions": [
-                    "Check for infinite loops",
-                    "Add timeout handling",
-                    "Consider optimizing long-running operations"
-                ]
-            }
+            suggestions = [
+                "Check for infinite loops",
+                "Add timeout handling",
+                "Consider optimizing long-running operations"
+            ]
+            return f"Error: Code execution timed out after {timeout} seconds\n\nSuggestions:\n" + "\n".join(f"- {s}" for s in suggestions)
+            
         except Exception as e:
             error_msg = str(e)
-            error_result = {
-                "success": False,
-                "error": error_msg,
-                "language": language,
-                "suggestions": self._generate_error_suggestions(error_msg)
-            }
+            suggestions = self._generate_error_suggestions(error_msg)
+            output = [f"Error: {error_msg}"]
             
+            if suggestions:
+                output.append("\nSuggestions:")
+                output.extend(f"- {s}" for s in suggestions)
+                
             # Add traceback for debugging
             if context and context.complexity >= ComplexityLevel.MODERATE:
-                error_result["traceback"] = traceback.format_exc()
+                output.append("\nTraceback:")
+                output.append(traceback.format_exc())
             
-            return error_result
+            return "\n".join(output)
 
     async def cleanup(self) -> None:
         """Cleanup temporary files"""

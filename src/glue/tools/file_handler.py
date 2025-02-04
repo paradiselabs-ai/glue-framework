@@ -8,7 +8,8 @@ import csv
 import re
 import asyncio
 from pathlib import Path
-from .base import BaseTool, ToolConfig, ToolPermission
+from smolagents import Tool
+from .base import ToolConfig, ToolPermission
 from ..core.types import AdhesiveType
 from ..core.logger import get_logger
 from ..core.tool_binding import ToolBinding
@@ -33,7 +34,7 @@ class FileFormats:
     OPERATIONS = {"read", "write", "append", "delete"}
 
 # ==================== File Handler Tool ====================
-class FileHandlerTool(BaseTool):
+class FileHandlerTool(Tool):
     """Tool for handling file operations"""
     
     def __init__(
@@ -47,26 +48,43 @@ class FileHandlerTool(BaseTool):
         shared_resources: Optional[List[str]] = None,
         **kwargs
     ):
-        # Initialize base tool with permissions and config
-        super().__init__(
-            name=name,
-            description=description,
-            adhesive_type=binding_type or AdhesiveType.VELCRO,
-            config=ToolConfig(
-                required_permissions=[
-                    ToolPermission.FILE_SYSTEM,  # For workspace access
-                    ToolPermission.READ,         # For reading files
-                    ToolPermission.WRITE         # For writing files
-                ],
-                tool_specific_config={
-                    "workspace_dir": workspace_dir,
-                    "base_path": base_path,
-                    "allowed_formats": allowed_formats,
-                    "shared_resources": shared_resources or ["file_content", "file_path", "file_format"]
-                }
-            ),
-            tags={"file_handler", "io", "filesystem"}
+        # Initialize SmolAgents tool attributes
+        self.name = name
+        self.description = description
+        self.inputs = {
+            "action": {
+                "type": "string",
+                "description": "The action to perform (read/write/append/delete)",
+                "enum": list(FileFormats.OPERATIONS)
+            },
+            "path": {
+                "type": "string",
+                "description": "Path to the file"
+            },
+            "content": {
+                "type": "string",
+                "description": "Content to write (for write/append actions)",
+                "nullable": True
+            }
+        }
+        self.output_type = "string"
+        
+        # Initialize GLUE tool config
+        self.config = ToolConfig(
+            required_permissions=[
+                ToolPermission.FILE_SYSTEM,  # For workspace access
+                ToolPermission.READ,         # For reading files
+                ToolPermission.WRITE         # For writing files
+            ],
+            tool_specific_config={
+                "workspace_dir": workspace_dir,
+                "base_path": base_path,
+                "allowed_formats": allowed_formats,
+                "shared_resources": shared_resources or ["file_content", "file_path", "file_format"]
+            }
         )
+        self.adhesive_type = binding_type or AdhesiveType.VELCRO
+        self.tags = {"file_handler", "io", "filesystem"}
         
         # Initialize configuration
         config = self.config.tool_specific_config
@@ -82,9 +100,10 @@ class FileHandlerTool(BaseTool):
             else FileFormats.FORMATS
         )
         
-        # Initialize logger
+        # Initialize logger and binding
         self.logger = get_logger()
         self.logger.debug(f"Initialized file handler with base_path: {self.base_path}")
+        self.binding = ToolBinding(self)
 
     async def _validate_input(self, *args, **kwargs) -> bool:
         """Validate tool input"""
@@ -310,60 +329,47 @@ class FileHandlerTool(BaseTool):
             # Default to write for research summaries and other content
             return "write", file_path, content_str
 
-    async def _execute(self, *args, **kwargs) -> Dict[str, Any]:
-        """Execute file operation based on natural language input"""
-        # Handle positional arguments
-        content = args[0] if args else kwargs
-        self.logger.debug(f"Executing with content: {content}")
+    async def forward(self, action: str, path: str, content: Optional[str] = None) -> str:
+        """Execute file operation"""
+        self.logger.debug(f"Executing with action: {action}, path: {path}, content: {content}")
         
-        # Infer operation and file path from content
-        operation, file_path, operation_content = self._infer_operation(content)
-        self.logger.debug(f"Inferred operation: {operation}, path: {file_path}")
-        
-        # Validate operation
-        if operation not in FileFormats.OPERATIONS:
-            raise ValueError(f"Invalid operation: {operation}")
-        
-        # For write operations, ensure content is provided
-        if operation in ['write', 'append'] and not (operation_content or content.get('content')):
-            raise ValueError("No content provided for write/append operation")
-        
-        path = self._validate_path(file_path)
-        self.logger.debug(f"Validated path: {path}")
-        
-        format_handler = self._get_format_handler(path)
-        self.logger.debug(f"Using format handler: {format_handler}")
-
-        # Store operation details in binding
-        self.binding.store_resource("operation", operation)
-        self.binding.store_resource("file_path", str(path))
-        self.binding.store_resource("format", format_handler)
-
         try:
+            # Validate action
+            if action not in FileFormats.OPERATIONS:
+                raise ValueError(f"Invalid action: {action}")
+            
+            # For write/append operations, ensure content is provided
+            if action in ['write', 'append'] and content is None:
+                raise ValueError("Content is required for write/append operations")
+            
+            # Validate and resolve path
+            validated_path = self._validate_path(path)
+            format_handler = self._get_format_handler(validated_path)
+            
+            # Store operation details in binding
+            self.binding.store_resource("operation", action)
+            self.binding.store_resource("file_path", str(validated_path))
+            self.binding.store_resource("format", format_handler)
+            
+            # Execute operation
             result = None
-            if operation == "read":
-                result = await self._read_file(path, format_handler)
-                # Store result in binding
+            if action == "read":
+                result = await self._read_file(validated_path, format_handler)
                 self.binding.store_resource("file_content", result["content"])
-            elif operation == "write":
-                # Use operation_content if available, otherwise use content from kwargs
-                write_content = operation_content or (
-                    content.get('content') if isinstance(content, dict) else content
-                )
-                result = await self._write_file(
-                    path, write_content, format_handler, mode='w'
-                )
-            elif operation == "append":
-                append_content = operation_content or (
-                    content.get('content') if isinstance(content, dict) else content
-                )
-                result = await self._write_file(
-                    path, append_content, format_handler, mode='a'
-                )
-            elif operation == "delete":
-                result = await self._delete_file(path)
+            elif action == "write":
+                result = await self._write_file(validated_path, content, format_handler, mode='w')
+            elif action == "append":
+                result = await self._write_file(validated_path, content, format_handler, mode='a')
+            elif action == "delete":
+                result = await self._delete_file(validated_path)
 
-            return result
+            # Convert result to string as required by SmolAgents
+            if isinstance(result, dict):
+                if action == "read":
+                    return str(result["content"])
+                else:
+                    return f"Successfully {action}ed file: {path}"
+            return str(result)
 
         except Exception as e:
             self.logger.error(f"File operation failed: {str(e)}")

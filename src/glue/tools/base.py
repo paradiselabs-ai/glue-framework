@@ -1,145 +1,50 @@
-"""GLUE Tool Base System
+"""Base tool implementation using SmolAgents"""
 
-This base class intentionally maintains features that are essential for a framework:
-- ToolPermission: Required for security and access control
-- ToolConfig: Needed for consistent tool configuration
-- Input validation: Required for safe tool execution
-- Async context management: Needed for proper resource cleanup
-- Logging: Required for debugging and monitoring
-
-While these features add some complexity, they are necessary for a robust framework
-that others will use to build AI applications. This is different from a simple tool
-base that might be used in a single application.
-"""
-
-import asyncio
-from typing import Any, Dict, Optional, List
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set
+from dataclasses import dataclass
 from enum import Enum, auto
+from smolagents import Tool
 
-from ..core.types import AdhesiveType, ToolState
-from ..core.logger import get_logger
-
-# ==================== Tool Permissions ====================
 class ToolPermission(Enum):
-    """Tool permissions for documentation and validation"""
-    READ = auto()        # Read access to resources
-    WRITE = auto()       # Write access to resources
-    NETWORK = auto()     # Network access
-    FILE_SYSTEM = auto() # File system access
-    EXECUTE = auto()     # Code execution
+    """Tool permissions"""
+    READ = auto()
+    WRITE = auto()
+    EXECUTE = auto()
+    FILE_SYSTEM = auto()
+    NETWORK = auto()
 
-# ==================== Tool Configuration ====================
 @dataclass
 class ToolConfig:
-    """Configuration for a tool"""
-    timeout: float = 30.0
-    async_enabled: bool = True
-    tool_specific_config: Dict[str, Any] = field(default_factory=dict)
-    required_permissions: List[ToolPermission] = field(default_factory=list)
+    """Tool configuration"""
+    required_permissions: List[ToolPermission]
+    tool_specific_config: Dict[str, Any] = None
 
-# ==================== Base Tool ====================
-class BaseTool(ABC):
-    """
-    Base class for all GLUE tools.
+class BaseTool(Tool):
+    """Base class for all GLUE tools"""
     
-    Features:
-    - Simple state management (IDLE/ACTIVE)
-    - Adhesive-based persistence (TAPE/VELCRO/GLUE)
-    - Basic error handling
-    - Async context management
-    - Input validation
-    """
-    def __init__(
-        self,
-        name: str,
-        description: str,
-        adhesive_type: Optional[AdhesiveType] = None,
-        config: Optional[ToolConfig] = None,
-        tags: Optional[set[str]] = None
-    ):
-        # Initialize core components
+    def __init__(self, name: str, description: str):
         self.name = name
         self.description = description
-        self.adhesive_type = adhesive_type or AdhesiveType.TAPE
-        self.tags = tags or {name, "tool"}  # Basic categorization
+        self.inputs = {
+            "input": {
+                "type": "string",
+                "description": "Input for the tool"
+            }
+        }
+        self.output_type = "string"
         
-        # Tool configuration
-        self.config = config or ToolConfig()
-        self._is_initialized = False
-        self._last_result = None  # For VELCRO/GLUE persistence
+    async def forward(self, **kwargs) -> str:
+        """Execute the tool with the given input"""
+        # This should be overridden by subclasses
+        raise NotImplementedError
         
-        # Initialize state
-        self.state = ToolState.IDLE
-        
-        # Initialize logger
-        self.logger = get_logger()
-
-    @abstractmethod
-    async def _execute(self, *args, **kwargs) -> Any:
-        """Tool-specific implementation"""
-        pass
-
-    @abstractmethod
-    async def _validate_input(self, *args, **kwargs) -> bool:
-        """Validate tool input. Override in subclass."""
-        return True
-
-    async def execute(self, *args, **kwargs) -> Any:
-        """Execute tool with state tracking and result persistence"""
-        # Check for persisted results first
-        if self.adhesive_type != AdhesiveType.TAPE and self._last_result:
-            return self._last_result
+    async def execute(self, input_data: Any) -> str:
+        """Execute the tool with proper input validation"""
+        # Convert input to expected format
+        if isinstance(input_data, dict):
+            kwargs = input_data
+        else:
+            kwargs = {"input": str(input_data)}
             
-        # Validate input
-        if not await self._validate_input(*args, **kwargs):
-            raise ValueError("Invalid tool input")
-            
-        # Transition to ACTIVE
-        self.state = ToolState.ACTIVE
-        
-        try:
-            # Initialize if needed
-            if not self._is_initialized:
-                await self.initialize()
-                
-            # Execute tool
-            result = await self._execute(*args, **kwargs)
-            
-            # Store result based on adhesive type
-            if self.adhesive_type != AdhesiveType.TAPE:
-                self._last_result = result
-            
-            return result
-            
-        finally:
-            # Always return to IDLE
-            self.state = ToolState.IDLE
-
-    async def initialize(self) -> None:
-        """Initialize tool resources"""
-        self._is_initialized = True
-
-    async def cleanup(self) -> None:
-        """Clean up resources based on adhesive type"""
-        self._is_initialized = False
-        self.state = ToolState.IDLE
-        
-        # Clear results based on adhesive type
-        if self.adhesive_type != AdhesiveType.GLUE:
-            self._last_result = None
-
-    async def __aenter__(self) -> 'BaseTool':
-        """Async context manager entry"""
-        if not self._is_initialized:
-            await self.initialize()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Async context manager exit"""
-        await self.cleanup()
-
-    def __str__(self) -> str:
-        """String representation with adhesive type"""
-        return f"{self.name}: {self.description} ({self.adhesive_type.name})"
+        # Execute through forward method
+        return await self.forward(**kwargs)
