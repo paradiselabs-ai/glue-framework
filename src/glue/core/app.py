@@ -47,6 +47,9 @@ class GlueApp:
         self.memory_manager = MemoryManager()
         self.workspace_manager = WorkspaceManager(workspace_dir)
         self.state_manager = StateManager()
+
+        # Tool registry
+        self._tool_registry: Dict[str, Any] = {}  # Persistent tool storage
         
         # Team communication
         self.group_chat_manager = GroupChatManager(name)
@@ -144,15 +147,24 @@ class GlueApp:
         # Default to first team if none found
         return next(iter(self.teams.values())) if self.teams else None
         
+    def register_team(self, name: str, team: Team) -> None:
+        """Register team with app (sync version for executor)"""
+        self.teams[name] = team
+        
     async def add_team(self, team: Team) -> None:
-        """Add team to app"""
+        """Add team to app (async version for runtime)"""
         self.teams[team.name] = team
         await self.magnetic_field.add_team(team)
         
+    def register_model(self, name: str, model: Model) -> None:
+        """Register model with app (sync version for executor)"""
+        self.models[name] = model
+        self.group_chat_manager.add_model(model)
+        
     async def add_model(self, model: Model) -> None:
-        """Add model to app"""
+        """Add model to app (async version for runtime)"""
         self.models[model.name] = model
-        self.group_chat_manager.add_model(model)  # This is a synchronous method
+        self.group_chat_manager.add_model(model)
         
     async def cleanup(self):
         """Clean up resources"""

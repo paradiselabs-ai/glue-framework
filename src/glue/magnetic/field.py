@@ -93,8 +93,16 @@ class MagneticField:
         # Initialize logger
         self.logger = logging.getLogger(f"glue.magnetic.field.{name}")
 
+        # Team tracking
+        self._registered_teams = set()  # Track registered teams
+
         # Configure team flows
         self._setup_flows()
+
+    async def add_team(self, team: Any) -> None:
+        """Register a team with the magnetic field"""
+        self.logger.debug(f"Registering team: {team.name}")
+        self._registered_teams.add(team.name)
 
     def _setup_flows(self):
         """Configure team-to-team flows"""
@@ -136,6 +144,10 @@ class MagneticField:
         operator: str
     ) -> bool:
         """Validate if teams can interact using given magnetic operator"""
+        # Check if teams are registered
+        if source_team not in self._registered_teams or target_team not in self._registered_teams:
+            return False
+
         # Check repulsion first
         repelled_key = f"{source_team}:{target_team}"
         if repelled_key in self._repelled_teams:

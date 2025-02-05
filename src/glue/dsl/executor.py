@@ -185,7 +185,7 @@ class GlueExecutor:
                 )
             
             self.tools[name] = tool
-            self.app.tools[name] = tool
+            self.app._tool_registry[name] = tool  # Store in persistent registry
     
     async def _init_models(self):
         """Initialize models"""
@@ -271,7 +271,7 @@ class GlueExecutor:
             
             # Store team
             self.teams[name] = team
-            self.app.register_team(name, team)
+            await self.app.add_team(team)
             
             # Initialize shared results
             team.shared_results = {}
@@ -291,6 +291,10 @@ class GlueExecutor:
             self.logger.info("Setting up magnetic field...")
             field = MagneticField(name=self.app.name)
             
+            # Register all teams with the field first
+            for team_name in self.teams:
+                await field.add_team(self.teams[team_name])
+            
             # Add attractions (push flow)
             for source, target in self.app_config.workflow.attractions:
                 await field.process_team_flow(source, target, None, "->")
@@ -299,11 +303,13 @@ class GlueExecutor:
             for source, target in self.app_config.workflow.repulsions:
                 await field.process_team_flow(source, target, None, "<>")
                 
-            # Add pulls (as fallback)
+            # Enable pull capability for teams that use the pull keyword
             for target, source in self.app_config.workflow.pulls:
-                await field.process_team_flow(target, source, None, "<-")
+                if source == "pull":
+                    # Enable pull capability for the target team from researchers
+                    await field.enable_pull(target, "researchers")
             
-            self.app.set_magnetic_field(field)
+            self.app.magnetic_field = field
 
 async def execute_glue_app(app_config: GlueAppConfig) -> GlueApp:
     """Execute GLUE application

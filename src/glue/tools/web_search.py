@@ -6,7 +6,8 @@ from smolagents import Tool
 class WebSearchTool(Tool):
     """Tool for performing web searches"""
     
-    def __init__(self):
+    def __init__(self, adhesive_type=None):
+        super().__init__()  # Initialize SmolAgents Tool
         self.name = "web_search"
         self.description = "Search the web for information"
         self.inputs = {
@@ -21,6 +22,7 @@ class WebSearchTool(Tool):
             }
         }
         self.output_type = "string"
+        self.adhesive_type = adhesive_type
         
     async def forward(self, query: str, num_results: int = 3) -> str:
         """Execute web search"""
