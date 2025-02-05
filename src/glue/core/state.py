@@ -37,6 +37,25 @@ class StateManager:
     async def get_state(self, resource_name: str) -> ResourceState:
         """Get current state of a resource"""
         return self._states.get(resource_name, ResourceState.IDLE)
+        
+    def get_context(self) -> Dict[str, Any]:
+        """Get current context for conversation"""
+        # Initialize with empty context
+        context = {
+            "states": {},
+            "metadata": {},
+            "active_resources": []
+        }
+        
+        # Add state information
+        for resource_name, state in self._states.items():
+            context["states"][resource_name] = state.name
+            if state == ResourceState.ACTIVE:
+                context["active_resources"].append(resource_name)
+                if resource_name in self._contexts:
+                    context["metadata"].update(self._contexts[resource_name].metadata or {})
+        
+        return context
     
     async def set_state(
         self,

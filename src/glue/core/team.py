@@ -349,6 +349,14 @@ class Team:
             raise ValueError(f"Unknown member: {member_name}")
         return self.members[member_name].role
         
+    @property
+    def lead(self) -> Optional[str]:
+        """Get the team's lead model name"""
+        for name, member in self.members.items():
+            if member.role == TeamRole.LEAD:
+                return name
+        return None
+        
     def get_team_flows(self) -> Dict[str, str]:
         """Get magnetic flows with other teams"""
         flows = {}

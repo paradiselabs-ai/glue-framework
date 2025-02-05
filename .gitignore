@@ -71,7 +71,10 @@ htmlcov/
 docs/_build/
 docs/_static/
 docs/_templates/
-
+docs/*
+docs/MCP/
+docs/SmolAgents/
+docs/framework/
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb

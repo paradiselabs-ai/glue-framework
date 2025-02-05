@@ -12,6 +12,7 @@ from datetime import datetime
 from .base import BaseProvider
 from ..core.types import AdhesiveType, ToolResult
 from ..tools.base import BaseTool
+from ..tools.dynamic_tool_factory import DynamicToolFactory, ToolSpec, MCPServerSpec
 
 class SmolAgentsProvider(BaseProvider):
     """Provider that uses SmolAgents for enhanced tool capabilities"""
@@ -34,108 +35,51 @@ class SmolAgentsProvider(BaseProvider):
             config=config
         )
         self.base_url = base_url
-        self._dynamic_tools: Dict[str, BaseTool] = {}
+        self.tool_factory = DynamicToolFactory()
         
     async def create_tool(self, name: str, description: str, function: Any) -> BaseTool:
         """Create a new tool on the fly"""
-        from smolagents import tool
-        
-        # Convert to SmolAgents tool
-        @tool
-        async def dynamic_tool(*args, **kwargs):
-            return await function(*args, **kwargs)
-            
-        # Create tool instance
-        tool = BaseTool(
+        spec = ToolSpec(
             name=name,
             description=description,
-            execute=dynamic_tool
+            inputs={
+                "input": {
+                    "type": "string",
+                    "description": "Input for the tool"
+                }
+            },
+            output_type="string",
+            team_name=self.team
         )
-        
-        # Add to team's tools
-        await self.team.add_tool(tool)
-        
-        # Store in dynamic tools
-        self._dynamic_tools[name] = tool
-        
-        return tool
+        return await self.tool_factory.create_tool_from_spec(spec, self.team)
         
     async def create_mcp_tool(self, server_name: str, tool_name: str) -> BaseTool:
         """Create tool from MCP server"""
-        from smolagents import tool
-        
         # Get tool schema from MCP
         schema = await self._get_mcp_schema(server_name, tool_name)
         
-        # Create SmolAgents tool that uses MCP
-        @tool
-        async def mcp_tool(*args, **kwargs):
-            return await self._use_mcp_tool(
-                server_name=server_name,
-                tool_name=tool_name,
-                arguments=kwargs
-            )
-            
-        # Create tool instance
-        tool = BaseTool(
-            name=f"{server_name}_{tool_name}",
-            description=schema.get("description", "MCP Tool"),
-            execute=mcp_tool
+        spec = MCPServerSpec(
+            name=server_name,
+            tools=[ToolSpec(
+                name=tool_name,
+                description=schema.get("description", "MCP Tool"),
+                inputs={
+                    "arguments": {
+                        "type": "object",
+                        "description": "Arguments for the MCP tool"
+                    }
+                },
+                output_type="string",
+                team_name=self.team
+            )]
         )
         
-        # Add to team's tools
-        await self.team.add_tool(tool)
-        
-        # Store in dynamic tools
-        self._dynamic_tools[tool.name] = tool
-        
-        return tool
+        tools = await self.tool_factory.create_mcp_server_from_spec(spec, self.team)
+        return tools[tool_name]
 
     async def handle_tool_creation_request(self, request: str) -> Optional[BaseTool]:
         """Handle natural language tool creation requests"""
-        from smolagents import SmolAgent
-        agent = SmolAgent()
-        
-        # Parse tool creation intent
-        intent = await agent.parse_tool_intent(request)
-        if not intent:
-            return None
-            
-        if intent.get("type") == "tool":
-            # Generate tool implementation
-            implementation = await agent.generate_tool_implementation(
-                name=intent["name"],
-                description=intent["description"],
-                inputs=intent.get("inputs", {}),
-                output_type=intent.get("output_type", "string")
-            )
-            
-            # Create the tool
-            return await self.create_tool(
-                name=intent["name"],
-                description=intent["description"],
-                function=implementation
-            )
-            
-        elif intent.get("type") == "mcp":
-            # Generate MCP server implementation
-            server_impl = await agent.generate_mcp_server(
-                name=intent["server_name"],
-                tools=[{
-                    "name": intent["tool_name"],
-                    "description": intent["description"],
-                    "inputs": intent.get("inputs", {}),
-                    "output_type": intent.get("output_type", "string")
-                }]
-            )
-            
-            # Create MCP tool
-            return await self.create_mcp_tool(
-                server_name=intent["server_name"],
-                tool_name=intent["tool_name"]
-            )
-            
-        return None
+        return await self.tool_factory.parse_natural_request(request, self.team)
         
     async def use_tool(self, tool_name: str, adhesive: AdhesiveType, input_data: Any) -> ToolResult:
         """Use tool with enhanced execution"""
@@ -291,16 +235,30 @@ Available Tools:
             
     async def _convert_tool(self, tool: BaseTool) -> Any:
         """Convert GLUE tool to SmolAgents tool"""
-        from smolagents import tool as smol_tool
+        from smolagents import Tool
         
-        @smol_tool
-        async def converted_tool(*args, **kwargs):
-            return await tool.execute(*args, **kwargs)
-            
-        converted_tool.name = tool.name
-        converted_tool.description = tool.description
+        # Create SmolAgents tool class factory
+        def create_converted_tool_class():
+            class ConvertedTool(Tool):
+                name = tool.name
+                description = tool.description
+                inputs = {
+                    "input": {
+                        "type": "string",
+                        "description": "Input for the tool"
+                    }
+                }
+                output_type = "string"
+                
+                async def forward(self, input: str) -> str:
+                    """Execute the GLUE tool"""
+                    return await tool.execute(input)
+            return ConvertedTool
         
-        return converted_tool
+        # Create SmolAgents tool instance
+        ConvertedTool = create_converted_tool_class()
+        converted = ConvertedTool()
+        return converted
             
     async def _get_mcp_schema(self, server: str, tool: str) -> Dict[str, Any]:
         """Get tool schema from MCP server"""

@@ -47,29 +47,24 @@ class DynamicToolFactory:
         team: Optional[Team] = None
     ) -> BaseTool:
         """Create a tool from specification"""
-        from smolagents import SmolAgent, tool
+        from smolagents import tool
         
         self.logger.info(f"Creating tool: {spec.name}")
         
         try:
-            # Generate implementation using SmolAgents
-            agent = SmolAgent()
-            implementation = await agent.generate_tool_implementation(
-                name=spec.name,
-                description=spec.description,
-                inputs=spec.inputs,
-                output_type=spec.output_type
-            )
-            
-            # Create tool instance
+            # Create tool instance using decorator pattern
             @tool
-            async def dynamic_tool(*args, **kwargs):
-                return await implementation(*args, **kwargs)
+            async def dynamic_tool(input: str) -> str:
+                """Execute the tool's function"""
+                return await spec.implementation(input) if hasattr(spec, 'implementation') else input
             
+            # Wrap in GLUE BaseTool
             tool_instance = BaseTool(
                 name=spec.name,
                 description=spec.description,
-                execute=dynamic_tool
+                execute=dynamic_tool,
+                inputs=spec.inputs,
+                output_type=spec.output_type
             )
             
             # Add to team if provided
@@ -97,18 +92,6 @@ class DynamicToolFactory:
         self.logger.info(f"Creating MCP server: {spec.name}")
         
         try:
-            # Generate server implementation
-            agent = SmolAgent()
-            server_impl = await agent.generate_mcp_server(
-                name=spec.name,
-                tools=[{
-                    "name": tool.name,
-                    "description": tool.description,
-                    "inputs": tool.inputs,
-                    "output_type": tool.output_type
-                } for tool in spec.tools]
-            )
-            
             # Create tools for each server endpoint
             tools = {}
             for tool_spec in spec.tools:
@@ -117,7 +100,6 @@ class DynamicToolFactory:
                 
             # Store server
             self._mcp_servers[spec.name] = {
-                "implementation": server_impl,
                 "tools": tools,
                 "spec": spec
             }
