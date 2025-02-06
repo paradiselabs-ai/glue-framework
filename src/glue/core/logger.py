@@ -25,7 +25,15 @@ class GlueLogger:
         # Remove any existing handlers
         self.logger.handlers = []
         
-        # Debug handler - always goes to stderr
+        # Console handler - only for user-facing messages
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        console_format = logging.Formatter('%(message)s')  # Minimal format
+        console_handler.addFilter(lambda record: getattr(record, 'user_facing', False))
+        console_handler.setFormatter(console_format)
+        self.logger.addHandler(console_handler)
+        
+        # Debug handler - goes to file
         debug_handler = logging.StreamHandler(sys.stderr)
         debug_handler.setLevel(logging.DEBUG if development else logging.INFO)
         debug_format = logging.Formatter(
@@ -33,6 +41,7 @@ class GlueLogger:
             datefmt='%H:%M:%S'
         )
         debug_handler.setFormatter(debug_format)
+        debug_handler.addFilter(lambda record: not getattr(record, 'user_facing', False))
         self.logger.addHandler(debug_handler)
         
         # File handler - always shows full debug info

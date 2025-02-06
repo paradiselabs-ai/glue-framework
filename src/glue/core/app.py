@@ -71,42 +71,35 @@ class GlueApp:
         self.logger.info(f"New Prompt: {prompt}")
         self.logger.info(f"{'='*50}")
         
-        print("\nthinking...")  # Show we're analyzing the prompt
-        
         try:
             # First check for tool/MCP creation request
             if any(keyword in prompt.lower() for keyword in ["create", "make", "build"]):
                 if any(keyword in prompt.lower() for keyword in ["tool", "mcp", "server"]):
-                    print("creating new tool...")
-                    
                     # Get relevant team based on prompt context
                     team = self._get_relevant_team(prompt)
                     
                     # Try to create tool/server
                     result = await self.tool_factory.parse_natural_request(prompt, team)
                     if result:
-                        print("finished.")
                         if isinstance(result, dict):
                             # MCP server created
                             tools = ", ".join(result.keys())
-                            return f"response: Created MCP server with tools: {tools}"
+                            return f"Created MCP server with tools: {tools}"
                         else:
                             # Single tool created
-                            return f"response: Created tool: {result.name}"
+                            return f"Created tool: {result.name}"
             
             # Check for tool enhancement request
             elif any(keyword in prompt.lower() for keyword in ["enhance", "improve", "upgrade"]):
                 for tool_name in self.tool_factory.list_tools():
                     if tool_name.lower() in prompt.lower():
-                        print("enhancing tool...")
                         team = self._get_relevant_team(prompt)
                         enhanced_tool = await self.tool_factory.enhance_tool(
                             tool_name,
                             prompt,
                             team
                         )
-                        print("finished.")
-                        return f"response: Enhanced tool: {enhanced_tool.name}"
+                        return f"Enhanced tool: {enhanced_tool.name}"
             
             # Process normal prompt through teams
             team = self._get_relevant_team(prompt)
@@ -132,11 +125,6 @@ class GlueApp:
                     self.logger.info(f"- Memory: {context.requires_memory}")
                     self.logger.info(f"- Magnetic Flow: {context.magnetic_flow}")
                     
-                    # Show processing status based on context
-                    if context.tools_required:
-                        print("processing...")  # Tools will be used
-                        self.logger.info(f"Using tools: {list(context.tools_required)}")
-                    
                     try:
                         # Process through conversation manager
                         response = await self.conversation_manager.process(
@@ -145,11 +133,6 @@ class GlueApp:
                             tools=team.tools,
                             context=context
                         )
-                        
-                        # Check if we need to magnetize
-                        if context.magnetic_flow:
-                            print("magnetizing...")
-                            # Magnetic field operations happen here
                     except Exception as e:
                         # Fallback to direct model processing
                         self.logger.debug(f"Conversation manager failed: {str(e)}, falling back to direct processing")
@@ -167,8 +150,7 @@ class GlueApp:
                         context=context
                     )
                     
-                    print("finished.")
-                    return f"response: {response}"
+                    return response
             
             return "No team available to process prompt"
             

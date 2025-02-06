@@ -60,7 +60,7 @@ class GlueExecutor:
     """
     
     def __init__(self, app_config: GlueAppConfig):
-        # Store app config first
+        # Store app config
         self.app_config = app_config
         
         # Initialize logger
@@ -71,7 +71,7 @@ class GlueExecutor:
         self.workspace_manager = WorkspaceManager()
         sticky = self.app_config.config.get("sticky", False)
         self.workspace_path = self.workspace_manager.get_workspace(self.app_config.name, sticky)
-        self.logger.info(f"Using workspace: {self.workspace_path}")
+        self.logger.debug(f"Using workspace: {self.workspace_path}")
         
         # Convert parsed config to AppConfig
         app_config_obj = AppConfig(
@@ -89,7 +89,6 @@ class GlueExecutor:
             config=app_config_obj,
             workspace_dir=self.workspace_path
         )
-        self.app_config = app_config
         self.tools = {}
         self.models = {}
         self.teams = {}
@@ -146,110 +145,271 @@ class GlueExecutor:
         # Return configured app
         return self.app
     
-    async def _init_tools(self):
-        """Initialize tools"""
-        self.logger.info("Initializing tools...")
-        for name, config in self.app_config.tool_configs.items():
-            self.logger.info(f"Setting up tool: {name}")
-            # Create tool instance based on type
-            if name == "code_interpreter":
-                tool = CodeInterpreterTool(
-                    name=name,
-                    description="Execute code in various languages",
-                    workspace_dir=str(Path(self.workspace_path)),
-                    supported_languages=config.config.get("supported_languages"),
-                    adhesive_type=config.config.get("adhesive_type"),
-                    enable_security_checks=config.config.get("enable_security_checks", True),
-                    enable_code_analysis=config.config.get("enable_code_analysis", True),
-                    enable_error_suggestions=config.config.get("enable_error_suggestions", True),
-                    max_memory_mb=config.config.get("max_memory_mb", 500),
-                    max_execution_time=config.config.get("max_execution_time", 30),
-                    max_file_size_kb=config.config.get("max_file_size_kb", 10240),
-                    max_subprocess_count=config.config.get("max_subprocess_count", 2)
-                )
-            elif name == "web_search":
-                tool = WebSearchTool()
-                tool.adhesive_type = config.config.get("adhesive_type")
-            elif name == "file_handler":
-                tool = FileHandlerTool(
-                    name=name,
-                    description="Handle file operations",
-                    workspace_dir=str(Path(self.workspace_path)),
-                    adhesive_type=config.config.get("adhesive_type")
-                )
-            else:
-                tool = BaseTool(
-                    name=name,
-                    description=f"Generic tool: {name}",
-                    adhesive_type=config.config.get("adhesive_type")
-                )
+    def _validate_tool_config(self, name: str, config: ToolConfig) -> Dict[str, Any]:
+        """Validate tool configuration and return normalized config.
+        
+        Args:
+            name: Tool name
+            config: Tool configuration
             
-            self.tools[name] = tool
-            self.app._tool_registry[name] = tool  # Store in persistent registry
-    
-    async def _init_models(self):
-        """Initialize models"""
-        self.logger.info("Initializing models...")
-        for name, config in self.app_config.model_configs.items():
-            self.logger.info(f"Setting up model: {name} with provider {config.provider}")
-            available_adhesives = set(config.config.get("adhesives", []))
+        Returns:
+            Normalized configuration dictionary
             
-            # Convert parser config to runtime config
-            from ..core.model import ModelConfig as RuntimeConfig
-            runtime_config = RuntimeConfig(
-                temperature=config.config.get("temperature", 0.7),
-                max_tokens=config.config.get("max_tokens", 1000),
-                top_p=config.config.get("top_p", 1.0),
-                presence_penalty=config.config.get("presence_penalty", 0.0),
-                frequency_penalty=config.config.get("frequency_penalty", 0.0),
-                stop_sequences=config.config.get("stop_sequences", []),
-                system_prompt=None,  # Will be set by set_role
-                config=config.config  # Keep provider-specific config
-            )
+        Raises:
+            ValueError: If configuration is invalid
+        """
+        if not config or not isinstance(config.config, dict):
+            raise ValueError(f"Invalid configuration for tool {name}")
+            
+        tool_config = config.config
+        base_config = {
+            "name": name,
+            "workspace_dir": str(Path(self.workspace_path)),
+            "adhesive_type": tool_config.get("adhesive_type", "tape")  # Default to tape if not specified
+        }
+        
+        if name == "code_interpreter":
+            # Validate required code interpreter settings
+            supported_langs = tool_config.get("supported_languages")
+            if not supported_langs or not isinstance(supported_langs, (list, tuple)):
+                raise ValueError(f"Tool {name} requires valid supported_languages list")
+                
+            return {
+                **base_config,
+                "description": "Execute code in various languages",
+                "supported_languages": supported_langs,
+                "enable_security_checks": bool(tool_config.get("enable_security_checks", True)),
+                "enable_code_analysis": bool(tool_config.get("enable_code_analysis", True)),
+                "enable_error_suggestions": bool(tool_config.get("enable_error_suggestions", True)),
+                "max_memory_mb": int(tool_config.get("max_memory_mb", 500)),
+                "max_execution_time": int(tool_config.get("max_execution_time", 30)),
+                "max_file_size_kb": int(tool_config.get("max_file_size_kb", 10240)),
+                "max_subprocess_count": int(tool_config.get("max_subprocess_count", 2))
+            }
+        elif name == "web_search":
+            # Validate web search settings
+            if "api_key" not in tool_config and "api_key_env" not in tool_config:
+                raise ValueError(f"Tool {name} requires either api_key or api_key_env")
+            return base_config
+        elif name == "file_handler":
+            # Validate file handler settings
+            if not self.workspace_path:
+                raise ValueError(f"Tool {name} requires valid workspace path")
+            return {
+                **base_config,
+                "description": "Handle file operations"
+            }
+        else:
+            return {
+                **base_config,
+                "description": f"Generic tool: {name}"
+            }
 
-            # Create provider with role
-            if config.provider == "openrouter":
-                provider = OpenRouterProvider(
-                    name=name,
-                    team=None,  # Team will be set during team initialization
-                    available_adhesives=available_adhesives,
-                    config=runtime_config
-                )
-            else:
-                provider = BaseProvider(
-                    name=name,
-                    team=None,  # Team will be set during team initialization
-                    available_adhesives=available_adhesives,
-                    config=runtime_config
-                )
+    def _create_tool(self, name: str, config: ToolConfig) -> BaseTool:
+        """Create a tool instance based on configuration.
+        
+        Args:
+            name: Tool name
+            config: Tool configuration
             
-            # Set role and system prompt
+        Returns:
+            Configured tool instance
+            
+        Raises:
+            ValueError: If tool configuration is invalid
+            RuntimeError: If tool creation fails
+        """
+        try:
+            # Validate and normalize config
+            tool_config = self._validate_tool_config(name, config)
+            
+            # Create appropriate tool instance
+            if name == "code_interpreter":
+                return CodeInterpreterTool(**tool_config)
+            elif name == "web_search":
+                return WebSearchTool(**tool_config)
+            elif name == "file_handler":
+                return FileHandlerTool(**tool_config)
+            else:
+                return BaseTool(**tool_config)
+        except Exception as e:
+            raise ValueError(f"Failed to create tool {name}: {str(e)}")
+
+    async def _init_tools(self) -> None:
+        """Initialize tools.
+        
+        Raises:
+            RuntimeError: If tool initialization fails
+        """
+        try:
+            self.logger.info("Initializing tools...")
+            for name, config in self.app_config.tool_configs.items():
+                self.logger.debug(f"Setting up tool: {name}")
+                tool = self._create_tool(name, config)
+                self.tools[name] = tool
+                self.app._tool_registry[name] = tool
+        except Exception as e:
+            self.logger.error(f"Tool initialization failed: {str(e)}")
+            raise RuntimeError("Failed to initialize tools") from e
+    
+    def _validate_model_config(self, name: str, config: ModelConfig) -> Dict[str, Any]:
+        """Validate model configuration and return normalized config.
+        
+        Args:
+            name: Model name
+            config: Model configuration
+            
+        Returns:
+            Normalized configuration dictionary
+            
+        Raises:
+            ValueError: If configuration is invalid
+        """
+        if not config or not isinstance(config.config, dict):
+            raise ValueError(f"Invalid configuration for model {name}")
+            
+        model_config = config.config
+        
+        # Validate provider
+        if not config.provider:
+            raise ValueError(f"Model {name} requires a provider")
+        if config.provider not in ["openrouter", "base"]:
+            raise ValueError(f"Unsupported provider {config.provider} for model {name}")
+            
+        # Validate role
+        if not config.role:
+            raise ValueError(f"Model {name} requires a role")
+            
+        # Validate adhesives
+        adhesives = model_config.get("adhesives", [])
+        if not isinstance(adhesives, (list, tuple)):
+            raise ValueError(f"Model {name} adhesives must be a list")
+        valid_adhesives = {"glue", "velcro", "tape"}
+        invalid_adhesives = set(adhesives) - valid_adhesives
+        if invalid_adhesives:
+            raise ValueError(f"Invalid adhesives for model {name}: {invalid_adhesives}")
+            
+        # Normalize numeric values
+        try:
+            temperature = float(model_config.get("temperature", 0.7))
+            if not 0 <= temperature <= 1:
+                raise ValueError(f"Temperature must be between 0 and 1")
+                
+            max_tokens = int(model_config.get("max_tokens", 1000))
+            if max_tokens <= 0:
+                raise ValueError(f"Max tokens must be positive")
+                
+            top_p = float(model_config.get("top_p", 1.0))
+            if not 0 <= top_p <= 1:
+                raise ValueError(f"Top p must be between 0 and 1")
+                
+            presence_penalty = float(model_config.get("presence_penalty", 0.0))
+            frequency_penalty = float(model_config.get("frequency_penalty", 0.0))
+            
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid numeric values in model {name} config: {str(e)}")
+            
+        # Validate sequences
+        stop_sequences = model_config.get("stop_sequences", [])
+        if not isinstance(stop_sequences, (list, tuple)):
+            raise ValueError(f"Stop sequences must be a list for model {name}")
+            
+        return {
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": top_p,
+            "presence_penalty": presence_penalty,
+            "frequency_penalty": frequency_penalty,
+            "stop_sequences": stop_sequences,
+            "system_prompt": None,  # Will be set by set_role
+            "config": model_config  # Keep provider-specific config
+        }
+
+    def _create_model(self, name: str, config: ModelConfig) -> BaseProvider:
+        """Create a model instance based on configuration.
+        
+        Args:
+            name: Model name
+            config: Model configuration
+            
+        Returns:
+            Configured model provider instance
+            
+        Raises:
+            ValueError: If model configuration is invalid
+            RuntimeError: If model creation fails
+        """
+        try:
+            # Validate and normalize config
+            validated_config = self._validate_model_config(name, config)
+            
+            # Create runtime config
+            from ..core.model import ModelConfig as RuntimeConfig
+            runtime_config = RuntimeConfig(**validated_config)
+            
+            # Create provider instance
+            provider_cls = OpenRouterProvider if config.provider == "openrouter" else BaseProvider
+            provider = provider_cls(
+                name=name,
+                team=None,  # Team will be set during team initialization
+                available_adhesives=set(config.config.get("adhesives", [])),
+                config=runtime_config
+            )
+            
+            if not config.role:
+                raise ValueError(f"Model {name} requires a role")
             provider.set_role(config.role)
             
-            self.models[name] = provider
-            await self.app.add_model(provider)
-    
-    async def _init_teams(self):
-        """Initialize teams"""
-        if not self.app_config.workflow:
-            return
+            return provider
             
-        self.logger.info("Initializing teams...")
-        # Create teams
-        for name, config in self.app_config.workflow.teams.items():
-            self.logger.info(f"Setting up team: {name}")
+        except Exception as e:
+            raise ValueError(f"Failed to create model {name}: {str(e)}")
+
+    async def _init_models(self) -> None:
+        """Initialize models.
+        
+        Raises:
+            RuntimeError: If model initialization fails
+        """
+        try:
+            self.logger.info("Initializing models...")
+            for name, config in self.app_config.model_configs.items():
+                self.logger.debug(f"Setting up model: {name} with provider {config.provider}")
+                provider = self._create_model(name, config)
+                self.models[name] = provider
+                await self.app.add_model(provider)
+        except Exception as e:
+            self.logger.error(f"Model initialization failed: {str(e)}")
+            raise RuntimeError("Failed to initialize models") from e
+    
+    async def _create_team(self, name: str, config: Any) -> Team:
+        """Create a team instance based on configuration.
+        
+        Args:
+            name: Team name
+            config: Team configuration
+            
+        Returns:
+            Configured team instance
+            
+        Raises:
+            ValueError: If team configuration is invalid
+        """
+        try:
             # Get team models
             team_models = {}
             if config.lead:
+                if config.lead not in self.models:
+                    raise ValueError(f"Lead model {config.lead} not found")
                 team_models[config.lead] = self.models[config.lead]
+            
             for member_name in config.members:
+                if member_name not in self.models:
+                    raise ValueError(f"Member model {member_name} not found")
                 team_models[member_name] = self.models[member_name]
 
             # Create team with models
-            team = Team(
-                name=name,
-                models=team_models
-            )
+            team = Team(name=name, models=team_models)
             
             # Add lead if specified
             if config.lead:
@@ -261,17 +421,11 @@ class GlueExecutor:
             
             # Add tools to team
             for tool_name in config.tools:
-                if tool_name in self.tools:
-                    tool = self.tools[tool_name]
-                    # Add tool to team without binding - models will use their own adhesives
-                    await team.add_tool(tool)
-                    self.logger.debug(f"Added tool {tool_name} to team {name}")
-                else:
-                    self.logger.error(f"Tool {tool_name} not found")
-            
-            # Store team
-            self.teams[name] = team
-            await self.app.add_team(team)
+                if tool_name not in self.tools:
+                    raise ValueError(f"Tool {tool_name} not found")
+                tool = self.tools[tool_name]
+                await team.add_tool(tool)
+                self.logger.debug(f"Added tool {tool_name} to team {name}")
             
             # Initialize shared results
             team.shared_results = {}
@@ -286,30 +440,101 @@ class GlueExecutor:
                 member_model.team = team
                 self.group_chat.add_model(member_model)
             
-        # Setup magnetic field
-        if self.app_config.workflow:
+            return team
+            
+        except Exception as e:
+            raise ValueError(f"Failed to create team {name}: {str(e)}")
+
+    async def _setup_magnetic_field(self) -> None:
+        """Setup magnetic field for team interactions.
+        
+        Raises:
+            ValueError: If magnetic field configuration is invalid
+        """
+        try:
             self.logger.info("Setting up magnetic field...")
             field = MagneticField(name=self.app.name)
             
-            # Register all teams with the field first
+            # Register all teams
             for team_name in self.teams:
                 await field.add_team(self.teams[team_name])
             
             # Add attractions (push flow)
             for source, target in self.app_config.workflow.attractions:
+                if source not in self.teams or target not in self.teams:
+                    raise ValueError(f"Invalid attraction flow: {source} -> {target}")
                 await field.process_team_flow(source, target, None, "->")
             
             # Add repulsions    
             for source, target in self.app_config.workflow.repulsions:
+                if source not in self.teams or target not in self.teams:
+                    raise ValueError(f"Invalid repulsion flow: {source} <> {target}")
                 await field.process_team_flow(source, target, None, "<>")
                 
-            # Enable pull capability for teams that use the pull keyword
+            # Enable pull capability
             for target, source in self.app_config.workflow.pulls:
                 if source == "pull":
-                    # Enable pull capability for the target team from researchers
+                    if target not in self.teams:
+                        raise ValueError(f"Invalid pull target: {target}")
                     await field.enable_pull(target, "researchers")
             
             self.app.magnetic_field = field
+            
+        except Exception as e:
+            raise ValueError(f"Failed to setup magnetic field: {str(e)}")
+
+    async def _init_teams(self) -> None:
+        """Initialize teams and setup magnetic field.
+        
+        Raises:
+            RuntimeError: If team initialization fails
+        """
+        if not self.app_config.workflow:
+            return
+            
+        try:
+            self.logger.info("Initializing teams...")
+            for name, config in self.app_config.workflow.teams.items():
+                self.logger.debug(f"Setting up team: {name}")
+                team = await self._create_team(name, config)
+                self.teams[name] = team
+                await self.app.add_team(team)
+            
+            await self._setup_magnetic_field()
+            
+        except Exception as e:
+            self.logger.error(f"Team initialization failed: {str(e)}")
+            raise RuntimeError("Failed to initialize teams") from e
+
+def _print_app_summary(app: GlueApp, executor: GlueExecutor):
+    """Print summary of app structure"""
+    logger = get_logger()
+    
+    # Log app initialization with user_facing flag for minimal output
+    logger.info(f"\n{app.name} is ready.", extra={"user_facing": True})
+    logger.info("\nEnter prompts or 'exit' to quit.", extra={"user_facing": True})
+    
+    # Log detailed info for debugging
+    logger.debug(f"Workspace: {executor.workspace_path}")
+    
+    for team_name, team in app.teams.items():
+        logger.debug(f"\nTeam: {team_name}")
+        logger.debug(f"  Lead: {team.lead}")
+        if team.members:
+            logger.debug(f"  Members: {', '.join(team.members)}")
+        if team.tools:
+            logger.debug(f"  Tools: {', '.join(team.tools.keys())}")
+            
+    if app.magnetic_field:
+        logger.debug("\nMagnetic Flows:")
+        for source_team, flows in app.magnetic_field._flows.items():
+            for target_team, flow_type in flows.items():
+                if flow_type == "><":
+                    logger.debug(f"  {source_team} <-> {target_team}")
+                elif flow_type == "->":
+                    logger.debug(f"  {source_team} -> {target_team}")
+                elif flow_type == "<-":
+                    logger.debug(f"  {source_team} <- {target_team}")
 
 async def execute_glue_app(app_config: GlueAppConfig) -> GlueApp:
     """Execute GLUE application
@@ -321,4 +546,6 @@ async def execute_glue_app(app_config: GlueAppConfig) -> GlueApp:
         GlueApp: The configured and running application instance
     """
     executor = GlueExecutor(app_config)
-    return await executor.execute()
+    app = await executor.execute()
+    _print_app_summary(app, executor)
+    return app

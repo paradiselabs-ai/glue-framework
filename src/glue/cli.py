@@ -10,17 +10,18 @@ import sys
 import click
 import asyncio
 import re
-import inspect
+import traceback
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Set
 from .dsl import parse_glue_file, execute_glue_app, load_env
 from .providers.openrouter import OpenRouterProvider
-from .tools import web_search, file_handler, code_interpreter
-from .core.state import StateManager, ResourceState
 from .tools.base import BaseTool, ToolConfig, ToolPermission
-from .magnetic.field import MagneticField
 from .core.workspace import WorkspaceManager
 from .core.logger import get_logger
+from .core.app import GlueApp
+
+# Constants for model display
+MODELS_PER_PAGE = 15
 
 def print_version(ctx, param, value):
     if not value or ctx.resilient_parsing:
@@ -84,135 +85,194 @@ def cli(debug):
     if debug:
         click.echo('Debug mode enabled')
 
-def get_model_category(model: Dict[str, Any]) -> List[str]:
-    """Determine model categories based on model metadata"""
-    categories = []
-    name = model.get("name", "").lower()
-    description = model.get("description", "").lower()
-    context_length = model.get("context_length", 0)
+class ModelInfo:
+    """Model information with validation and categorization."""
     
-    # Chat models - most models support chat
-    categories.append("chat")
+    CATEGORIES = {
+        "chat": ["chat", "conversation", "dialogue"],
+        "code": ["code", "coding", "programming", "developer", "python", "javascript", "technical", "json"],
+        "research": ["research", "analysis", "analytical", "academic", "reasoning", "document", "long context"],
+        "creative": ["creative", "story", "writing", "artistic", "roleplay", "content generation"],
+        "vision": ["vision", "image", "visual", "multimodal", "picture", "photo"]
+    }
     
-    # Code models - based on name and description
-    if (
-        "code" in name or
-        any(kw in description for kw in [
-            "code", "coding", "programming", "developer", 
-            "python", "javascript", "technical", "json"
-        ])
-    ):
-        categories.append("code")
-    
-    # Research models - based on context length and capabilities
-    if (
-        context_length >= 16000 or  # Long context usually indicates research capability
-        "research" in name or
-        any(kw in description for kw in [
-            "research", "analysis", "analytical", "academic",
-            "reasoning", "document", "long context"
-        ])
-    ):
-        categories.append("research")
-    
-    # Creative models - based on name and description
-    if (
-        "creative" in name or
-        any(kw in description for kw in [
-            "creative", "story", "writing", "artistic",
-            "roleplay", "content generation"
-        ])
-    ):
-        categories.append("creative")
-    
-    # Vision models - based on capabilities
-    if (
-        "vision" in name or
-        any(kw in description for kw in [
-            "vision", "image", "visual", "multimodal",
-            "picture", "photo"
-        ])
-    ):
-        categories.append("vision")
-    
-    return categories
-
-def display_models(models: List[Dict[str, Any]], start_idx: int = 0, category_filter: Optional[str] = None,
-                  sort_by: str = "rank") -> None:
-    """Display models with pagination and filtering"""
-    filtered_models = models
-    
-    # Apply category filter if specified
-    if category_filter:
-        filtered_models = [m for m in models if category_filter in get_model_category(m)]
-    
-    # Sort models
-    if sort_by == "rank":
-        filtered_models.sort(key=lambda x: float(x.get("pricing", {}).get("prompt", "0")), reverse=True)
-    elif sort_by == "name":
-        filtered_models.sort(key=lambda x: x.get("name", "").lower())
-    elif sort_by == "provider":
-        filtered_models.sort(key=lambda x: (x.get("provider", "").lower(), x.get("name", "").lower()))
-    elif sort_by == "updated":
-        filtered_models.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
-    elif sort_by == "context":
-        filtered_models.sort(key=lambda x: int(x.get("context_length", 0)), reverse=True)
-    
-    if not filtered_models:
-        click.echo("\nNo models found matching the selected criteria.")
-        return 0, 0
-    
-    # Display models (15 at a time)
-    end_idx = min(start_idx + 15, len(filtered_models))
-    current_page = filtered_models[start_idx:end_idx]
-    
-    click.echo("\nAvailable Models:")
-    click.echo("-" * 100)
-    
-    for model in current_page:
-        name = model.get("name", "Unknown")
-        provider = model.get("provider", "Unknown")
-        description = model.get("description", "No description available")
-        pricing = model.get("pricing", {})
-        prompt_price = pricing.get("prompt", "N/A")
-        completion_price = pricing.get("completion", "N/A")
-        context_length = model.get("context_length", "Unknown")
-        categories = get_model_category(model)
+    def __init__(self, data: Dict[str, Any]):
+        """Initialize model info with validation.
         
-        click.echo(f"\nModel: {name}")
-        click.echo(f"Provider: {provider}")
-        click.echo(f"Categories: {', '.join(categories)}")
-        click.echo(f"Context Length: {context_length:,} tokens")
-        click.echo(f"Description: {description}")
-        click.echo(f"Pricing: {prompt_price}/1K prompt tokens, {completion_price}/1K completion tokens")
+        Args:
+            data: Raw model data
+            
+        Raises:
+            ValueError: If required fields are missing or invalid
+        """
+        # Validate required fields
+        self.name = data.get("name")
+        if not self.name:
+            raise ValueError("Model name is required")
+            
+        self.provider = data.get("provider", "Unknown")
+        self.description = data.get("description", "No description available")
+        
+        # Validate numeric fields
+        try:
+            self.context_length = int(data.get("context_length", 0))
+            if self.context_length < 0:
+                raise ValueError("Context length must be non-negative")
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid context length for model {self.name}")
+            
+        # Validate pricing
+        pricing = data.get("pricing", {})
+        if not isinstance(pricing, dict):
+            raise ValueError(f"Invalid pricing data for model {self.name}")
+            
+        try:
+            self.prompt_price = float(pricing.get("prompt", 0))
+            self.completion_price = float(pricing.get("completion", 0))
+            if self.prompt_price < 0 or self.completion_price < 0:
+                raise ValueError("Prices must be non-negative")
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid pricing values for model {self.name}")
+            
+        # Cache categories
+        self._categories = self._determine_categories()
+    
+    def _determine_categories(self) -> Set[str]:
+        """Determine model categories based on metadata."""
+        categories = {"chat"}  # All models support chat
+        text = f"{self.name} {self.description}".lower()
+        
+        # Check each category's keywords
+        for category, keywords in self.CATEGORIES.items():
+            if category == "chat":
+                continue
+            if any(kw in text for kw in keywords):
+                categories.add(category)
+            
+        # Special case for research based on context length
+        if self.context_length >= 16000:
+            categories.add("research")
+            
+        return categories
+    
+    def matches_category(self, category: Optional[str]) -> bool:
+        """Check if model matches category filter."""
+        return category is None or category in self._categories
+    
+    def get_sort_key(self, sort_by: str) -> Any:
+        """Get sort key based on sort criteria."""
+        if sort_by == "rank":
+            return -self.prompt_price  # Negative for reverse sort
+        elif sort_by == "name":
+            return self.name.lower()
+        elif sort_by == "provider":
+            return (self.provider.lower(), self.name.lower())
+        elif sort_by == "context":
+            return -self.context_length  # Negative for reverse sort
+        return 0
+    
+    def display(self) -> None:
+        """Display model information."""
+        click.echo(f"\nModel: {self.name}")
+        click.echo(f"Provider: {self.provider}")
+        click.echo(f"Categories: {', '.join(sorted(self._categories))}")
+        click.echo(f"Context Length: {self.context_length:,} tokens")
+        click.echo(f"Description: {self.description}")
+        click.echo(
+            f"Pricing: {self.prompt_price}/1K prompt tokens, "
+            f"{self.completion_price}/1K completion tokens"
+        )
         click.echo("-" * 100)
+
+class ModelCatalog:
+    """Catalog of available models with caching."""
     
-    # Display navigation options
-    click.echo("\nOptions:")
-    if end_idx < len(filtered_models):
-        click.echo("[m] More models")
-    click.echo("[s] Sort models (rank/name/provider/updated/context)")
-    click.echo("[f] Filter by category")
-    click.echo("[x] Exit")
+    def __init__(self):
+        self._models: List[ModelInfo] = []
+        self._filtered_models: List[ModelInfo] = []
+        self._category_filter: Optional[str] = None
+        self._sort_by: str = "rank"
     
-    return end_idx, len(filtered_models)
+    async def load_models(self) -> None:
+        """Load and validate models from provider."""
+        try:
+            raw_models = await OpenRouterProvider.get_available_models()
+            self._models = []
+            
+            for data in raw_models:
+                try:
+                    model = ModelInfo(data)
+                    self._models.append(model)
+                except ValueError as e:
+                    click.echo(f"Warning: Skipping invalid model: {str(e)}", err=True)
+                    
+            self._apply_filters()
+            
+        except Exception as e:
+            raise click.ClickException(f"Failed to load models: {str(e)}")
+    
+    def _apply_filters(self) -> None:
+        """Apply current category filter and sorting."""
+        # Filter models
+        self._filtered_models = [
+            model for model in self._models
+            if model.matches_category(self._category_filter)
+        ]
+        
+        # Sort filtered models
+        self._filtered_models.sort(
+            key=lambda m: m.get_sort_key(self._sort_by)
+        )
+    
+    def display_page(self, page: int = 0) -> Tuple[int, int]:
+        """Display a page of models."""
+        if not self._filtered_models:
+            click.echo("\nNo models found matching the selected criteria.")
+            return 0, 0
+            
+        start_idx = page * MODELS_PER_PAGE
+        end_idx = min(start_idx + MODELS_PER_PAGE, len(self._filtered_models))
+        
+        click.echo("\nAvailable Models:")
+        click.echo("-" * 100)
+        
+        for model in self._filtered_models[start_idx:end_idx]:
+            model.display()
+            
+        # Display navigation options
+        click.echo("\nOptions:")
+        if end_idx < len(self._filtered_models):
+            click.echo("[m] More models")
+        click.echo("[s] Sort models (rank/name/provider/context)")
+        click.echo("[f] Filter by category")
+        click.echo("[x] Exit")
+        
+        return end_idx, len(self._filtered_models)
+    
+    def set_category_filter(self, category: Optional[str]) -> None:
+        """Set category filter and reapply filters."""
+        self._category_filter = category
+        self._apply_filters()
+    
+    def set_sort_by(self, sort_by: str) -> None:
+        """Set sort criteria and reapply filters."""
+        self._sort_by = sort_by
+        self._apply_filters()
 
 def get_sort_choice() -> str:
     """Get user's sorting preference"""
     click.echo("\nSort by:")
-    click.echo("1. Rank/Price (highest first)")
+    click.echo("1. Rank (by price, highest first)")
     click.echo("2. Name (alphabetical)")
-    click.echo("3. Provider")
-    click.echo("4. Recently Updated")
-    click.echo("5. Context Length (highest first)")
+    click.echo("3. Provider (then by name)")
+    click.echo("4. Context Length (highest first)")
     
-    choice = click.prompt("Choose sorting option (1-5)", type=int)
+    choice = click.prompt("Choose sorting option (1-4)", type=int)
     sort_options = {
         1: "rank",
         2: "name",
         3: "provider",
-        4: "updated",
-        5: "context"
+        4: "context"
     }
     return sort_options.get(choice, "rank")
 
@@ -240,37 +300,50 @@ def get_category_filter() -> Optional[str]:
 @cli.command()
 def list_models():
     """List available AI models with filtering and sorting options."""
+    logger = get_logger()
     try:
-        # Fetch models from OpenRouter
-        models = asyncio.run(OpenRouterProvider.get_available_models())
+        # Create model catalog
+        catalog = ModelCatalog()
         
-        start_idx = 0
-        category_filter = None
-        sort_by = "rank"
+        # Load models
+        try:
+            asyncio.run(catalog.load_models())
+        except click.ClickException as e:
+            logger.error(str(e), extra={"user_facing": True})
+            return
         
+        # Interactive model browsing
+        current_page = 0
         while True:
-            end_idx, total = display_models(
-                models,
-                start_idx=start_idx,
-                category_filter=category_filter,
-                sort_by=sort_by
-            )
-            
-            choice = click.prompt("\nEnter option", type=str).lower()
-            
-            if choice == 'x':
+            try:
+                end_idx, total = catalog.display_page(current_page)
+                
+                if total == 0:
+                    break
+                    
+                choice = click.prompt("\nEnter option", type=str).lower()
+                
+                if choice == 'x':
+                    break
+                elif choice == 'm' and end_idx < total:
+                    current_page += 1
+                elif choice == 's':
+                    catalog.set_sort_by(get_sort_choice())
+                    current_page = 0
+                elif choice == 'f':
+                    catalog.set_category_filter(get_category_filter())
+                    current_page = 0
+                    
+            except click.Abort:
                 break
-            elif choice == 'm' and end_idx < total:
-                start_idx = end_idx
-            elif choice == 's':
-                sort_by = get_sort_choice()
-                start_idx = 0  # Reset to first page
-            elif choice == 'f':
-                category_filter = get_category_filter()
-                start_idx = 0  # Reset to first page
-            
+            except Exception as e:
+                logger.error(f"Error: {str(e)}", extra={"user_facing": True})
+                logger.debug(f"Full error: {traceback.format_exc()}")
+                break
+                
     except Exception as e:
-        click.echo(f"Error: {str(e)}", err=True)
+        logger.error(f"Unexpected error: {str(e)}")
+        logger.debug(f"Full traceback:\n{traceback.format_exc()}")
         sys.exit(1)
 
 @cli.command()
@@ -434,6 +507,49 @@ async def test_agent_processing(agent):
         click.echo(f"Error creating {type}: {str(e)}", err=True)
         sys.exit(1)
 
+def validate_env_vars(env_vars: Dict[str, str], app_name: str) -> None:
+    """Validate required environment variables.
+    
+    Args:
+        env_vars: Dictionary of environment variables
+        app_name: Name of the application for error messages
+        
+    Raises:
+        click.ClickException: If required variables are missing
+    """
+    required_vars = {
+        "OPENROUTER_API_KEY": "OpenRouter API key is required",
+        "SERP_API_KEY": "SERP API key is required for web search"
+    }
+    
+    missing_vars = []
+    for var, message in required_vars.items():
+        if var not in env_vars:
+            missing_vars.append(f"{var}: {message}")
+            
+    if missing_vars:
+        raise click.ClickException(
+            f"Missing required environment variables for {app_name}:\n" +
+            "\n".join(f"- {msg}" for msg in missing_vars)
+        )
+
+async def handle_prompt(app: GlueApp, prompt: str) -> None:
+    """Handle user prompt with proper error handling.
+    
+    Args:
+        app: GLUE application instance
+        prompt: User input prompt
+    """
+    logger = get_logger()
+    try:
+        result = await app.process_prompt(prompt)
+        logger.info(result, extra={"user_facing": True})
+    except KeyboardInterrupt:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing prompt: {str(e)}", extra={"user_facing": True})
+        logger.debug(f"Full error: {traceback.format_exc()}")
+
 @cli.command()
 @click.argument('file', type=click.Path(exists=True))
 @click.option('--env', type=click.Path(exists=True), help='Path to .env file')
@@ -442,46 +558,56 @@ def run(file, env):
 
     FILE is the path to your .glue application file.
     """
+    logger = get_logger()
     try:
-        # Load environment
+        # Validate file extension
+        if not file.endswith('.glue'):
+            raise click.ClickException("Application file must have .glue extension")
+            
+        # Load and validate environment
         env_vars = load_env(env_file=env)
         
         # Log loaded environment variables (masked)
-        logger = get_logger()
         masked_vars = {k: f"{v[:4]}...{v[-4:]}" if len(v) > 8 else "***" 
                       for k, v in env_vars.items()}
         logger.debug(f"Loaded environment variables: {masked_vars}")
         
-        # Parse GLUE file
-        app = parse_glue_file(file)
+        try:
+            # Parse GLUE file
+            app = parse_glue_file(file)
+            validate_env_vars(env_vars, app.name)
+            
+        except Exception as e:
+            raise click.ClickException(f"Failed to parse application file: {str(e)}")
         
-        # Execute application
-        app = asyncio.run(execute_glue_app(app))
-        
-        # Enter interactive mode
-        click.echo(f"\nGLUE App '{app.name}' is running. Enter prompts or 'exit' to quit.")
-        while True:
-            try:
-                prompt = click.prompt("\nPrompt")
-                if prompt.lower() == 'exit':
+        try:
+            # Execute application
+            app = asyncio.run(execute_glue_app(app))
+            
+            # Enter interactive mode
+            while True:
+                try:
+                    prompt = click.prompt("\nPrompt", prompt_suffix="")
+                    if prompt.lower() == 'exit':
+                        break
+                        
+                    asyncio.run(handle_prompt(app, prompt))
+                    
+                except KeyboardInterrupt:
+                    logger.info("\nExiting...", extra={"user_facing": True})
                     break
                     
-                result = asyncio.run(app.process_prompt(prompt))
-                click.echo(f"\nResponse: {result}")
-                
-            except KeyboardInterrupt:
-                break
-            except Exception as e:
-                click.echo(f"Error: {str(e)}", err=True)
-                
-        # Cleanup
-        asyncio.run(app.cleanup())
-        
+            # Cleanup
+            asyncio.run(app.cleanup())
+            
+        except Exception as e:
+            raise click.ClickException(f"Application execution failed: {str(e)}")
+            
+    except click.ClickException:
+        raise
     except Exception as e:
-        import traceback
-        click.echo(f"Error: {str(e)}", err=True)
-        click.echo("\nFull traceback:", err=True)
-        click.echo(traceback.format_exc(), err=True)
+        logger.error(f"Unexpected error: {str(e)}")
+        logger.debug(f"Full traceback:\n{traceback.format_exc()}")
         sys.exit(1)
 
 @cli.command()
