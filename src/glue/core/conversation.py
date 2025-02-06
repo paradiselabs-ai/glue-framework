@@ -254,12 +254,17 @@ class ConversationManager:
                         for tool_name in model._tools:
                             self.model_roles[model_name].allow_tool(tool_name)
             
-            # Optimize tool chain if tools available
+            # Only optimize required tools
             optimized_tools = []
-            if tools:
-                tool_names = list(tools.keys())
-                optimized_tools = self.tool_optimizer.optimize_chain(tool_names, context)
-                self.logger.debug(f"Optimized tools: {optimized_tools}")
+            if tools and context.tools_required:
+                # Filter available tools to only those required
+                required_tools = [
+                    name for name in tools.keys()
+                    if name in context.tools_required
+                ]
+                if required_tools:
+                    optimized_tools = self.tool_optimizer.optimize_chain(required_tools, context)
+                    self.logger.debug(f"Optimized required tools: {optimized_tools}")
             
             # Process through first model
             if not models:

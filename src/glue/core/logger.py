@@ -25,21 +25,15 @@ class GlueLogger:
         # Remove any existing handlers
         self.logger.handlers = []
         
-        # Console handler - shows debug info in development
-        console_handler = logging.StreamHandler(sys.stdout)
-        if development:
-            # In development, show all levels with timestamp
-            console_handler.setLevel(logging.DEBUG)
-            console_format = logging.Formatter(
-                '%(asctime)s - %(levelname)s - %(name)s - %(message)s',
-                datefmt='%H:%M:%S'
-            )
-        else:
-            # In production, show only info and above
-            console_handler.setLevel(logging.INFO)
-            console_format = logging.Formatter('%(message)s')
-        console_handler.setFormatter(console_format)
-        self.logger.addHandler(console_handler)
+        # Debug handler - always goes to stderr
+        debug_handler = logging.StreamHandler(sys.stderr)
+        debug_handler.setLevel(logging.DEBUG if development else logging.INFO)
+        debug_format = logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+            datefmt='%H:%M:%S'
+        )
+        debug_handler.setFormatter(debug_format)
+        self.logger.addHandler(debug_handler)
         
         # File handler - always shows full debug info
         if log_dir:

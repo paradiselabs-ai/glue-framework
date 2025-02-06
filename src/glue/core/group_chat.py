@@ -237,6 +237,14 @@ class GroupChatManager:
                         chat_id
                     )
             
+            # Log message routing
+            self.logger.info(f"\n{'='*20} Model Communication {'='*20}")
+            self.logger.info(f"Chat: {chat_id}")
+            self.logger.info(f"From: {from_model or 'system'}")
+            self.logger.info(f"To: {target_model or 'all models'}")
+            self.logger.info(f"Models in chat: {', '.join(group.models)}")
+            self.logger.info(f"Available tools: {list(available_tools.keys())}")
+            
             # Process through conversation manager with context
             response = await self.conversation_manager.process(
                 models={name: self.models[name] for name in group.models},
@@ -245,8 +253,19 @@ class GroupChatManager:
                 context=group.context
             )
             
+            # Log tool usage and context
+            if group.context and group.context.tools_required:
+                self.logger.info(f"\nTool Usage:")
+                for tool in group.context.tools_required:
+                    binding = next(
+                        (binding for model, bindings in self.tool_bindings.items()
+                         for t, binding in bindings.items() if t == tool),
+                        None
+                    )
+                    self.logger.info(f"- {tool} (binding: {binding.name if binding else 'none'})")
+            
             # Store in history with context
-            self.chat_history.append({
+            history_entry = {
                 'chat_id': chat_id,
                 'timestamp': datetime.now().isoformat(),
                 'from_model': from_model,
@@ -254,7 +273,14 @@ class GroupChatManager:
                 'content': content,
                 'response': response,
                 'context': group.context
-            })
+            }
+            self.chat_history.append(history_entry)
+            
+            # Log collaboration result
+            self.logger.info(f"\nCollaboration Result:")
+            self.logger.info(f"Message processed successfully")
+            self.logger.info(f"Response length: {len(response)}")
+            self.logger.info(f"{'='*50}\n")
             
             return response
             

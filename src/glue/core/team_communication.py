@@ -124,33 +124,55 @@ class TeamCommunicationManager:
         from_team: str
     ) -> None:
         """Share results between teams based on magnetic flow"""
-        self.logger.debug(f"Sharing results in flow {flow_id}")
+        self.logger.info(f"\n{'='*20} Team Communication {'='*20}")
+        self.logger.info(f"Flow ID: {flow_id}")
+        self.logger.info(f"From Team: {from_team}")
         
         if flow_id not in self.active_flows:
             raise ValueError(f"Flow {flow_id} not found")
             
         flow = self.active_flows[flow_id]
         
+        # Log flow details
+        self.logger.info(f"Flow Type: {flow.flow_type}")
+        self.logger.info(f"Source Team: {flow.source_team}")
+        self.logger.info(f"Target Team: {flow.target_team}")
+        
         # Validate flow direction
         if from_team == flow.source_team and flow.flow_type in ["><", "->"]:
             target = flow.target_team
+            self.logger.info("Direction: Source -> Target (Valid)")
         elif from_team == flow.target_team and flow.flow_type in ["><", "<-"]:
             target = flow.source_team
+            self.logger.info("Direction: Target -> Source (Valid)")
         else:
+            self.logger.error(f"Invalid flow direction for {from_team}")
             raise ValueError(f"Invalid flow direction for {from_team}")
+            
+        # Log data being shared
+        self.logger.info("\nShared Data:")
+        for key, value in results.items():
+            self.logger.info(f"- {key}: {type(value).__name__}")
             
         # Share data between teams
         flow.shared_data.update(results)
         flow.last_active = datetime.now()
         
         # Store in history
-        self.flow_history.append({
+        history_entry = {
             'flow_id': flow_id,
             'timestamp': datetime.now().isoformat(),
             'from_team': from_team,
             'target_team': target,
             'data': results
-        })
+        }
+        self.flow_history.append(history_entry)
+        
+        # Log success
+        self.logger.info("\nMagnetic Flow Result:")
+        self.logger.info(f"Data shared successfully from {from_team} to {target}")
+        self.logger.info(f"Flow last active: {flow.last_active}")
+        self.logger.info(f"{'='*50}\n")
     
     async def break_flow(self, flow_id: str) -> None:
         """Break magnetic flow between teams"""

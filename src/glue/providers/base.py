@@ -75,7 +75,6 @@ class BaseProvider(Model, ABC):
             formatted.append(f"- {content}")
         return "\n".join(formatted)
 
-    @abstractmethod
     async def _prepare_request(self, prompt: str) -> Dict[str, Any]:
         """Prepare the request payload for the API"""
         # Build natural context
@@ -151,22 +150,25 @@ Remember: Be clear about your intentions when using tools, and specify if you wa
             if not request_data:
                 raise ValueError("Failed to prepare request")
                 
-            # Make request with error handling
-            try:
-                response = await self._make_request(request_data)
-            except ValueError as e:
-                # Let ValueError propagate up
-                raise
-            except Exception as e:
-                await self._handle_error(e)
-                raise
-                
-            # Process response
-            result = await self._process_response(response)
-            if not result:
-                raise ValueError("Failed to process response")
-                
-            return result
+            # Make request with retry support
+            max_retries = 1  # Allow one retry for fallback
+            for attempt in range(max_retries + 1):
+                try:
+                    response = await self._make_request(request_data)
+                    result = await self._process_response(response)
+                    if result:
+                        return result
+                except ValueError as e:
+                    if "Retrying with fallback" in str(e) and attempt < max_retries:
+                        # Update request data with new model
+                        request_data = await self._prepare_request(prompt)
+                        continue
+                    raise
+                except Exception as e:
+                    await self._handle_error(e)
+                    raise
+            
+            raise ValueError("Failed to generate response after retries")
             
         except ValueError as e:
             # Log error and re-raise ValueError

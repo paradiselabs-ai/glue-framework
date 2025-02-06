@@ -67,6 +67,9 @@ class OpenRouterProvider(BaseProvider):
         """Prepare request for OpenRouter API"""
         # Get base request data from parent
         request_data = await super()._prepare_request(prompt)
+        if not request_data:
+            self.logger.error("Failed to get base request data")
+            raise ValueError("Failed to prepare request")
         
         # Add OpenRouter-specific parameters
         request_data.update({
@@ -83,9 +86,24 @@ class OpenRouterProvider(BaseProvider):
             # Handle API errors first
             if "error" in response:
                 await self._handle_error(response)
+                return None  # Let generate() retry with fallback
             
-            # Extract message and content
-            content = response["choices"][0]["message"]["content"]
+            # Validate response structure
+            if not response or "choices" not in response:
+                self.logger.error("Invalid response format")
+                raise ValueError("Invalid response format")
+                
+            choices = response.get("choices", [])
+            if not choices:
+                self.logger.error("No choices in response")
+                raise ValueError("No choices in response")
+                
+            message = choices[0].get("message", {})
+            content = message.get("content")
+            if not content:
+                self.logger.error("No content in response")
+                raise ValueError("No content in response")
+                
             return content
                 
         except Exception as e:
@@ -103,14 +121,18 @@ class OpenRouterProvider(BaseProvider):
             if self.model_id != "meta-llama/llama-3.1-8b-instruct:free":
                 self.logger.info("Retrying with fallback model")
                 self.model_id = "meta-llama/llama-3.1-8b-instruct:free"
-                return  # Allow retry with fallback model
-            
-        # If fallback fails or other error, raise
-        raise ValueError(f"OpenRouter API error: {error}")
+                # Re-raise to let generate() retry with fallback
+                raise ValueError("Retrying with fallback model")
+            else:
+                # If already using fallback, raise final error
+                raise ValueError(f"OpenRouter API error (fallback failed): {error}")
     
     async def _make_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
         """Make request to OpenRouter API"""
         headers = self._get_headers()
+        
+        self.logger.debug(f"Making request to OpenRouter API with model: {self.model_id}")
+        self.logger.debug(f"Request data: {json.dumps(request_data, indent=2)}")
         
         async with aiohttp.ClientSession() as session:
             async with session.post(
@@ -119,6 +141,8 @@ class OpenRouterProvider(BaseProvider):
                 json=request_data
             ) as response:
                 result = await response.json()
+                self.logger.debug(f"Response status: {response.status}")
+                self.logger.debug(f"Response data: {json.dumps(result, indent=2)}")
                 
                 if response.status != 200:
                     await self._handle_error(result)

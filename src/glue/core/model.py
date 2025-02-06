@@ -184,45 +184,47 @@ class Model:
         if logger:
             logger.info(f"\nModel {self.name} generated response:\n{response}")
             
-        # Initialize SmolAgents tool executor
-        from ..tools.executor import SmolAgentsToolExecutor
-        executor = SmolAgentsToolExecutor(
-            team=self.team,
-            available_adhesives=self.available_adhesives
-        )
-        
-        try:
-            # Let SmolAgents handle tool execution
-            if logger:
-                logger.info(f"Attempting to execute tools using SmolAgents")
-                
-            result = await executor.execute(response)
+        # Check if response indicates tool usage
+        if any(tool_name in response.lower() for tool_name in self._tools.keys()):
+            # Initialize SmolAgents tool executor
+            from ..tools.executor import SmolAgentsToolExecutor
+            executor = SmolAgentsToolExecutor(
+                team=self.team,
+                available_adhesives=self.available_adhesives
+            )
             
-            if logger:
-                logger.info(f"Tool execution successful:\n{result.result}")
-                
-            # Handle result based on adhesive type
-            if result.adhesive == AdhesiveType.GLUE:
+            try:
+                # Let SmolAgents handle tool execution
                 if logger:
-                    logger.info(f"Sharing result with team using GLUE")
-                await self.team.share_result(result)
-            elif result.adhesive == AdhesiveType.VELCRO:
-                if logger:
-                    logger.info(f"Storing result in session using VELCRO")
-                self._session_results[result.tool_name] = result
+                    logger.info(f"Tool usage detected, using SmolAgents executor")
+                    
+                result = await executor.execute(response)
                 
-            return str(result.result)
-            
-        except ValueError as e:
-            # No tool usage found in response
+                if logger:
+                    logger.info(f"Tool execution successful:\n{result.result}")
+                    
+                # Handle result based on adhesive type
+                if result.adhesive == AdhesiveType.GLUE:
+                    if logger:
+                        logger.info(f"Sharing result with team using GLUE")
+                    await self.team.share_result(result)
+                elif result.adhesive == AdhesiveType.VELCRO:
+                    if logger:
+                        logger.info(f"Storing result in session using VELCRO")
+                    self._session_results[result.tool_name] = result
+                    
+                return str(result.result)
+                
+            except Exception as e:
+                if logger:
+                    logger.error(f"Tool execution failed: {str(e)}")
+                # Fall back to natural response
+                return response
+        else:
+            # No tool usage detected, return natural chat response
             if logger:
-                logger.debug(f"No tool usage found in response: {str(e)}")
+                logger.debug("No tool usage detected, using natural chat response")
             return response
-            
-        except Exception as e:
-            if logger:
-                logger.error(f"Tool execution failed: {str(e)}")
-            raise
 
     async def send_message(self, receiver: str, content: Any) -> None:
         """Send a message to another model"""

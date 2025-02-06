@@ -4,6 +4,9 @@ import asyncio
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from dataclasses import dataclass
+from datetime import datetime
+
+from .context import ContextState, ComplexityLevel
 
 from .team import Team
 from .model import Model
@@ -43,7 +46,10 @@ class GlueApp:
         self.teams: Dict[str, Team] = {}
         self.models: Dict[str, Model] = {}
         self.tools: Dict[str, Any] = {}  # Store initialized tools
-        self.conversation_manager = ConversationManager()
+        self.conversation_manager = ConversationManager(
+            sticky=config.sticky,
+            workspace_dir=str(workspace_dir) if workspace_dir else None
+        )
         self.memory_manager = MemoryManager()
         self.workspace_manager = WorkspaceManager(workspace_dir)
         self.state_manager = StateManager()
@@ -59,65 +65,112 @@ class GlueApp:
         self.tool_factory = DynamicToolFactory()
         
     async def process_prompt(self, prompt: str) -> str:
-        """Process user prompt"""
-        self.logger.info(f"Processing prompt: {prompt}")
+        """Process user prompt with clear workflow status"""
+        # Log prompt with separator for easy scanning of logs
+        self.logger.info(f"\n{'='*50}")
+        self.logger.info(f"New Prompt: {prompt}")
+        self.logger.info(f"{'='*50}")
+        
+        print("\nthinking...")  # Show we're analyzing the prompt
         
         try:
             # First check for tool/MCP creation request
             if any(keyword in prompt.lower() for keyword in ["create", "make", "build"]):
                 if any(keyword in prompt.lower() for keyword in ["tool", "mcp", "server"]):
+                    print("creating new tool...")
+                    
                     # Get relevant team based on prompt context
                     team = self._get_relevant_team(prompt)
                     
                     # Try to create tool/server
                     result = await self.tool_factory.parse_natural_request(prompt, team)
                     if result:
+                        print("finished.")
                         if isinstance(result, dict):
                             # MCP server created
                             tools = ", ".join(result.keys())
-                            return f"Created MCP server with tools: {tools}"
+                            return f"response: Created MCP server with tools: {tools}"
                         else:
                             # Single tool created
-                            return f"Created tool: {result.name}\n{result.description}"
+                            return f"response: Created tool: {result.name}"
             
             # Check for tool enhancement request
             elif any(keyword in prompt.lower() for keyword in ["enhance", "improve", "upgrade"]):
                 for tool_name in self.tool_factory.list_tools():
                     if tool_name.lower() in prompt.lower():
+                        print("enhancing tool...")
                         team = self._get_relevant_team(prompt)
                         enhanced_tool = await self.tool_factory.enhance_tool(
                             tool_name,
                             prompt,
                             team
                         )
-                        return f"Enhanced tool: {enhanced_tool.name}\n{enhanced_tool.description}"
+                        print("finished.")
+                        return f"response: Enhanced tool: {enhanced_tool.name}"
             
             # Process normal prompt through teams
             team = self._get_relevant_team(prompt)
             if team:
+                self.logger.info(f"Routing to team: {team.name}")
+                self.logger.info(f"Team tools: {list(team.tools.keys()) if team.tools else 'None'}")
+                
                 # Get team's lead model
                 lead_model = self.models.get(team.lead)
                 if lead_model:
-                    # Process through team's lead model
-                    response = await lead_model.process(
+                    self.logger.info(f"Team lead: {lead_model.name}")
+                    # Analyze context properly
+                    context = self.conversation_manager.context_analyzer.analyze(
                         prompt,
-                        context=self.state_manager.get_context()
+                        available_tools=list(team.tools.keys()) if team.tools else None
                     )
                     
-                    # Store in memory
+                    # Log context analysis
+                    self.logger.info(f"Context Analysis:")
+                    self.logger.info(f"- Complexity: {context.complexity}")
+                    self.logger.info(f"- Tools Required: {list(context.tools_required) if context.tools_required else 'None'}")
+                    self.logger.info(f"- Persistence: {context.requires_persistence}")
+                    self.logger.info(f"- Memory: {context.requires_memory}")
+                    self.logger.info(f"- Magnetic Flow: {context.magnetic_flow}")
+                    
+                    # Show processing status based on context
+                    if context.tools_required:
+                        print("processing...")  # Tools will be used
+                        self.logger.info(f"Using tools: {list(context.tools_required)}")
+                    
+                    try:
+                        # Process through conversation manager
+                        response = await self.conversation_manager.process(
+                            models={team.lead: lead_model},
+                            user_input=prompt,
+                            tools=team.tools,
+                            context=context
+                        )
+                        
+                        # Check if we need to magnetize
+                        if context.magnetic_flow:
+                            print("magnetizing...")
+                            # Magnetic field operations happen here
+                    except Exception as e:
+                        # Fallback to direct model processing
+                        self.logger.debug(f"Conversation manager failed: {str(e)}, falling back to direct processing")
+                        response = await lead_model.process(prompt)
+                    
+                    # Store in memory with proper key
+                    key = f"interaction_{datetime.now().timestamp()}"
                     await self.memory_manager.store(
-                        prompt=prompt,
-                        response=response,
-                        team=team.name
+                        key=key,
+                        content={
+                            "prompt": prompt,
+                            "response": response,
+                            "team": team.name
+                        },
+                        context=context
                     )
                     
-                    return response
+                    print("finished.")
+                    return f"response: {response}"
             
-            # Fallback to conversation manager
-            return await self.conversation_manager.process(
-                prompt,
-                context=self.state_manager.get_context()
-            )
+            return "No team available to process prompt"
             
         except Exception as e:
             self.logger.error(f"Error processing prompt: {str(e)}")
