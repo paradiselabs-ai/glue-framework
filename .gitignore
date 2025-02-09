@@ -130,3 +130,15 @@ local_notes/
 *.local.*
 TODO.md
 NOTES.md
+
+
+.otherTasks
+.additionalcontext.md
+
+/PydanticAI/*
+
+/archive/**/ */
+/archive/**/*
+/archive/* 
+/cleanup_archive/** */
+/cleanup_archive/*

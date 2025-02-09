@@ -169,6 +169,28 @@ def create_binding_validator(
         return binding in allowed_bindings
     return validator
 
+# ==================== Magnetic Rules Manager ====================
+class MagneticRules:
+    """Static manager for magnetic rule sets"""
+    
+    _rule_sets: Dict[str, RuleSet] = {}
+    
+    @classmethod
+    def get_rules(cls, name: str = "default") -> RuleSet:
+        """Get a rule set by name"""
+        return cls._rule_sets.get(name, DEFAULT_RULES)
+    
+    @classmethod
+    def register_rules(cls, rules: RuleSet) -> None:
+        """Register a new rule set"""
+        cls._rule_sets[rules.name] = rules
+    
+    @classmethod
+    def remove_rules(cls, name: str) -> None:
+        """Remove a rule set by name"""
+        if name in cls._rule_sets:
+            del cls._rule_sets[name]
+
 # Common rule sets
 DEFAULT_RULES = RuleSet(
     name="default",
@@ -207,3 +229,6 @@ DEFAULT_RULES = RuleSet(
     ],
     description="Default rules for team interaction"
 )
+
+# Register default rules
+MagneticRules.register_rules(DEFAULT_RULES)

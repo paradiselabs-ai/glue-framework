@@ -24,6 +24,7 @@ dependencies = [
     "transformers>=4.0.0",  # For local model support
     "litellm>=1.0.0",      # For multiple model providers
     "mcp>=0.1.0",          # For MCP integration
+    "loguru>=0.7.0",       # Enhanced logging
     "pytest>=7.0.0",       # For testing
     "pytest-asyncio>=0.21.0",  # For async test support
     "pytest-cov>=4.1.0"    # For test coverage

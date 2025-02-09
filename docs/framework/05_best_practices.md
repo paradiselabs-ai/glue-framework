@@ -1,3 +1,4 @@
+
 # GLUE Best Practices Guide
 
 ## Overview
@@ -7,16 +8,21 @@ This guide provides best practices and patterns for building effective GLUE appl
 ## 1. Application Structure
 
 ### Organization
+
 ```glue
 // 1. App configuration
 glue app {
     name = "My App"
-    config { ... }
+    config { ... } // sticky = true for global app persistence between runs, development = true for verbose logging
 }
 
 // 2. Tool definitions
-tool web_search { ... }
-tool file_handler { ... }
+tool web_search {
+    provider = // built-in: serp, tavily.. or configure a custom web search provider in the cli 
+}
+
+tool file_handler {
+    
 
 // 3. Model definitions
 model researcher { ... }
@@ -64,6 +70,7 @@ model researcher {
     role = "Research topics thoroughly and methodically."  // Clear, focused role
     adhesives = [glue, velcro]  // Only what's needed
     config {
+        model = "meta-llama/Llama-3.1-70b-instruct:free"  // Clear model choice
         temperature = 0.7  // Higher for creative tasks
     }
 }
@@ -73,24 +80,30 @@ model fact_checker {
     role = "Verify facts with high accuracy."  // Single responsibility
     adhesives = [tape]  // Quick, stateless checks
     config {
+        model = "meta-llama/Llama-3.1-70b-instruct:free"  // Same model
         temperature = 0.2  // Lower for accuracy
     }
 }
 ```
 
 ### Best Practices
+
 1. Roles
+
    - Give each model a clear, single responsibility
    - Write specific, actionable role descriptions
    - Avoid overlapping responsibilities
 
 2. Adhesives
+
    - Only enable needed adhesive types
    - Use GLUE for team-wide knowledge
    - Use VELCRO for session state
    - Use TAPE for verification tasks
 
 3. Configuration
+
+   - Use the best model for the task
    - Match temperature to task type
    - Higher (0.7-0.9) for creative tasks
    - Lower (0.1-0.3) for factual tasks

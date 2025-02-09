@@ -1,102 +1,142 @@
-# src/glue/core/logger.py
+"""GLUE Framework Logging System"""
 
-"""GLUE Logging System"""
-
-import os
 import sys
-import logging
-from datetime import datetime
-from typing import Optional
 from pathlib import Path
+from datetime import datetime
+from typing import Optional, Dict, Any
 
-class GlueLogger:
-    """GLUE Logger with support for development and production modes"""
-    
-    def __init__(
-        self,
-        name: str,
-        log_dir: Optional[str] = None,
-        development: bool = False
-    ):
-        self.logger = logging.getLogger(name)
-        self.logger.setLevel(logging.DEBUG if development else logging.INFO)
-        self.development = development
-        
-        # Remove any existing handlers
-        self.logger.handlers = []
-        
-        # Console handler - only for user-facing messages
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(logging.INFO)
-        console_format = logging.Formatter('%(message)s')  # Minimal format
-        console_handler.addFilter(lambda record: getattr(record, 'user_facing', False))
-        console_handler.setFormatter(console_format)
-        self.logger.addHandler(console_handler)
-        
-        # Debug handler - goes to file
-        debug_handler = logging.StreamHandler(sys.stderr)
-        debug_handler.setLevel(logging.DEBUG if development else logging.INFO)
-        debug_format = logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(name)s - %(message)s',
-            datefmt='%H:%M:%S'
-        )
-        debug_handler.setFormatter(debug_format)
-        debug_handler.addFilter(lambda record: not getattr(record, 'user_facing', False))
-        self.logger.addHandler(debug_handler)
-        
-        # File handler - always shows full debug info
-        if log_dir:
-            log_dir = Path(log_dir)
-            log_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Create daily log file
-            today = datetime.now().strftime('%Y-%m-%d')
-            log_file = log_dir / f"{name}_{today}.log"
-            
-            file_handler = logging.FileHandler(log_file)
-            file_handler.setLevel(logging.DEBUG)
-            file_format = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            )
-            file_handler.setFormatter(file_format)
-            self.logger.addHandler(file_handler)
-    
-    def debug(self, msg: str, *args, **kwargs):
-        """Log debug message (only shown in development)"""
-        if self.development:
-            self.logger.debug(msg, *args, **kwargs)
-    
-    def info(self, msg: str, *args, **kwargs):
-        """Log info message (shown in both modes)"""
-        self.logger.info(msg, *args, **kwargs)
-    
-    def warning(self, msg: str, *args, **kwargs):
-        """Log warning message"""
-        self.logger.warning(msg, *args, **kwargs)
-    
-    def error(self, msg: str, *args, **kwargs):
-        """Log error message"""
-        self.logger.error(msg, *args, **kwargs)
-    
-    def critical(self, msg: str, *args, **kwargs):
-        """Log critical error message"""
-        self.logger.critical(msg, *args, **kwargs)
+from loguru import logger
+from pydantic import BaseModel
 
-# Global logger instance
-_logger: Optional[GlueLogger] = None
+class LogConfig(BaseModel):
+    """Configuration for logging"""
+    log_path: Path = Path("logs")
+    rotation: str = "10 MB"
+    retention: str = "1 week"
+    format: str = (
+        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
+        "<level>{level: <8}</level> | "
+        "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+        "<level>{message}</level>"
+    )
 
-def init_logger(
-    name: str = "glue",
-    log_dir: Optional[str] = None,
-    development: bool = False
-) -> GlueLogger:
-    """Initialize global logger"""
-    global _logger
-    _logger = GlueLogger(name, log_dir, development)
-    return _logger
+class FlowLogContext(BaseModel):
+    """Context for flow-related logs"""
+    flow_id: str
+    source_team: str
+    target_team: str
+    flow_type: str
+    timestamp: datetime = datetime.now()
+    metadata: Optional[Dict[str, Any]] = None
 
-def get_logger() -> GlueLogger:
-    """Get global logger instance"""
-    if _logger is None:
-        return init_logger()
-    return _logger
+class TeamLogContext(BaseModel):
+    """Context for team-related logs"""
+    team_name: str
+    action: str
+    timestamp: datetime = datetime.now()
+    metadata: Optional[Dict[str, Any]] = None
+
+def setup_logging(config: Optional[LogConfig] = None) -> None:
+    """Set up logging with the given configuration"""
+    if config is None:
+        config = LogConfig()
+    
+    # Create logs directory if it doesn't exist
+    config.log_path.mkdir(parents=True, exist_ok=True)
+    
+    # Remove default logger
+    logger.remove()
+    
+    # Add console handler with custom format
+    logger.add(
+        sys.stderr,
+        format=config.format,
+        level="INFO",
+        backtrace=True,
+        diagnose=True
+    )
+    
+    # Add file handler for all logs
+    logger.add(
+        config.log_path / "glue.log",
+        rotation=config.rotation,
+        retention=config.retention,
+        format=config.format,
+        level="DEBUG",
+        backtrace=True,
+        diagnose=True
+    )
+    
+    # Add file handler for errors only
+    logger.add(
+        config.log_path / "error.log",
+        rotation=config.rotation,
+        retention=config.retention,
+        format=config.format,
+        level="ERROR",
+        backtrace=True,
+        diagnose=True,
+        filter=lambda record: record["level"].name == "ERROR"
+    )
+
+def log_flow_event(
+    event_type: str,
+    context: FlowLogContext,
+    level: str = "INFO",
+    **kwargs
+) -> None:
+    """Log a flow-related event with context"""
+    logger.log(
+        level,
+        "\n{separator}\n{event_type}\n{separator}",
+        separator="="*50,
+        event_type=event_type,
+        **{
+            "flow_context": context.dict(),
+            **kwargs
+        }
+    )
+
+def log_team_event(
+    event_type: str,
+    context: TeamLogContext,
+    level: str = "INFO",
+    **kwargs
+) -> None:
+    """Log a team-related event with context"""
+    logger.log(
+        level,
+        "\n{separator}\n{event_type}\n{separator}",
+        separator="="*50,
+        event_type=event_type,
+        **{
+            "team_context": context.dict(),
+            **kwargs
+        }
+    )
+
+def log_error(
+    error_type: str,
+    message: str,
+    source: str,
+    details: Optional[Dict[str, Any]] = None,
+    **kwargs
+) -> None:
+    """Log an error with context"""
+    logger.error(
+        "\n{separator}\n{error_type}: {message}\n{separator}",
+        separator="="*50,
+        error_type=error_type,
+        message=message,
+        **{
+            "error_context": {
+                "source": source,
+                "details": details,
+                "timestamp": datetime.now().isoformat()
+            },
+            **kwargs
+        }
+    )
+
+# Initialize logging with default configuration
+setup_logging()

@@ -7,7 +7,7 @@ from .types import AdhesiveType, ResourceState
 from .tool_binding import ToolBinding
 from .workspace import Workspace
 from .context import ContextAnalyzer, ContextState
-from .logger import GlueLogger, init_logger, get_logger
+from .logger import logger, get_logger
 from .state import StateManager
 
 __all__ = [
@@ -21,8 +21,7 @@ __all__ = [
     "Workspace",
     "ContextAnalyzer",
     "ContextState",
-    "GlueLogger",
-    "init_logger",
+    "logger",
     "get_logger",
     "StateManager"
 ]

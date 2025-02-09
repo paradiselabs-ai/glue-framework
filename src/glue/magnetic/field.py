@@ -1,43 +1,51 @@
 """GLUE Magnetic Field System"""
 
-import logging
+from datetime import datetime
 from typing import Dict, List, Optional, Type, Callable, Any, TYPE_CHECKING
 from collections import defaultdict
+
+from ..core.errors import (
+    GlueError,
+    FlowValidationError,
+    FlowStateError,
+    TeamRegistrationError,
+    ProtectionMechanismError,
+    handle_flow_errors,
+    validate_flow_type,
+    validate_team_registered
+)
+from ..core.logger import (
+    log_flow_event,
+    log_team_event,
+    log_error,
+    FlowLogContext,
+    TeamLogContext
+)
+from ..core.debug import DebugEndpoints
 from .rules import RuleSet
 
 if TYPE_CHECKING:
     from ..core.context import ContextState
 
 # ==================== Event Types ====================
-class FieldEvent:
-    """Base class for field events"""
-    pass
-
-class FlowEstablishedEvent(FieldEvent):
-    """Event fired when a flow is established between teams"""
-    def __init__(self, source_team: str, target_team: str, flow_type: str):
-        self.source_team = source_team
-        self.target_team = target_team
-        self.flow_type = flow_type
-
-class FlowBrokenEvent(FieldEvent):
-    """Event fired when a flow is broken between teams"""
-    def __init__(self, source_team: str, target_team: str):
-        self.source_team = source_team
-        self.target_team = target_team
-
-class TeamRepelledEvent(FieldEvent):
-    """Event fired when teams are set to repel each other"""
-    def __init__(self, team1: str, team2: str):
-        self.team1 = team1
-        self.team2 = team2
-
-class ResultsSharedEvent(FieldEvent):
-    """Event fired when results are shared between teams"""
-    def __init__(self, source_team: str, target_team: str, result_type: str):
-        self.source_team = source_team
-        self.target_team = target_team
-        self.result_type = result_type
+from .models import (
+    FlowConfig,
+    FlowState,
+    FlowMetrics,
+    FieldConfig,
+    FieldState,
+    FieldEvent,
+    FlowEstablishedEvent,
+    FlowBrokenEvent,
+    TeamRepelledEvent,
+    ResultsSharedEvent,
+    FlowError,
+    RecoveryAction,
+    CircuitBreaker,
+    RateLimiter,
+    RetryStrategy,
+    FlowHealth
+)
 
 # ==================== Main Class ====================
 class MagneticField:
@@ -75,127 +83,262 @@ class MagneticField:
         }
         ```
     """
+    
+    _fields: Dict[str, 'MagneticField'] = {}
+    
+    @classmethod
+    def get_field(cls, name: str) -> Optional['MagneticField']:
+        """Get a magnetic field by name"""
+        return cls._fields.get(name)
+        
     def __init__(
         self,
         name: str,
         parent: Optional['MagneticField'] = None,
         is_pull_team: bool = False
     ):  
-        self.name = name
-        self.parent = parent
-        self._active = False
-        self._event_handlers = defaultdict(list)
-        self._child_fields = []
+        # Initialize field configuration
+        self.config = FieldConfig(
+            name=name,
+            is_pull_team=is_pull_team,
+            parent_field=parent.config.name if parent else None
+        )
         
-        # Team configuration
-        self.is_pull_team = is_pull_team  # Whether this team can pull from others
+        # Initialize field state
+        self.state = FieldState(config=self.config)
+        
+        # Set up parent relationship
+        self.parent = parent
+        
+        # Initialize event handling
+        self._event_handlers = defaultdict(list)
         
         # Initialize logger
         self.logger = logging.getLogger(f"glue.magnetic.field.{name}")
+        
+        # Register this field
+        MagneticField._fields[name] = self
+        
+        # Initialize protection mechanisms
+        self._circuit_breakers: Dict[str, CircuitBreaker] = {}
+        self._rate_limiters: Dict[str, RateLimiter] = {}
+        self._retry_strategies: Dict[str, RetryStrategy] = {}
+        self._health_monitors: Dict[str, FlowHealth] = {}
 
-        # Team tracking
-        self._registered_teams = set()  # Track registered teams
+    # ==================== Debug Methods ====================
+    def get_debug_info(self) -> FieldDebugInfo:
+        """Get debug information for this field"""
+        return DebugEndpoints.get_field_debug_info(self)
+        
+    def get_flow_debug_info(self, flow_id: str) -> Optional[FlowDebugInfo]:
+        """Get debug information for a specific flow"""
+        return DebugEndpoints.get_flow_debug_info(self, flow_id)
+        
+    def get_flow_metrics(self, flow_id: str) -> Dict[str, Any]:
+        """Get detailed metrics for a flow"""
+        return DebugEndpoints.get_flow_metrics(self, flow_id)
+        
+    def get_protection_status(self, flow_id: str) -> Dict[str, Any]:
+        """Get detailed status of protection mechanisms for a flow"""
+        return DebugEndpoints.get_protection_status(self, flow_id)
 
-        # Configure team flows
-        self._setup_flows()
-
+    # ==================== Core Methods ====================
+    @handle_flow_errors
     async def add_team(self, team: Any) -> None:
         """Register a team with the magnetic field"""
-        self.logger.debug(f"Registering team: {team.name}")
-        self._registered_teams.add(team.name)
+        log_team_event(
+            "Team Registration",
+            TeamLogContext(
+                team_name=team.name,
+                action="register",
+                metadata={"field": self.config.name}
+            )
+        )
+        self.state.registered_teams.add(team.name)
+        
+        # Initialize flow metrics for team
+        flow_id = f"{team.name}_metrics"
+        self._health_monitors[flow_id] = FlowHealth(
+            flow_id=flow_id,
+            latency=0.0,
+            error_rate=0.0,
+            throughput=1.0
+        )
+        log_flow_event(
+            "Flow Metrics Initialized",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=team.name,
+                target_team=team.name,
+                flow_type="metrics",
+                metadata={"field": self.config.name}
+            )
+        )
+        
+        # Initialize protection mechanisms for team
+        self._circuit_breakers[flow_id] = CircuitBreaker(flow_id=flow_id)
+        self._rate_limiters[flow_id] = RateLimiter(
+            flow_id=flow_id,
+            max_requests=100,
+            window_seconds=60
+        )
+        self._retry_strategies[flow_id] = RetryStrategy()
 
-    def _setup_flows(self):
-        """Configure team-to-team flows"""
-        self._flows = {}  # source_team -> {target_team -> flow_type}
-        self._shared_results = {}  # team -> shared results
-        self._repelled_teams = set()  # teams that cannot interact
-
+    @handle_flow_errors
     async def break_team_flow(
         self,
         source_team: str,
-        target_team: str
+        target_team: str,
+        reason: Optional[str] = None
     ) -> None:
         """Break an existing flow between teams"""
-        self.logger.info(f"\n{'='*20} Breaking Team Flow {'='*20}")
-        self.logger.info(f"Source Team: {source_team}")
-        self.logger.info(f"Target Team: {target_team}")
+        # Validate teams are registered
+        validate_team_registered(source_team, self.state.registered_teams, "break_team_flow")
+        validate_team_registered(target_team, self.state.registered_teams, "break_team_flow")
         
-        # Log current state
-        self.logger.info("\nCurrent Flow State:")
-        self.logger.info(f"Active Flows: {dict(self._flows)}")
-        self.logger.info(f"Shared Results: {dict(self._shared_results)}")
+        flow_id = f"{source_team}_to_{target_team}"
+        current_flow = self.state.active_flows.get(flow_id)
         
-        try:
-            # Break flow
-            if source_team in self._flows and target_team in self._flows[source_team]:
-                flow_type = self._flows[source_team][target_team]
-                self.logger.info(f"Breaking {flow_type} flow")
-                del self._flows[source_team][target_team]
-                if not self._flows[source_team]:  # Clean up empty dict
-                    del self._flows[source_team]
-                self.logger.info("Flow broken successfully")
-            else:
-                self.logger.info("No active flow to break")
+        log_flow_event(
+            "Breaking Team Flow",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type=current_flow.config.flow_type if current_flow else "unknown",
+                metadata={
+                    "field": self.config.name,
+                    "reason": reason,
+                    "active_flows": len(self.state.active_flows)
+                }
+            )
+        )
+        
+        if flow_id in self.state.active_flows:
+            # Get current flow state
+            flow_state = self.state.active_flows[flow_id]
             
-            # Clean up shared results
-            if source_team in self._shared_results:
-                self.logger.info("Cleaning up shared results")
-                del self._shared_results[source_team]
-                self.logger.info("Shared results cleaned")
+            # Update health metrics
+            if flow_id in self._health_monitors:
+                health = self._health_monitors[flow_id]
+                health.last_check = datetime.now()
             
-            # Log final state
-            self.logger.info("\nFinal Flow State:")
-            self.logger.info(f"Active Flows: {dict(self._flows)}")
-            self.logger.info(f"{'='*50}\n")
+            # Remove flow
+            del self.state.active_flows[flow_id]
             
-        except Exception as e:
-            self.logger.error(f"Error breaking flow: {str(e)}")
-            self.logger.info(f"{'='*50}\n")
-            raise
+            # Emit event
+            self._emit_event(FlowBrokenEvent(
+                source_team=source_team,
+                target_team=target_team,
+                reason=reason
+            ))
+            
+            log_flow_event(
+                "Flow Broken Successfully",
+                FlowLogContext(
+                    flow_id=flow_id,
+                    source_team=source_team,
+                    target_team=target_team,
+                    flow_type=flow_state.config.flow_type,
+                    metadata={
+                        "field": self.config.name,
+                        "message_count": flow_state.message_count,
+                        "active_flows": len(self.state.active_flows)
+                    }
+                )
+            )
+        else:
+            log_error(
+                "Flow Break Failed",
+                f"No active flow between {source_team} and {target_team}",
+                "break_team_flow",
+                {
+                    "field": self.config.name,
+                    "flow_id": flow_id,
+                    "active_flows": len(self.state.active_flows)
+                }
+            )
 
+    @handle_flow_errors
     async def cleanup_flows(self) -> None:
         """Clean up all team flows"""
-        self.logger.info(f"\n{'='*20} Cleaning Up Flows {'='*20}")
+        log_flow_event(
+            "Starting Flow Cleanup",
+            FlowLogContext(
+                flow_id="cleanup",
+                source_team="system",
+                target_team="system",
+                flow_type="cleanup",
+                metadata={
+                    "field": self.config.name,
+                    "active_flows": len(self.state.active_flows),
+                    "repelled_teams": len(self.state.repelled_teams),
+                    "child_fields": len(self.state.child_fields)
+                }
+            )
+        )
         
-        # Log current state
-        self.logger.info("\nCurrent State:")
-        self.logger.info(f"Active Flows: {dict(self._flows)}")
-        self.logger.info(f"Shared Results: {dict(self._shared_results)}")
-        self.logger.info(f"Repelled Teams: {self._repelled_teams}")
-        self.logger.info(f"Child Fields: {len(self._child_fields)}")
+        # Clear all flows and states
+        active_flow_count = len(self.state.active_flows)
+        self.state.active_flows.clear()
+        self.state.repelled_teams.clear()
         
-        try:
-            # Clear all flows
-            self.logger.info("\nClearing flows...")
-            self._flows.clear()
-            self.logger.info("Flows cleared")
-            
-            # Clear shared results
-            self.logger.info("Clearing shared results...")
-            self._shared_results.clear()
-            self.logger.info("Shared results cleared")
-            
-            # Clear repelled teams
-            self.logger.info("Clearing repelled teams...")
-            self._repelled_teams.clear()
-            self.logger.info("Repelled teams cleared")
-            
-            # Clean up child fields
-            if self._child_fields:
-                self.logger.info(f"\nCleaning up {len(self._child_fields)} child fields...")
-                for child in self._child_fields:
-                    self.logger.info(f"Cleaning up child field: {child.name}")
+        log_flow_event(
+            "Flows Cleared",
+            FlowLogContext(
+                flow_id="cleanup",
+                source_team="system",
+                target_team="system",
+                flow_type="cleanup",
+                metadata={
+                    "field": self.config.name,
+                    "cleared_flows": active_flow_count
+                }
+            )
+        )
+        
+        # Reset protection mechanisms
+        self._circuit_breakers.clear()
+        self._rate_limiters.clear()
+        self._retry_strategies.clear()
+        self._health_monitors.clear()
+        
+        # Clean up child fields
+        if self.state.child_fields:
+            child_count = len(self.state.child_fields)
+            for child_name in self.state.child_fields:
+                child = MagneticField.get_field(child_name)
+                if child:
+                    log_flow_event(
+                        "Cleaning Child Field",
+                        FlowLogContext(
+                            flow_id=f"cleanup_{child_name}",
+                            source_team="system",
+                            target_team=child_name,
+                            flow_type="cleanup",
+                            metadata={
+                                "parent_field": self.config.name,
+                                "child_field": child_name
+                            }
+                        )
+                    )
                     await child.cleanup_flows()
-                self._child_fields.clear()
-                self.logger.info("Child fields cleaned")
             
-            self.logger.info("\nCleanup complete")
-            self.logger.info(f"{'='*50}\n")
+            self.state.child_fields.clear()
             
-        except Exception as e:
-            self.logger.error(f"Error during cleanup: {str(e)}")
-            self.logger.info(f"{'='*50}\n")
-            raise
+            log_flow_event(
+                "Child Fields Cleaned",
+                FlowLogContext(
+                    flow_id="cleanup",
+                    source_team="system",
+                    target_team="system",
+                    flow_type="cleanup",
+                    metadata={
+                        "field": self.config.name,
+                        "cleaned_children": child_count
+                    }
+                )
+            )
 
     def _validate_team_flow(
         self,
@@ -204,49 +347,160 @@ class MagneticField:
         operator: str
     ) -> bool:
         """Validate if teams can interact using given magnetic operator"""
-        self.logger.info(f"\n{'='*20} Magnetic Field Validation {'='*20}")
-        self.logger.info(f"Source Team: {source_team}")
-        self.logger.info(f"Target Team: {target_team}")
-        self.logger.info(f"Operator: {operator}")
+        flow_id = f"{source_team}_to_{target_team}"
+        
+        log_flow_event(
+            "Starting Flow Validation",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type=operator,
+                metadata={
+                    "field": self.config.name,
+                    "active_flows": len(self.state.active_flows),
+                    "repelled_teams": len(self.state.repelled_teams)
+                }
+            )
+        )
         
         # Check if teams are registered
-        if source_team not in self._registered_teams or target_team not in self._registered_teams:
-            self.logger.error("Teams not registered")
+        if not (source_team in self.state.registered_teams and 
+                target_team in self.state.registered_teams):
+            log_error(
+                "Team Registration Validation Failed",
+                "One or both teams not registered",
+                "_validate_team_flow",
+                {
+                    "field": self.config.name,
+                    "source_registered": source_team in self.state.registered_teams,
+                    "target_registered": target_team in self.state.registered_teams
+                }
+            )
             return False
 
-        # Check repulsion first
+        # Check repulsion
         repelled_key = f"{source_team}:{target_team}"
-        if repelled_key in self._repelled_teams:
-            self.logger.error("Teams are repelled")
+        if repelled_key in self.state.repelled_teams:
+            log_error(
+                "Team Repulsion Check Failed",
+                "Teams are repelled",
+                "_validate_team_flow",
+                {
+                    "field": self.config.name,
+                    "repelled_key": repelled_key
+                }
+            )
             return False
             
+        # Check circuit breaker
+        if flow_id in self._circuit_breakers:
+            breaker = self._circuit_breakers[flow_id]
+            if not breaker.can_execute():
+                log_error(
+                    "Circuit Breaker Check Failed",
+                    "Circuit breaker is open",
+                    "_validate_team_flow",
+                    {
+                        "field": self.config.name,
+                        "flow_id": flow_id,
+                        "error_count": breaker.error_count,
+                        "last_error": str(breaker.last_error)
+                    }
+                )
+                return False
+                
+        # Check rate limiter
+        if flow_id in self._rate_limiters:
+            limiter = self._rate_limiters[flow_id]
+            if not limiter.can_process():
+                log_error(
+                    "Rate Limit Check Failed",
+                    "Rate limit exceeded",
+                    "_validate_team_flow",
+                    {
+                        "field": self.config.name,
+                        "flow_id": flow_id,
+                        "current_rate": limiter.current_rate,
+                        "max_rate": limiter.max_requests
+                    }
+                )
+                return False
+            
         # Validate operator
-        if operator not in ['><', '->', '<-', '<>']:
-            self.logger.error(f"Invalid operator: {operator}")
-            return False
+        validate_flow_type(operator, "_validate_team_flow")
             
         # Check existing flows
         if operator == '><':
-            valid = not any(f"{source_team}:{target_team}" in self._repelled_teams for target_team in self._flows.get(source_team, {}))
-            self.logger.info("Bidirectional flow validation:")
-            self.logger.info(f"- Existing flows: {self._flows.get(source_team, {})}")
-            self.logger.info(f"- Valid: {valid}")
-            return valid
-        elif operator == '->':
-            valid = not any(f"{source_team}:{t}" in self._repelled_teams for t in self._flows.get(source_team, {}))
-            self.logger.info("Push flow validation:")
-            self.logger.info(f"- Existing flows: {self._flows.get(source_team, {})}")
-            self.logger.info(f"- Valid: {valid}")
-            return valid
-        elif operator == '<-':
-            valid = not any(f"{t}:{source_team}" in self._repelled_teams for t in self._flows.get(target_team, {}))
-            self.logger.info("Pull flow validation:")
-            self.logger.info(f"- Existing flows: {self._flows.get(target_team, {})}")
-            self.logger.info(f"- Valid: {valid}")
+            valid = not any(
+                f"{source_team}:{target_team}" in self.state.repelled_teams 
+                for flow_state in self.state.active_flows.values()
+                if flow_state.config.source == source_team
+            )
+            if not valid:
+                log_error(
+                    "Bidirectional Flow Validation Failed",
+                    "Existing repulsion prevents bidirectional flow",
+                    "_validate_team_flow",
+                    {
+                        "field": self.config.name,
+                        "flow_id": flow_id,
+                        "operator": operator
+                    }
+                )
             return valid
             
-        self.logger.info("Flow validation successful")
-        self.logger.info(f"{'='*50}\n")
+        elif operator == '->':
+            valid = not any(
+                f"{source_team}:{t}" in self.state.repelled_teams 
+                for flow_state in self.state.active_flows.values()
+                if flow_state.config.source == source_team
+            )
+            if not valid:
+                log_error(
+                    "Push Flow Validation Failed",
+                    "Existing repulsion prevents push flow",
+                    "_validate_team_flow",
+                    {
+                        "field": self.config.name,
+                        "flow_id": flow_id,
+                        "operator": operator
+                    }
+                )
+            return valid
+            
+        elif operator == '<-':
+            valid = not any(
+                f"{t}:{source_team}" in self.state.repelled_teams 
+                for flow_state in self.state.active_flows.values()
+                if flow_state.config.target == source_team
+            )
+            if not valid:
+                log_error(
+                    "Pull Flow Validation Failed",
+                    "Existing repulsion prevents pull flow",
+                    "_validate_team_flow",
+                    {
+                        "field": self.config.name,
+                        "flow_id": flow_id,
+                        "operator": operator
+                    }
+                )
+            return valid
+            
+        log_flow_event(
+            "Flow Validation Successful",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type=operator,
+                metadata={
+                    "field": self.config.name,
+                    "validation_result": "success"
+                }
+            )
+        )
         return True
         
     async def set_team_flow(
@@ -262,6 +516,7 @@ class MagneticField:
         # Set up flow based on operator
         await self._setup_flow(source_team, target_team, operator)
 
+    @handle_flow_errors
     async def _setup_flow(
         self,
         source_team: str,
@@ -269,92 +524,415 @@ class MagneticField:
         flow_type: str  # "><", "->", "<-", "<>"
     ) -> None:
         """Set up flow between teams using magnetic operators"""
-        self.logger.info(f"\n{'='*20} Magnetic Flow Setup {'='*20}")
-        self.logger.info(f"Setting up {flow_type} flow:")
-        self.logger.info(f"Source Team: {source_team}")
-        self.logger.info(f"Target Team: {target_team}")
+        flow_id = f"{source_team}_to_{target_team}"
         
-        # Initialize flow dictionaries if needed
-        if source_team not in self._flows:
-            self._flows[source_team] = {}
-            self.logger.info(f"Initialized flow dictionary for {source_team}")
-            
+        log_flow_event(
+            "Starting Flow Setup",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type=flow_type,
+                metadata={
+                    "field": self.config.name,
+                    "active_flows": len(self.state.active_flows)
+                }
+            )
+        )
+        
+        # Validate teams are registered
+        validate_team_registered(source_team, self.state.registered_teams, "_setup_flow")
+        validate_team_registered(target_team, self.state.registered_teams, "_setup_flow")
+        
+        # Validate flow type
+        validate_flow_type(flow_type, "_setup_flow")
+        
+        # Create flow configuration
+        flow_config = FlowConfig(
+            source=source_team,
+            target=target_team,
+            flow_type=flow_type,
+            enabled=True,
+            strength=1.0  # Default strength for new flows
+        )
+        
+        # Create flow state
+        flow_state = FlowState(
+            config=flow_config,
+            active=True,
+            message_count=0,
+            last_active=datetime.now(),
+            error_count=0,
+            last_error=None
+        )
+        
+        log_flow_event(
+            "Flow State Created",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type=flow_type,
+                metadata={
+                    "field": self.config.name,
+                    "config": flow_config.dict(),
+                    "state": flow_state.dict()
+                }
+            )
+        )
+        
         # Set up flow based on operator
         if flow_type == "><":
-            self.logger.info("Setting up bidirectional flow")
-            # Bidirectional flow
-            self._flows[source_team][target_team] = flow_type
-            if target_team not in self._flows:
-                self._flows[target_team] = {}
-            self._flows[target_team][source_team] = flow_type
-            self._emit_event(FlowEstablishedEvent(source_team, target_team, "><"))
-            self.logger.info("Bidirectional flow established")
+            forward_id = f"{source_team}_to_{target_team}"
+            reverse_id = f"{target_team}_to_{source_team}"
+            
+            # Create bidirectional states
+            self.state.active_flows[forward_id] = flow_state
+            reverse_state = FlowState(
+                config=FlowConfig(
+                    source=target_team,
+                    target=source_team,
+                    flow_type=flow_type,
+                    enabled=True,
+                    strength=1.0
+                ),
+                active=True,
+                message_count=0,
+                last_active=datetime.now(),
+                error_count=0,
+                last_error=None
+            )
+            self.state.active_flows[reverse_id] = reverse_state
+            
+            log_flow_event(
+                "Bidirectional Flow Established",
+                FlowLogContext(
+                    flow_id=forward_id,
+                    source_team=source_team,
+                    target_team=target_team,
+                    flow_type="><",
+                    metadata={
+                        "field": self.config.name,
+                        "forward_id": forward_id,
+                        "reverse_id": reverse_id
+                    }
+                )
+            )
+            
+            self._emit_event(FlowEstablishedEvent(
+                source_team=source_team,
+                target_team=target_team,
+                flow_type="><",
+                strength=1.0
+            ))
             
         elif flow_type == "->":
-            self.logger.info("Setting up push flow")
-            # Push flow
-            self._flows[source_team][target_team] = flow_type
-            self._emit_event(FlowEstablishedEvent(source_team, target_team, "->"))
-            self.logger.info("Push flow established")
+            flow_id = f"{source_team}_to_{target_team}"
+            self.state.active_flows[flow_id] = flow_state
+            
+            log_flow_event(
+                "Push Flow Established",
+                FlowLogContext(
+                    flow_id=flow_id,
+                    source_team=source_team,
+                    target_team=target_team,
+                    flow_type="->",
+                    metadata={
+                        "field": self.config.name,
+                        "direction": "push"
+                    }
+                )
+            )
+            
+            self._emit_event(FlowEstablishedEvent(
+                source_team=source_team,
+                target_team=target_team,
+                flow_type="->",
+                strength=1.0
+            ))
             
         elif flow_type == "<-":
-            self.logger.info("Setting up pull flow")
-            # Pull flow
-            if target_team not in self._flows:
-                self._flows[target_team] = {}
-            self._flows[target_team][source_team] = "->"  # Target pulls from source
-            self._emit_event(FlowEstablishedEvent(target_team, source_team, "<-"))
-            self.logger.info("Pull flow established")
+            # Pull flow - target pulls from source
+            flow_id = f"{target_team}_to_{source_team}"
+            pull_state = FlowState(
+                config=FlowConfig(
+                    source=target_team,
+                    target=source_team,
+                    flow_type="->",  # Convert to push from target's perspective
+                    enabled=True,
+                    strength=1.0
+                ),
+                active=True,
+                message_count=0,
+                last_active=datetime.now(),
+                error_count=0,
+                last_error=None
+            )
+            self.state.active_flows[flow_id] = pull_state
+            
+            log_flow_event(
+                "Pull Flow Established",
+                FlowLogContext(
+                    flow_id=flow_id,
+                    source_team=target_team,
+                    target_team=source_team,
+                    flow_type="<-",
+                    metadata={
+                        "field": self.config.name,
+                        "direction": "pull",
+                        "converted_type": "->"
+                    }
+                )
+            )
+            
+            self._emit_event(FlowEstablishedEvent(
+                source_team=target_team,
+                target_team=source_team,
+                flow_type="<-",
+                strength=1.0
+            ))
             
         elif flow_type == "<>":
-            self.logger.info("Setting up repulsion")
-            # Repulsion - remove any existing flows
-            if target_team in self._flows[source_team]:
-                del self._flows[source_team][target_team]
-            if target_team in self._flows and source_team in self._flows[target_team]:
-                del self._flows[target_team][source_team]
-            # Add to repelled teams
-            self._repelled_teams.add(f"{source_team}:{target_team}")
-            self._repelled_teams.add(f"{target_team}:{source_team}")
-            self._emit_event(TeamRepelledEvent(source_team, target_team))
-            self.logger.info("Repulsion established")
+            forward_id = f"{source_team}_to_{target_team}"
+            reverse_id = f"{target_team}_to_{source_team}"
             
-        self.logger.info("\nCurrent Flow State:")
-        self.logger.info(f"Active Flows: {dict(self._flows)}")
-        self.logger.info(f"Repelled Teams: {self._repelled_teams}")
-        self.logger.info(f"{'='*50}\n")
+            # Remove any existing flows
+            if forward_id in self.state.active_flows:
+                del self.state.active_flows[forward_id]
+            if reverse_id in self.state.active_flows:
+                del self.state.active_flows[reverse_id]
+                
+            # Add to repelled teams
+            repelled_key = f"{source_team}:{target_team}"
+            reverse_key = f"{target_team}:{source_team}"
+            self.state.repelled_teams.add(repelled_key)
+            self.state.repelled_teams.add(reverse_key)
+            
+            log_flow_event(
+                "Repulsion Established",
+                FlowLogContext(
+                    flow_id=f"repel_{source_team}_{target_team}",
+                    source_team=source_team,
+                    target_team=target_team,
+                    flow_type="<>",
+                    metadata={
+                        "field": self.config.name,
+                        "repelled_keys": [repelled_key, reverse_key],
+                        "removed_flows": [forward_id, reverse_id]
+                    }
+                )
+            )
+            
+            self._emit_event(TeamRepelledEvent(
+                team1=source_team,
+                team2=target_team
+            ))
+            
+        # Initialize or update protection mechanisms
+        if flow_type != "<>":  # Don't set up protection for repelled flows
+            if flow_id not in self._circuit_breakers:
+                self._circuit_breakers[flow_id] = CircuitBreaker(flow_id=flow_id)
+            if flow_id not in self._rate_limiters:
+                self._rate_limiters[flow_id] = RateLimiter(
+                    flow_id=flow_id,
+                    max_requests=100,
+                    window_seconds=60
+                )
+            if flow_id not in self._retry_strategies:
+                self._retry_strategies[flow_id] = RetryStrategy()
+            if flow_id not in self._health_monitors:
+                self._health_monitors[flow_id] = FlowHealth(
+                    flow_id=flow_id,
+                    latency=0.0,
+                    error_rate=0.0,
+                    throughput=1.0
+                )
+                
+            log_flow_event(
+                "Protection Mechanisms Initialized",
+                FlowLogContext(
+                    flow_id=flow_id,
+                    source_team=source_team,
+                    target_team=target_team,
+                    flow_type=flow_type,
+                    metadata={
+                        "field": self.config.name,
+                        "circuit_breaker": "initialized",
+                        "rate_limiter": "initialized",
+                        "retry_strategy": "initialized",
+                        "health_monitor": "initialized"
+                    }
+                )
+            )
 
+    @handle_flow_errors
     def create_child_field(self, name: str, is_pull_team: bool = False) -> 'MagneticField':
         """Create a child field that inherits from this field"""
+        log_flow_event(
+            "Creating Child Field",
+            FlowLogContext(
+                flow_id=f"create_child_{name}",
+                source_team="system",
+                target_team=name,
+                flow_type="create",
+                metadata={
+                    "field": self.config.name,
+                    "child_name": name,
+                    "is_pull_team": is_pull_team,
+                    "current_children": len(self.state.child_fields)
+                }
+            )
+        )
+        
+        # Check if child field already exists
+        if name in self.state.child_fields:
+            log_error(
+                "Child Field Creation Failed",
+                f"Child field {name} already exists",
+                "create_child_field",
+                {
+                    "field": self.config.name,
+                    "child_name": name,
+                    "existing_children": list(self.state.child_fields)
+                }
+            )
+            raise ValueError(f"Child field {name} already exists")
+            
+        # Create new child field
         child = MagneticField(
             name=name,
             parent=self,
             is_pull_team=is_pull_team
         )
-        self._child_fields.append(child)
+        self.state.child_fields.add(child.config.name)
+        
+        log_flow_event(
+            "Child Field Created Successfully",
+            FlowLogContext(
+                flow_id=f"create_child_{name}",
+                source_team="system",
+                target_team=name,
+                flow_type="create",
+                metadata={
+                    "field": self.config.name,
+                    "child_name": name,
+                    "is_pull_team": is_pull_team,
+                    "total_children": len(self.state.child_fields)
+                }
+            )
+        )
         return child
         
     def get_child_field(self, name: str) -> Optional['MagneticField']:
         """Get a child field by name"""
-        for child in self._child_fields:
-            if child.name == name:
+        log_flow_event(
+            "Retrieving Child Field",
+            FlowLogContext(
+                flow_id=f"get_child_{name}",
+                source_team="system",
+                target_team=name,
+                flow_type="get",
+                metadata={
+                    "field": self.config.name,
+                    "child_name": name,
+                    "has_child": name in self.state.child_fields
+                }
+            )
+        )
+        
+        if name in self.state.child_fields:
+            child = MagneticField.get_field(name)
+            if child:
                 return child
+                
+        log_error(
+            "Child Field Retrieval Failed",
+            f"Child field {name} not found",
+            "get_child_field",
+            {
+                "field": self.config.name,
+                "child_name": name,
+                "existing_children": list(self.state.child_fields)
+            }
+        )
         return None
         
+    @handle_flow_errors
     def _is_repelled(self, other: 'MagneticField') -> bool:
         """Check if this field is repelled from another"""
-        # Check if there's a repulsion in either direction
+        log_flow_event(
+            "Checking Field Repulsion",
+            FlowLogContext(
+                flow_id=f"repel_check_{self.name}_{other.name}",
+                source_team=self.name,
+                target_team=other.name,
+                flow_type="check",
+                metadata={
+                    "field": self.config.name,
+                    "other_field": other.config.name,
+                    "has_parent": bool(self.parent),
+                    "other_has_parent": bool(other.parent)
+                }
+            )
+        )
+        
+        # Check if either field lacks a parent
         if not self.parent or not other.parent:
+            log_flow_event(
+                "Repulsion Check Failed",
+                FlowLogContext(
+                    flow_id=f"repel_check_{self.name}_{other.name}",
+                    source_team=self.name,
+                    target_team=other.name,
+                    flow_type="check",
+                    metadata={
+                        "field": self.config.name,
+                        "reason": "Missing parent field",
+                        "has_parent": bool(self.parent),
+                        "other_has_parent": bool(other.parent)
+                    }
+                )
+            )
             return False
             
         workflow = self.parent.workflow
         if not workflow:
+            log_flow_event(
+                "Repulsion Check Failed",
+                FlowLogContext(
+                    flow_id=f"repel_check_{self.name}_{other.name}",
+                    source_team=self.name,
+                    target_team=other.name,
+                    flow_type="check",
+                    metadata={
+                        "field": self.config.name,
+                        "reason": "No workflow defined"
+                    }
+                )
+            )
             return False
             
-        return (
+        # Check for repulsion in either direction
+        is_repelled = (
             (self.name, other.name) in workflow.repulsions or
             (other.name, self.name) in workflow.repulsions
         )
+        
+        log_flow_event(
+            "Repulsion Check Complete",
+            FlowLogContext(
+                flow_id=f"repel_check_{self.name}_{other.name}",
+                source_team=self.name,
+                target_team=other.name,
+                flow_type="check",
+                metadata={
+                    "field": self.config.name,
+                    "is_repelled": is_repelled,
+                    "workflow_name": workflow.name if workflow else None
+                }
+            )
+        )
+        return is_repelled
 
     def on_event(
         self,
@@ -374,48 +952,143 @@ class MagneticField:
 
     def _get_flow_type(self, source_team: str, target_team: str) -> Optional[str]:
         """Get the type of flow between teams"""
-        if source_team in self._flows and target_team in self._flows[source_team]:
-            return self._flows[source_team][target_team]
+        flow_id = f"{source_team}_to_{target_team}"
+        flow_state = self.state.active_flows.get(flow_id)
+        if flow_state and flow_state.active:
+            return flow_state.config.flow_type
         return None
         
+    @handle_flow_errors
     async def attract(self, team1: str, team2: str) -> bool:
         """Attract two teams (bidirectional flow)"""
-        self.logger.info(f"\n{'='*20} Team Attraction {'='*20}")
-        self.logger.info(f"Team 1: {team1}")
-        self.logger.info(f"Team 2: {team2}")
+        flow_id = f"{team1}_to_{team2}"
+        
+        log_flow_event(
+            "Starting Team Attraction",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=team1,
+                target_team=team2,
+                flow_type="><",
+                metadata={
+                    "field": self.config.name,
+                    "operation": "attract"
+                }
+            )
+        )
         
         try:
+            # Validate teams are registered
+            validate_team_registered(team1, self.state.registered_teams, "attract")
+            validate_team_registered(team2, self.state.registered_teams, "attract")
+            
             success = await self.process_team_flow(team1, team2, None, "><")
             if success:
-                self.logger.info("Teams attracted successfully")
-                self.logger.info(f"Bidirectional flow established between {team1} and {team2}")
+                log_flow_event(
+                    "Team Attraction Successful",
+                    FlowLogContext(
+                        flow_id=flow_id,
+                        source_team=team1,
+                        target_team=team2,
+                        flow_type="><",
+                        metadata={
+                            "field": self.config.name,
+                            "status": "success"
+                        }
+                    )
+                )
+                return True
             else:
-                self.logger.error("Failed to attract teams")
-            self.logger.info(f"{'='*50}\n")
-            return True
-        except ValueError as e:
-            self.logger.error(f"Error attracting teams: {str(e)}")
-            self.logger.info(f"{'='*50}\n")
+                log_error(
+                    "Team Attraction Failed",
+                    "Failed to establish bidirectional flow",
+                    "attract",
+                    {
+                        "field": self.config.name,
+                        "team1": team1,
+                        "team2": team2
+                    }
+                )
+                return False
+        except Exception as e:
+            log_error(
+                "Team Attraction Error",
+                str(e),
+                "attract",
+                {
+                    "field": self.config.name,
+                    "team1": team1,
+                    "team2": team2,
+                    "error": str(e)
+                }
+            )
             return False
             
+    @handle_flow_errors
     async def repel(self, team1: str, team2: str) -> bool:
         """Repel two teams (no communication)"""
-        self.logger.info(f"\n{'='*20} Team Repulsion {'='*20}")
-        self.logger.info(f"Team 1: {team1}")
-        self.logger.info(f"Team 2: {team2}")
+        flow_id = f"repel_{team1}_{team2}"
+        
+        log_flow_event(
+            "Starting Team Repulsion",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=team1,
+                target_team=team2,
+                flow_type="<>",
+                metadata={
+                    "field": self.config.name,
+                    "operation": "repel"
+                }
+            )
+        )
         
         try:
+            # Validate teams are registered
+            validate_team_registered(team1, self.state.registered_teams, "repel")
+            validate_team_registered(team2, self.state.registered_teams, "repel")
+            
             success = await self.process_team_flow(team1, team2, None, "<>")
             if success:
-                self.logger.info("Teams repelled successfully")
-                self.logger.info(f"Communication blocked between {team1} and {team2}")
+                log_flow_event(
+                    "Team Repulsion Successful",
+                    FlowLogContext(
+                        flow_id=flow_id,
+                        source_team=team1,
+                        target_team=team2,
+                        flow_type="<>",
+                        metadata={
+                            "field": self.config.name,
+                            "status": "success",
+                            "repelled_key": f"{team1}:{team2}"
+                        }
+                    )
+                )
+                return True
             else:
-                self.logger.error("Failed to repel teams")
-            self.logger.info(f"{'='*50}\n")
-            return True
-        except ValueError as e:
-            self.logger.error(f"Error repelling teams: {str(e)}")
-            self.logger.info(f"{'='*50}\n")
+                log_error(
+                    "Team Repulsion Failed",
+                    "Failed to establish repulsion",
+                    "repel",
+                    {
+                        "field": self.config.name,
+                        "team1": team1,
+                        "team2": team2
+                    }
+                )
+                return False
+        except Exception as e:
+            log_error(
+                "Team Repulsion Error",
+                str(e),
+                "repel",
+                {
+                    "field": self.config.name,
+                    "team1": team1,
+                    "team2": team2,
+                    "error": str(e)
+                }
+            )
             return False
             
     async def process_team_flow(
@@ -437,16 +1110,31 @@ class MagneticField:
         
     def get_team_flows(self, team_name: str) -> Dict[str, str]:
         """Get all flows for a team"""
-        return self._flows.get(team_name, {}).copy()
+        flows = {}
+        for flow_id, flow_state in self.state.active_flows.items():
+            if flow_state.config.source == team_name:
+                flows[flow_state.config.target] = flow_state.config.flow_type
+        return flows
 
     def __str__(self) -> str:
         """String representation of the magnetic field"""
         flows = []
-        for source, targets in self._flows.items():
-            for target, flow_type in targets.items():
+        for flow_id, flow_state in self.state.active_flows.items():
+            if flow_state.active:
+                source = flow_state.config.source
+                target = flow_state.config.target
+                flow_type = flow_state.config.flow_type
                 flows.append(f"{source} {flow_type} {target}")
-        return f"MagneticField({self.name}, flows=[{', '.join(flows)}])"
+        
+        repelled = [f"{t1}<>{t2}" for t1, t2 in [r.split(":") for r in self.state.repelled_teams]]
+        
+        return (
+            f"MagneticField({self.config.name}, "
+            f"flows=[{', '.join(flows)}], "
+            f"repelled=[{', '.join(repelled)}])"
+        )
 
+    @handle_flow_errors
     async def share_team_results(
         self,
         source_team: str,
@@ -454,107 +1142,329 @@ class MagneticField:
         results: Dict[str, Any]
     ) -> None:
         """Share results between teams based on magnetic flow"""
-        self.logger.info(f"\n{'='*20} Sharing Team Results {'='*20}")
-        self.logger.info(f"Source Team: {source_team}")
-        self.logger.info(f"Target Team: {target_team}")
-        self.logger.info(f"Result Types: {list(results.keys())}")
+        flow_id = f"{source_team}_to_{target_team}"
         
-        try:
-            # Validate flow exists
-            flow_type = self._get_flow_type(source_team, target_team)
-            if not flow_type:
-                self.logger.error(f"No magnetic flow defined between {source_team} and {target_team}")
-                raise ValueError(f"No magnetic flow defined between {source_team} and {target_team}")
+        log_flow_event(
+            "Starting Results Share",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type="share",
+                metadata={
+                    "field": self.config.name,
+                    "result_types": list(results.keys()),
+                    "total_size": sum(len(str(r)) for r in results.values())
+                }
+            )
+        )
+        
+        # Validate teams are registered
+        validate_team_registered(source_team, self.state.registered_teams, "share_team_results")
+        validate_team_registered(target_team, self.state.registered_teams, "share_team_results")
+        
+        # Get flow state
+        flow_state = self.state.active_flows.get(flow_id)
+        if not flow_state or not flow_state.active:
+            log_error(
+                "Share Results Failed",
+                f"No active flow between {source_team} and {target_team}",
+                "share_team_results",
+                {
+                    "field": self.config.name,
+                    "flow_id": flow_id,
+                    "active_flows": len(self.state.active_flows)
+                }
+            )
+            raise FlowStateError(f"No active flow between {source_team} and {target_team}")
+        
+        # Check protection mechanisms
+        if flow_id in self._circuit_breakers:
+            breaker = self._circuit_breakers[flow_id]
+            if not breaker.can_execute():
+                log_error(
+                    "Circuit Breaker Blocked Share",
+                    "Circuit breaker is open",
+                    "share_team_results",
+                    {
+                        "field": self.config.name,
+                        "flow_id": flow_id,
+                        "error_count": breaker.error_count,
+                        "last_error": str(breaker.last_error)
+                    }
+                )
+                raise ProtectionMechanismError("Circuit breaker is open")
+        
+        if flow_id in self._rate_limiters:
+            limiter = self._rate_limiters[flow_id]
+            if not limiter.can_process():
+                log_error(
+                    "Rate Limit Blocked Share",
+                    "Rate limit exceeded",
+                    "share_team_results",
+                    {
+                        "field": self.config.name,
+                        "flow_id": flow_id,
+                        "current_rate": limiter.current_rate,
+                        "max_rate": limiter.max_requests
+                    }
+                )
+                raise ProtectionMechanismError("Rate limit exceeded")
+            limiter.record_request()
+        
+        # Update flow state
+        flow_state.message_count += 1
+        flow_state.last_active = datetime.now()
+        
+        # Update health metrics
+        if flow_id in self._health_monitors:
+            health = self._health_monitors[flow_id]
+            health.last_check = datetime.now()
+            health.throughput = flow_state.message_count / max(
+                (datetime.now() - flow_state.last_active).total_seconds(), 1
+            )
+        
+        # Emit events for each result
+        for result_type, result in results.items():
+            result_size = len(str(result))
+            log_flow_event(
+                f"Sharing Result: {result_type}",
+                FlowLogContext(
+                    flow_id=flow_id,
+                    source_team=source_team,
+                    target_team=target_team,
+                    flow_type="share",
+                    metadata={
+                        "field": self.config.name,
+                        "result_type": result_type,
+                        "size": result_size
+                    }
+                )
+            )
             
-            self.logger.info(f"\nFlow Type: {flow_type}")
-            
-            # Log current state
-            self.logger.info("\nCurrent Shared Results:")
-            self.logger.info(f"Existing Results: {dict(self._shared_results)}")
-            
-            # Store results
-            if source_team not in self._shared_results:
-                self._shared_results[source_team] = {}
-                self.logger.info(f"Created new results store for {source_team}")
-                
-            self._shared_results[source_team][target_team] = results
-            self.logger.info("Results stored successfully")
-            
-            # Emit events
-            self.logger.info("\nEmitting Events:")
-            for result_type in results.keys():
-                self.logger.info(f"- Emitting event for: {result_type}")
-                self._emit_event(ResultsSharedEvent(source_team, target_team, result_type))
-            
-            self.logger.info("\nFinal Shared Results State:")
-            self.logger.info(f"Updated Results: {dict(self._shared_results)}")
-            self.logger.info(f"{'='*50}\n")
-            
-        except Exception as e:
-            self.logger.error(f"Error sharing results: {str(e)}")
-            self.logger.info(f"{'='*50}\n")
-            raise
+            self._emit_event(ResultsSharedEvent(
+                source_team=source_team,
+                target_team=target_team,
+                result_type=result_type,
+                size=result_size
+            ))
+        
+        log_flow_event(
+            "Results Share Complete",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type="share",
+                metadata={
+                    "field": self.config.name,
+                    "message_count": flow_state.message_count,
+                    "throughput": health.throughput if flow_id in self._health_monitors else 0.0,
+                    "shared_types": list(results.keys())
+                }
+            )
+        )
 
+    @handle_flow_errors
     async def enable_field_pull(self, source_field: 'MagneticField') -> bool:
         """Enable pulling from another field"""
-        self.logger.info(f"\n{'='*20} Enable Field Pull {'='*20}")
-        self.logger.info(f"Target Field: {self.name}")
-        self.logger.info(f"Source Field: {source_field.name}")
-        self.logger.info(f"Pull Team Status: {self.is_pull_team}")
+        flow_id = f"{self.name}_from_{source_field.name}"
         
-        if not self.is_pull_team:
-            self.logger.error("Field is not configured as a pull team")
+        log_flow_event(
+            "Starting Field Pull Setup",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_field.name,
+                target_team=self.name,
+                flow_type="<-",
+                metadata={
+                    "field": self.config.name,
+                    "is_pull_team": self.config.is_pull_team
+                }
+            )
+        )
+        
+        if not self.config.is_pull_team:
+            log_error(
+                "Field Pull Setup Failed",
+                "Field is not configured as a pull team",
+                "enable_field_pull",
+                {
+                    "field": self.config.name,
+                    "source_field": source_field.name
+                }
+            )
             return False
             
         try:
-            self.logger.info("Setting up field pull flow...")
             success = await self.process_team_flow(self.name, source_field.name, None, "<-")
             if success:
-                self.logger.info("Field pull enabled successfully")
-                self.logger.info(f"Pull flow established from {source_field.name} to {self.name}")
+                log_flow_event(
+                    "Field Pull Enabled Successfully",
+                    FlowLogContext(
+                        flow_id=flow_id,
+                        source_team=source_field.name,
+                        target_team=self.name,
+                        flow_type="<-",
+                        metadata={
+                            "field": self.config.name,
+                            "status": "success"
+                        }
+                    )
+                )
+                return True
             else:
-                self.logger.error("Failed to enable field pull")
-            self.logger.info(f"{'='*50}\n")
-            return True
-        except ValueError as e:
-            self.logger.error(f"Error enabling field pull: {str(e)}")
-            self.logger.info(f"{'='*50}\n")
+                log_error(
+                    "Field Pull Setup Failed",
+                    "Failed to establish pull flow",
+                    "enable_field_pull",
+                    {
+                        "field": self.config.name,
+                        "source_field": source_field.name
+                    }
+                )
+                return False
+        except Exception as e:
+            log_error(
+                "Field Pull Error",
+                str(e),
+                "enable_field_pull",
+                {
+                    "field": self.config.name,
+                    "source_field": source_field.name,
+                    "error": str(e)
+                }
+            )
             return False
             
+    @handle_flow_errors
     async def enable_pull(self, target_team: str, source_team: str) -> bool:
         """Enable one-way pull flow from source team to target team"""
-        self.logger.info(f"\n{'='*20} Enable Pull Flow {'='*20}")
-        self.logger.info(f"Target Team (Puller): {target_team}")
-        self.logger.info(f"Source Team: {source_team}")
+        flow_id = f"{target_team}_from_{source_team}"
+        
+        log_flow_event(
+            "Starting Pull Flow Setup",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type="<-",
+                metadata={
+                    "field": self.config.name,
+                    "operation": "enable_pull"
+                }
+            )
+        )
         
         try:
+            # Validate teams are registered
+            validate_team_registered(target_team, self.state.registered_teams, "enable_pull")
+            validate_team_registered(source_team, self.state.registered_teams, "enable_pull")
+            
             success = await self.process_team_flow(target_team, source_team, None, "<-")
             if success:
-                self.logger.info("Pull flow enabled successfully")
+                log_flow_event(
+                    "Pull Flow Enabled Successfully",
+                    FlowLogContext(
+                        flow_id=flow_id,
+                        source_team=source_team,
+                        target_team=target_team,
+                        flow_type="<-",
+                        metadata={
+                            "field": self.config.name,
+                            "status": "success"
+                        }
+                    )
+                )
+                return True
             else:
-                self.logger.error("Failed to enable pull flow")
-            self.logger.info(f"{'='*50}\n")
-            return True
-        except ValueError as e:
-            self.logger.error(f"Error enabling pull flow: {str(e)}")
-            self.logger.info(f"{'='*50}\n")
+                log_error(
+                    "Pull Flow Setup Failed",
+                    "Failed to establish pull flow",
+                    "enable_pull",
+                    {
+                        "field": self.config.name,
+                        "source_team": source_team,
+                        "target_team": target_team
+                    }
+                )
+                return False
+        except Exception as e:
+            log_error(
+                "Pull Flow Error",
+                str(e),
+                "enable_pull",
+                {
+                    "field": self.config.name,
+                    "source_team": source_team,
+                    "target_team": target_team,
+                    "error": str(e)
+                }
+            )
             return False
 
+    @handle_flow_errors
     async def enable_push(self, source_team: str, target_team: str) -> bool:
         """Enable one-way push flow from source team to target team"""
-        self.logger.info(f"\n{'='*20} Enable Push Flow {'='*20}")
-        self.logger.info(f"Source Team (Pusher): {source_team}")
-        self.logger.info(f"Target Team: {target_team}")
+        flow_id = f"{source_team}_to_{target_team}"
+        
+        log_flow_event(
+            "Starting Push Flow Setup",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type="->",
+                metadata={
+                    "field": self.config.name,
+                    "operation": "enable_push"
+                }
+            )
+        )
         
         try:
+            # Validate teams are registered
+            validate_team_registered(source_team, self.state.registered_teams, "enable_push")
+            validate_team_registered(target_team, self.state.registered_teams, "enable_push")
+            
             success = await self.process_team_flow(source_team, target_team, None, "->")
             if success:
-                self.logger.info("Push flow enabled successfully")
+                log_flow_event(
+                    "Push Flow Enabled Successfully",
+                    FlowLogContext(
+                        flow_id=flow_id,
+                        source_team=source_team,
+                        target_team=target_team,
+                        flow_type="->",
+                        metadata={
+                            "field": self.config.name,
+                            "status": "success"
+                        }
+                    )
+                )
+                return True
             else:
-                self.logger.error("Failed to enable push flow")
-            self.logger.info(f"{'='*50}\n")
-            return True
-        except ValueError as e:
-            self.logger.error(f"Error enabling push flow: {str(e)}")
-            self.logger.info(f"{'='*50}\n")
+                log_error(
+                    "Push Flow Setup Failed",
+                    "Failed to establish push flow",
+                    "enable_push",
+                    {
+                        "field": self.config.name,
+                        "source_team": source_team,
+                        "target_team": target_team
+                    }
+                )
+                return False
+        except Exception as e:
+            log_error(
+                "Push Flow Error",
+                str(e),
+                "enable_push",
+                {
+                    "field": self.config.name,
+                    "source_team": source_team,
+                    "target_team": target_team,
+                    "error": str(e)
+                }
+            )
             return False

@@ -36,6 +36,21 @@ class MCPServerSpec:
 class DynamicToolFactory:
     """Factory for creating tools and MCP servers dynamically"""
     
+    _instance = None
+    _tool_classes = {}
+    
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+    
+    @classmethod
+    def get_tool_class(cls, tool_name: str) -> Optional[BaseTool]:
+        """Get tool class by name (static method for orchestrator compatibility)"""
+        instance = cls.get_instance()
+        return instance.get_tool(tool_name)
+    
     def __init__(self):
         self.logger = get_logger()
         self._dynamic_tools: Dict[str, BaseTool] = {}

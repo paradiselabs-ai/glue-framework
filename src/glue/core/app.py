@@ -1,7 +1,7 @@
 """GLUE Application Core"""
 
 import asyncio
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Set
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,6 +16,7 @@ from .workspace import WorkspaceManager
 from .group_chat import GroupChatManager
 from .state import StateManager
 from .logger import get_logger
+from .orchestrator import GlueOrchestrator
 from ..tools.dynamic_tool_factory import DynamicToolFactory, ToolSpec, MCPServerSpec
 from ..magnetic.field import MagneticField
 
@@ -57,106 +58,145 @@ class GlueApp:
         # Tool registry
         self._tool_registry: Dict[str, Any] = {}  # Persistent tool storage
         
-        # Team communication
+        # Team communication and orchestration
         self.group_chat_manager = GroupChatManager(name)
         self.magnetic_field = MagneticField(name)
+        self.orchestrator = GlueOrchestrator()
         
         # Dynamic tool creation
         self.tool_factory = DynamicToolFactory()
         
     async def process_prompt(self, prompt: str) -> str:
-        """Process user prompt with clear workflow status"""
-        # Log prompt with separator for easy scanning of logs
+        """Process user prompt with orchestrated workflow"""
+        # Log prompt
         self.logger.info(f"\n{'='*50}")
         self.logger.info(f"New Prompt: {prompt}")
         self.logger.info(f"{'='*50}")
         
         try:
-            # First check for tool/MCP creation request
-            if any(keyword in prompt.lower() for keyword in ["create", "make", "build"]):
-                if any(keyword in prompt.lower() for keyword in ["tool", "mcp", "server"]):
-                    # Get relevant team based on prompt context
-                    team = self._get_relevant_team(prompt)
-                    
-                    # Try to create tool/server
-                    result = await self.tool_factory.parse_natural_request(prompt, team)
-                    if result:
-                        if isinstance(result, dict):
-                            # MCP server created
-                            tools = ", ".join(result.keys())
-                            return f"Created MCP server with tools: {tools}"
-                        else:
-                            # Single tool created
-                            return f"Created tool: {result.name}"
-            
-            # Check for tool enhancement request
-            elif any(keyword in prompt.lower() for keyword in ["enhance", "improve", "upgrade"]):
-                for tool_name in self.tool_factory.list_tools():
-                    if tool_name.lower() in prompt.lower():
-                        team = self._get_relevant_team(prompt)
-                        enhanced_tool = await self.tool_factory.enhance_tool(
-                            tool_name,
-                            prompt,
-                            team
-                        )
-                        return f"Enhanced tool: {enhanced_tool.name}"
-            
-            # Process normal prompt through teams
-            team = self._get_relevant_team(prompt)
-            if team:
-                self.logger.info(f"Routing to team: {team.name}")
-                self.logger.info(f"Team tools: {list(team.tools.keys()) if team.tools else 'None'}")
+            # Handle tool/MCP creation requests
+            if self._is_tool_request(prompt):
+                return await self._handle_tool_request(prompt)
                 
-                # Get team's lead model
-                lead_model = self.models.get(team.lead)
-                if lead_model:
-                    self.logger.info(f"Team lead: {lead_model.name}")
-                    # Analyze context properly
-                    context = self.conversation_manager.context_analyzer.analyze(
-                        prompt,
-                        available_tools=list(team.tools.keys()) if team.tools else None
-                    )
-                    
-                    # Log context analysis
-                    self.logger.info(f"Context Analysis:")
-                    self.logger.info(f"- Complexity: {context.complexity}")
-                    self.logger.info(f"- Tools Required: {list(context.tools_required) if context.tools_required else 'None'}")
-                    self.logger.info(f"- Persistence: {context.requires_persistence}")
-                    self.logger.info(f"- Memory: {context.requires_memory}")
-                    self.logger.info(f"- Magnetic Flow: {context.magnetic_flow}")
-                    
-                    try:
-                        # Process through conversation manager
-                        response = await self.conversation_manager.process(
-                            models={team.lead: lead_model},
-                            user_input=prompt,
-                            tools=team.tools,
-                            context=context
-                        )
-                    except Exception as e:
-                        # Fallback to direct model processing
-                        self.logger.debug(f"Conversation manager failed: {str(e)}, falling back to direct processing")
-                        response = await lead_model.process(prompt)
-                    
-                    # Store in memory with proper key
-                    key = f"interaction_{datetime.now().timestamp()}"
-                    await self.memory_manager.store(
-                        key=key,
-                        content={
-                            "prompt": prompt,
-                            "response": response,
-                            "team": team.name
-                        },
-                        context=context
-                    )
-                    
-                    return response
+            # Get app context for orchestrator
+            context = await self._prepare_context(prompt)
             
-            return "No team available to process prompt"
+            # Let orchestrator handle execution
+            response = await self.orchestrator.execute_prompt(prompt, context)
+            
+            # Store in memory
+            await self._store_interaction(prompt, response, context)
+            
+            return response
             
         except Exception as e:
             self.logger.error(f"Error processing prompt: {str(e)}")
             raise
+            
+    def _is_tool_request(self, prompt: str) -> bool:
+        """Check if prompt is requesting tool creation/enhancement"""
+        creation_keywords = ["create", "make", "build"]
+        tool_keywords = ["tool", "mcp", "server"]
+        enhance_keywords = ["enhance", "improve", "upgrade"]
+        
+        is_creation = any(kw in prompt.lower() for kw in creation_keywords)
+        is_tool = any(kw in prompt.lower() for kw in tool_keywords)
+        is_enhancement = any(kw in prompt.lower() for kw in enhance_keywords)
+        
+        return (is_creation and is_tool) or is_enhancement
+        
+    async def _handle_tool_request(self, prompt: str) -> str:
+        """Handle tool creation/enhancement requests"""
+        team = self._get_relevant_team(prompt)
+        
+        if any(kw in prompt.lower() for kw in ["create", "make", "build"]):
+            result = await self.tool_factory.parse_natural_request(prompt, team)
+            if isinstance(result, dict):
+                tools = ", ".join(result.keys())
+                return f"Created MCP server with tools: {tools}"
+            return f"Created tool: {result.name}"
+            
+        # Must be enhancement
+        for tool_name in self.tool_factory.list_tools():
+            if tool_name.lower() in prompt.lower():
+                enhanced = await self.tool_factory.enhance_tool(
+                    tool_name,
+                    prompt,
+                    team
+                )
+                return f"Enhanced tool: {enhanced.name}"
+                
+        return "Could not process tool request"
+        
+    async def _prepare_context(self, prompt: str) -> Dict[str, Any]:
+        """Prepare context for orchestrator"""
+        # Analyze context
+        context = self.conversation_manager.context_analyzer.analyze(
+            prompt,
+            available_tools=self._get_available_tools()
+        )
+        
+        # Log analysis
+        self._log_context_analysis(context)
+        
+        # Prepare orchestrator context
+        return {
+            "teams": self.teams,
+            "models": self.models,
+            "tools": self._get_team_tools(),
+            "adhesives": self._get_model_adhesives(),
+            "context": context,
+            "memory": self.memory_manager,
+            "workspace": self.workspace_manager
+        }
+        
+    def _get_available_tools(self) -> List[str]:
+        """Get all available tools across teams"""
+        tools = set()
+        for team in self.teams.values():
+            tools.update(team.tools.keys())
+        return list(tools)
+        
+    def _get_team_tools(self) -> Dict[str, Set[str]]:
+        """Get tool mapping for each team"""
+        return {
+            team.name: set(team.tools.keys())
+            for team in self.teams.values()
+        }
+        
+    def _get_model_adhesives(self) -> Dict[str, Set[str]]:
+        """Get adhesive types for each model"""
+        return {
+            model.name: model.available_adhesives
+            for model in self.models.values()
+        }
+        
+    def _log_context_analysis(self, context: ContextState) -> None:
+        """Log context analysis results"""
+        self.logger.info(f"Context Analysis:")
+        self.logger.info(f"- Complexity: {context.complexity}")
+        self.logger.info(f"- Tools Required: {list(context.tools_required) if context.tools_required else 'None'}")
+        self.logger.info(f"- Persistence: {context.requires_persistence}")
+        self.logger.info(f"- Memory: {context.requires_memory}")
+        self.logger.info(f"- Magnetic Flow: {context.magnetic_flow}")
+        
+    async def _store_interaction(
+        self,
+        prompt: str,
+        response: str,
+        context: Dict[str, Any]
+    ) -> None:
+        """Store interaction in memory"""
+        key = f"interaction_{datetime.now().timestamp()}"
+        await self.memory_manager.store(
+            key=key,
+            content={
+                "prompt": prompt,
+                "response": response,
+                "context": context["context"]
+            },
+            context=context["context"]
+        )
             
     def _get_relevant_team(self, prompt: str) -> Optional[Team]:
         """Get most relevant team based on prompt context"""
@@ -185,10 +225,12 @@ class GlueApp:
     def register_team(self, name: str, team: Team) -> None:
         """Register team with app (sync version for executor)"""
         self.teams[name] = team
+        self.orchestrator.register_team(team)  # Register with orchestrator
         
     async def add_team(self, team: Team) -> None:
         """Add team to app (async version for runtime)"""
         self.teams[team.name] = team
+        self.orchestrator.register_team(team)  # Register with orchestrator
         await self.magnetic_field.add_team(team)
         
     def register_model(self, name: str, model: Model) -> None:
@@ -215,6 +257,9 @@ class GlueApp:
             # Clean up team communication
             await self.group_chat_manager.cleanup()
             await self.magnetic_field.cleanup()
+            
+            # Clean up orchestrator
+            # No cleanup needed - stateless
             
             # Clean up dynamic tools
             await self.tool_factory.cleanup()

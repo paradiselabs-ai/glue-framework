@@ -1,40 +1,82 @@
 """File Handler Tool Implementation"""
 
-from typing import Any, Dict, List, Optional, Union, Tuple
+from typing import Any, Dict, List, Optional, Union, Tuple, Literal
 import os
 import json
 import yaml
 import csv
 import re
 import asyncio
+from enum import Enum
 from pathlib import Path
-from smolagents import Tool
+from pydantic import BaseModel, Field
+from smolagents import Tool as SmolTool
+from .base import BaseTool
 from .base import ToolConfig, ToolPermission
 from ..core.types import AdhesiveType
 from ..core.logger import get_logger
 from ..core.tool_binding import ToolBinding
 
 # ==================== Constants ====================
+class FileFormat(str, Enum):
+    """Supported file formats"""
+    TEXT = "text"
+    JSON = "json"
+    YAML = "yaml"
+    CSV = "csv"
+
+class FileOperation(str, Enum):
+    """Supported file operations"""
+    READ = "read"
+    WRITE = "write"
+    APPEND = "append"
+    DELETE = "delete"
+
 class FileFormats:
-    """Supported file formats and operations"""
+    """File format mappings and defaults"""
     FORMATS = {
-        ".txt": "text",
-        ".json": "json",
-        ".yaml": "yaml",
-        ".yml": "yaml",
-        ".csv": "csv",
-        ".py": "text",     # Python support as text
-        ".js": "text",     # JavaScript support as text
-        ".html": "text",   # HTML support as text
-        ".css": "text",    # CSS support as text
-        ".md": "text"      # Markdown support as text
+        ".txt": FileFormat.TEXT,
+        ".json": FileFormat.JSON,
+        ".yaml": FileFormat.YAML,
+        ".yml": FileFormat.YAML,
+        ".csv": FileFormat.CSV,
+        ".py": FileFormat.TEXT,     # Python support as text
+        ".js": FileFormat.TEXT,     # JavaScript support as text
+        ".html": FileFormat.TEXT,   # HTML support as text
+        ".css": FileFormat.TEXT,    # CSS support as text
+        ".md": FileFormat.TEXT      # Markdown support as text
     }
     
     DEFAULT = ".md"  # Default to markdown
-    OPERATIONS = {"read", "write", "append", "delete"}
+    OPERATIONS = {op.value for op in FileOperation}
+
+# ==================== Pydantic Models ====================
+class FileHandlerConfig(BaseModel):
+    """Configuration for file handler tool"""
+    workspace_dir: Optional[str] = Field(None, description="Working directory for file operations")
+    base_path: Optional[str] = Field(None, description="Base path for file operations")
+    allowed_formats: Optional[List[str]] = Field(None, description="List of allowed file formats")
+    shared_resources: List[str] = Field(
+        default=["file_content", "file_path", "file_format"],
+        description="Resources that can be shared with other tools"
+    )
+
+class FileOperationInput(BaseModel):
+    """Input schema for file operations"""
+    action: FileOperation = Field(..., description="The action to perform")
+    path: str = Field(..., description="Path to the file")
+    content: Optional[str] = Field(None, description="Content for write/append operations")
+
+class FileOperationResult(BaseModel):
+    """Result schema for file operations"""
+    success: bool = Field(..., description="Whether the operation succeeded")
+    operation: FileOperation = Field(..., description="The operation performed")
+    format: Optional[FileFormat] = Field(None, description="Format of the file")
+    path: str = Field(..., description="Path to the file")
+    content: Optional[Any] = Field(None, description="File content for read operations")
 
 # ==================== File Handler Tool ====================
-class FileHandlerTool(Tool):
+class FileHandlerTool(BaseTool, SmolTool):
     """Tool for handling file operations"""
     
     def __init__(
@@ -331,45 +373,43 @@ class FileHandlerTool(Tool):
 
     async def forward(self, action: str, path: str, content: Optional[str] = None) -> str:
         """Execute file operation"""
-        self.logger.debug(f"Executing with action: {action}, path: {path}, content: {content}")
-        
         try:
-            # Validate action
-            if action not in FileFormats.OPERATIONS:
-                raise ValueError(f"Invalid action: {action}")
-            
-            # For write/append operations, ensure content is provided
-            if action in ['write', 'append'] and content is None:
-                raise ValueError("Content is required for write/append operations")
+            # Validate input using Pydantic
+            operation_input = FileOperationInput(
+                action=FileOperation(action),
+                path=path,
+                content=content
+            )
+            self.logger.debug(f"Executing operation: {operation_input.model_dump_json()}")
             
             # Validate and resolve path
-            validated_path = self._validate_path(path)
+            validated_path = self._validate_path(operation_input.path)
             format_handler = self._get_format_handler(validated_path)
             
             # Store operation details in binding
-            self.binding.store_resource("operation", action)
+            self.binding.store_resource("operation", operation_input.action.value)
             self.binding.store_resource("file_path", str(validated_path))
             self.binding.store_resource("format", format_handler)
             
             # Execute operation
             result = None
-            if action == "read":
+            if operation_input.action == FileOperation.READ:
                 result = await self._read_file(validated_path, format_handler)
-                self.binding.store_resource("file_content", result["content"])
-            elif action == "write":
-                result = await self._write_file(validated_path, content, format_handler, mode='w')
-            elif action == "append":
-                result = await self._write_file(validated_path, content, format_handler, mode='a')
-            elif action == "delete":
+                self.binding.store_resource("file_content", result.content)
+            elif operation_input.action == FileOperation.WRITE:
+                result = await self._write_file(validated_path, operation_input.content, format_handler, mode='w')
+            elif operation_input.action == FileOperation.APPEND:
+                result = await self._write_file(validated_path, operation_input.content, format_handler, mode='a')
+            elif operation_input.action == FileOperation.DELETE:
                 result = await self._delete_file(validated_path)
 
             # Convert result to string as required by SmolAgents
-            if isinstance(result, dict):
-                if action == "read":
-                    return str(result["content"])
+            if result:
+                if operation_input.action == FileOperation.READ:
+                    return str(result.content)
                 else:
-                    return f"Successfully {action}ed file: {path}"
-            return str(result)
+                    return f"Successfully {operation_input.action.value}d file: {operation_input.path}"
+            return "Operation completed successfully"
 
         except Exception as e:
             self.logger.error(f"File operation failed: {str(e)}")
@@ -380,30 +420,29 @@ class FileHandlerTool(Tool):
     async def _read_file(
         self,
         path: Path,
-        format_handler: str
-    ) -> Dict[str, Any]:
+        format_handler: FileFormat
+    ) -> FileOperationResult:
         """Read file content based on format"""
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
 
         with open(path, 'r') as f:
-            if format_handler == "text":
+            if format_handler == FileFormat.TEXT:
                 content = f.read()
-            elif format_handler == "json":
+            elif format_handler == FileFormat.JSON:
                 content = json.load(f)
-            elif format_handler == "yaml":
+            elif format_handler == FileFormat.YAML:
                 content = yaml.safe_load(f)
-            elif format_handler == "csv":
+            elif format_handler == FileFormat.CSV:
                 content = list(csv.DictReader(f))
 
-        result = {
-            "success": True,
-            "operation": "read",
-            "format": format_handler,
-            "content": content,
-            "path": str(path),
-            "file_content": content  # Add file_content for backward compatibility
-        }
+        result = FileOperationResult(
+            success=True,
+            operation=FileOperation.READ,
+            format=format_handler,
+            path=str(path),
+            content=content
+        )
 
         # Store content in binding
         self.binding.store_resource("file_content", content)
@@ -416,23 +455,23 @@ class FileHandlerTool(Tool):
         self,
         path: Path,
         content: Any,
-        format_handler: str,
+        format_handler: FileFormat,
         mode: str
-    ) -> Dict[str, Any]:
+    ) -> FileOperationResult:
         """Write content to file based on format"""
         os.makedirs(path.parent, exist_ok=True)
 
-        if format_handler == "csv" and not isinstance(content, list):
+        if format_handler == FileFormat.CSV and not isinstance(content, list):
             raise ValueError("CSV content must be a list of dictionaries")
 
         with open(path, mode) as f:
-            if format_handler == "text":
+            if format_handler == FileFormat.TEXT:
                 f.write(str(content))
-            elif format_handler == "json":
+            elif format_handler == FileFormat.JSON:
                 json.dump(content, f, indent=2)
-            elif format_handler == "yaml":
+            elif format_handler == FileFormat.YAML:
                 yaml.safe_dump(content, f)
-            elif format_handler == "csv":
+            elif format_handler == FileFormat.CSV:
                 writer = csv.DictWriter(f, fieldnames=content[0].keys())
                 if mode == 'w':
                     writer.writeheader()
@@ -443,29 +482,33 @@ class FileHandlerTool(Tool):
         self.binding.store_resource("file_path", str(path))
         self.binding.store_resource("file_format", format_handler)
 
-        return {
-            "success": True,
-            "operation": mode == 'w' and "write" or "append",
-            "format": format_handler,
-            "path": str(path),
-            "content": content  # Add content to write/append results
-        }
+        return FileOperationResult(
+            success=True,
+            operation=FileOperation.WRITE if mode == 'w' else FileOperation.APPEND,
+            format=format_handler,
+            path=str(path),
+            content=content
+        )
 
-    async def _delete_file(self, path: Path) -> Dict[str, Any]:
+    async def _delete_file(self, path: Path) -> FileOperationResult:
         """Delete file"""
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
 
         os.remove(path)
-        return {
-            "success": True,
-            "operation": "delete",
-            "path": str(path)
-        }
+        return FileOperationResult(
+            success=True,
+            operation=FileOperation.DELETE,
+            path=str(path)
+        )
 
-    async def process_shared_content(self, content: str) -> None:
+    async def process_shared_content(self, content: str) -> Optional[FileOperationResult]:
         """Process shared content from other tools"""
-        if isinstance(content, str):
+        if not isinstance(content, str):
+            self.logger.warning(f"Received non-string content: {type(content)}")
+            return None
+
+        try:
             # Extract topic from content if possible
             topic = self._extract_topic(content)
             if topic:
@@ -487,10 +530,31 @@ class FileHandlerTool(Tool):
                         topic = re.sub(r'[-\s]+', '_', topic)
                         topic = topic.strip('_').lower()
             
-            # Use topic or default name
-            filename = f"{topic or 'document'}.md"
-            path = self._validate_path(filename)
-            await self._write_file(path, content, "text", mode='w')
+            # Create operation input with validated data
+            operation_input = FileOperationInput(
+                action=FileOperation.WRITE,
+                path=f"{topic or 'document'}.md",
+                content=content
+            )
+            
+            # Validate path and get format
+            validated_path = self._validate_path(operation_input.path)
+            format_handler = self._get_format_handler(validated_path)
+            
+            # Execute write operation
+            result = await self._write_file(
+                validated_path,
+                operation_input.content,
+                format_handler,
+                mode='w'
+            )
+            
+            self.logger.debug(f"Successfully processed shared content to {result.path}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Failed to process shared content: {str(e)}")
+            raise RuntimeError(f"Failed to process shared content: {str(e)}")
 
     async def cleanup(self) -> None:
         """Clean up resources when tool is done"""

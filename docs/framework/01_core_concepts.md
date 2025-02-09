@@ -107,12 +107,22 @@ model researcher {
     provider = openrouter
     role = "Research different topics and subjects online."
     adhesives = [glue, velcro]  // Can use persistent and session tools
+    config {
+        model = "meta-llama/Llama-3.1-70b-instruct:free"
+        temperature = 0.7
+        max_tokens = 4000
+    }
 }
 
 model writer {
     provider = openrouter
     role = "Write documentation files that summarize findings."
     adhesives = [tape]  // Only needs quick tool access
+    config {
+        model = "meta-llama/Llama-3.1-70b-instruct:free"
+        temperature = 0.7
+        max_tokens = 4000
+    }
 }
 
 // Tools available to teams
