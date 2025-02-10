@@ -1,6 +1,6 @@
 """GLUE Framework Error Handling"""
 
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 from datetime import datetime
 from pydantic import BaseModel
 
@@ -45,6 +45,10 @@ class TeamRegistrationError(GlueError):
 class ProtectionMechanismError(GlueError):
     """Error for protection mechanism failures"""
     base_message = "Protection Mechanism Error"
+
+class PatternValidationError(GlueError):
+    """Error for pattern validation failures"""
+    base_message = "Pattern Validation Error"
 
 def handle_flow_errors(func: Callable) -> Callable:
     """Decorator for handling flow-related errors"""

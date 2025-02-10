@@ -1,4 +1,4 @@
-"""Core model implementation with Pydantic and SmolAgents integration"""
+"""Model implementation with Pydantic and Prefect integration"""
 
 from typing import Dict, Any, Optional, List, Set, Union, TYPE_CHECKING
 from datetime import datetime
@@ -10,12 +10,12 @@ from .pydantic_models import (
     ConversationMessage, TeamContext, SmolAgentsTool
 )
 from .types import AdhesiveType, IntentAnalysis
+from .logger import get_logger
 
 if TYPE_CHECKING:
-    from ..tools.base import BaseTool
-    from .team import Team
+    from .team_pydantic import Team
 
-logger = logging.getLogger(__name__)
+logger = get_logger("model")
 
 class Model:
     """Base class for models that can use tools and communicate"""
@@ -41,8 +41,22 @@ class Model:
         # Initialize SmolAgents tool registry
         self._smol_tools: Dict[str, SmolAgentsTool] = {}
         
+        # Reference to team instance (set by team when adding model)
+        self._team: Optional['Team'] = None
+        
         # Set up logging
         self.logger = logger
+
+    @property
+    def team(self) -> Optional['Team']:
+        """Get the model's team"""
+        return self._team
+
+    @team.setter
+    def team(self, team: 'Team') -> None:
+        """Set the model's team"""
+        self._team = team
+        self.state.team = team.name
 
     def set_role(self, role: str) -> None:
         """Set the model's role"""
@@ -63,7 +77,7 @@ class Model:
     async def use_tool(self, tool_name: str, adhesive: AdhesiveType, input_data: Any) -> ToolResult:
         """Use tools naturally like office tools"""
         # Validate tool access
-        if not hasattr(self, 'team') or not self.team:
+        if not self.team:
             raise ValueError(f"Model {self.state.name} is not part of a team")
             
         if tool_name not in self.team.tools:
@@ -107,7 +121,7 @@ class Model:
         # Handle result based on adhesive
         if adhesive == AdhesiveType.GLUE:
             # Store in team's shared context
-            self.state.team_context.shared_results[tool_name] = tool_result
+            self.team.context.shared_results[tool_name] = tool_result
         elif adhesive == AdhesiveType.VELCRO:
             # Store in session results
             self.state.session_results[tool_name] = tool_result
@@ -134,8 +148,8 @@ class Model:
             "recent_tools": list(self.state.session_results.values())[-3:],
             "team": {
                 "name": self.state.team,
-                "shared_knowledge": self.state.team_context.shared_knowledge,
-                "shared_results": self.state.team_context.shared_results
+                "shared_knowledge": self.team.context.shared_knowledge if self.team else {},
+                "shared_results": self.team.context.shared_results if self.team else {}
             }
         }
 
@@ -175,7 +189,7 @@ class Model:
                 # Handle result based on adhesive type
                 if result.adhesive == AdhesiveType.GLUE:
                     self.logger.info(f"Sharing result with team using GLUE")
-                    await self.team.share_result(result)
+                    await self.team.share_result(result.tool_name, result)
                 elif result.adhesive == AdhesiveType.VELCRO:
                     self.logger.info(f"Storing result in session using VELCRO")
                     self.state.session_results[result.tool_name] = result
@@ -194,6 +208,9 @@ class Model:
     @task(retries=2)
     async def send_message(self, receiver: str, content: Any) -> None:
         """Send a message to another model"""
+        if not self.team:
+            raise ValueError(f"Model {self.state.name} is not part of a team")
+            
         if receiver in self.state.repelled_by:
             raise ValueError(f"Cannot send message to {receiver} - repelled")
             
@@ -221,7 +238,8 @@ class Model:
                     adhesive=AdhesiveType.GLUE,
                     timestamp=datetime.now()
                 )
-                self.state.team_context.shared_results[tool_name] = tool_result
+                if self.team:
+                    self.team.context.shared_results[tool_name] = tool_result
         
     async def generate(self, prompt: str) -> str:
         """Generate a response (to be implemented by provider)"""

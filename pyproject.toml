@@ -25,9 +25,25 @@ dependencies = [
     "litellm>=1.0.0",      # For multiple model providers
     "mcp>=0.1.0",          # For MCP integration
     "loguru>=0.7.0",       # Enhanced logging
+    "prefect>=2.14.0",     # For workflow orchestration
+    "redis>=5.0.0",        # For caching and persistence
+    "opentelemetry-sdk>=1.21.0",  # For telemetry
+    "opentelemetry-exporter-otlp>=1.21.0",  # For telemetry export
+    "typing-extensions>=4.0.0",  # For enhanced type hints
     "pytest>=7.0.0",       # For testing
     "pytest-asyncio>=0.21.0",  # For async test support
-    "pytest-cov>=4.1.0"    # For test coverage
+    "pytest-cov>=4.1.0",    # For test coverage
+    "pytest-mock>=3.10.0",  # For mocking in tests
+    "pytest-timeout>=2.1.0"  # For test timeouts
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=23.0.0",
+    "isort>=5.0.0",
+    "mypy>=1.0.0",
+    "pylint>=3.0.0",
+    "pytest-watch>=4.2.0"  # For test watching during development
 ]
 
 [project.urls]
@@ -42,8 +58,9 @@ glue = "glue.cli:main"
 asyncio_mode = "strict"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-v --tb=short --cov=glue"  # Added coverage
+addopts = "-v --tb=short --cov=glue"
 asyncio_fixture_loop_scope = "function"
+timeout = 300  # 5 minutes timeout for tests
 
 [tool.coverage.run]
 source = ["glue"]
@@ -61,3 +78,20 @@ exclude_lines = [
     "pass",
     "raise ImportError",
 ]
+
+[tool.black]
+line-length = 100
+target-version = ['py39']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 100
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+check_untyped_defs = true

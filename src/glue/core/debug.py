@@ -1,8 +1,11 @@
 """GLUE Framework Debug Endpoints"""
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, TYPE_CHECKING
 from datetime import datetime
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from ..magnetic.field import MagneticField
 
 class FlowDebugInfo(BaseModel):
     """Debug information for a flow"""
@@ -18,6 +21,15 @@ class FlowDebugInfo(BaseModel):
     strength: float = Field(ge=0.0, le=1.0)
     protection_status: Dict[str, Any]
 
+class PatternDebugInfo(BaseModel):
+    """Debug information for a flow pattern"""
+    name: str
+    teams: list[str]
+    current_phase: Optional[str]
+    active_flows: set[str]
+    message_counts: Dict[str, int]
+    rules: list[Dict[str, Any]]
+
 class FieldDebugInfo(BaseModel):
     """Debug information for a magnetic field"""
     name: str
@@ -25,6 +37,7 @@ class FieldDebugInfo(BaseModel):
     repelled_teams: set[str]
     registered_teams: set[str]
     child_fields: list[str]
+    active_patterns: Dict[str, PatternDebugInfo]
     timestamp: datetime = Field(default_factory=datetime.now)
 
 class DebugEndpoints:
@@ -69,6 +82,22 @@ class DebugEndpoints:
         )
     
     @staticmethod
+    def get_pattern_debug_info(field: 'MagneticField', pattern_name: str) -> Optional[PatternDebugInfo]:
+        """Get debug information for a specific pattern"""
+        pattern_state = field._active_patterns.get(pattern_name)
+        if not pattern_state:
+            return None
+            
+        return PatternDebugInfo(
+            name=pattern_state.pattern.name,
+            teams=pattern_state.pattern.teams,
+            current_phase=pattern_state.current_phase,
+            active_flows=pattern_state.active_flows,
+            message_counts=pattern_state.message_counts,
+            rules=pattern_state.pattern.rules
+        )
+
+    @staticmethod
     def get_field_debug_info(field: 'MagneticField') -> FieldDebugInfo:
         """Get debug information for a magnetic field"""
         active_flows = {}
@@ -77,12 +106,20 @@ class DebugEndpoints:
             if flow_info:
                 active_flows[flow_id] = flow_info
                 
+        # Get active patterns
+        active_patterns = {}
+        for pattern_name in field._active_patterns:
+            pattern_info = DebugEndpoints.get_pattern_debug_info(field, pattern_name)
+            if pattern_info:
+                active_patterns[pattern_name] = pattern_info
+        
         return FieldDebugInfo(
             name=field.config.name,
             active_flows=active_flows,
             repelled_teams=field.state.repelled_teams,
             registered_teams=field.state.registered_teams,
-            child_fields=list(field.state.child_fields)
+            child_fields=list(field.state.child_fields),
+            active_patterns=active_patterns
         )
     
     @staticmethod

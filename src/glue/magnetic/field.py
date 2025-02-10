@@ -1,8 +1,13 @@
 """GLUE Magnetic Field System"""
 
 from datetime import datetime
-from typing import Dict, List, Optional, Type, Callable, Any, TYPE_CHECKING
+from typing import Dict, List, Optional, Type, Callable, Any, Set, TYPE_CHECKING
 from collections import defaultdict
+from pydantic import BaseModel, Field
+from loguru import logger
+
+from ..core.debug import FieldDebugInfo, FlowDebugInfo
+
 
 from ..core.errors import (
     GlueError,
@@ -10,6 +15,7 @@ from ..core.errors import (
     FlowStateError,
     TeamRegistrationError,
     ProtectionMechanismError,
+    PatternValidationError,
     handle_flow_errors,
     validate_flow_type,
     validate_team_registered
@@ -27,7 +33,7 @@ from .rules import RuleSet
 if TYPE_CHECKING:
     from ..core.context import ContextState
 
-# ==================== Event Types ====================
+# ==================== Models ====================
 from .models import (
     FlowConfig,
     FlowState,
@@ -47,8 +53,23 @@ from .models import (
     FlowHealth
 )
 
+class FlowPattern(BaseModel):
+    """Model for magnetic flow patterns"""
+    name: str = Field(..., description="Pattern name")
+    teams: List[str] = Field(..., description="Teams involved in pattern")
+    flows: List[Dict[str, Any]] = Field(..., description="Flow configurations")
+    rules: List[Dict[str, Any]] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class PatternState(BaseModel):
+    """Model for pattern execution state"""
+    pattern: FlowPattern
+    active_flows: Set[str] = Field(default_factory=set)
+    message_counts: Dict[str, int] = Field(default_factory=dict)
+    current_phase: Optional[str] = Field(default=None)
+
 # ==================== Main Class ====================
-class MagneticField:
+class MagneticField(BaseModel):
     """
     Manages team-to-team information flow using magnetic operators.
     
@@ -62,50 +83,87 @@ class MagneticField:
     - -> (Push): Source team pushes results to target team
     - <- (Pull): Target team pulls results from source team
     - <> (Repel): Teams cannot communicate
-    
-    Example:
-        ```glue
-        magnetize {
-            research {
-                lead = researcher
-                tools = [web_search]
-            }
-            
-            docs {
-                lead = writer
-                tools = [file_handler]
-            }
-            
-            flow {
-                research -> docs  # Research pushes to docs
-                docs <- pull     # Docs can pull from research
-            }
-        }
-        ```
     """
     
-    _fields: Dict[str, 'MagneticField'] = {}
+    # Configuration and state
+    config: FieldConfig = Field(..., description="Field configuration")
+    state: FieldState = Field(..., description="Field state")
+    
+    # Parent relationship
+    parent: Optional['MagneticField'] = Field(default=None, description="Parent field")
+    workflow: Optional['Workflow'] = Field(default=None, description="Associated workflow")
+    
+    # Protection mechanisms
+    circuit_breakers: Dict[str, CircuitBreaker] = Field(
+        default_factory=dict,
+        description="Circuit breakers for flow protection"
+    )
+    rate_limiters: Dict[str, RateLimiter] = Field(
+        default_factory=dict,
+        description="Rate limiters for flow protection"
+    )
+    retry_strategies: Dict[str, RetryStrategy] = Field(
+        default_factory=dict,
+        description="Retry strategies for flow recovery"
+    )
+    health_monitors: Dict[str, FlowHealth] = Field(
+        default_factory=dict,
+        description="Health monitors for flows"
+    )
+    
+    # Pattern tracking
+    active_patterns: Dict[str, PatternState] = Field(
+        default_factory=dict,
+        description="Active flow patterns"
+    )
+    
+    # Event handling
+    event_handlers: Dict[Type[FieldEvent], List[Callable[[FieldEvent], None]]] = Field(
+        default_factory=lambda: defaultdict(list),
+        description="Event handlers"
+    )
+    
+    # Class-level field registry
+    _fields: ClassVar[Dict[str, 'MagneticField']] = {}
     
     @classmethod
     def get_field(cls, name: str) -> Optional['MagneticField']:
         """Get a magnetic field by name"""
         return cls._fields.get(name)
         
+    name: str
+    workflow: Optional['Workflow'] = None
+    
     def __init__(
         self,
         name: str,
         parent: Optional['MagneticField'] = None,
-        is_pull_team: bool = False
-    ):  
-        # Initialize field configuration
+        is_pull_team: bool = False,
+        rules: Optional[List[Dict[str, Any]]] = None
+    ):
+        self.name = name
+        """Initialize a magnetic field with Pydantic models for validation"""
+        # Initialize field configuration with validation
         self.config = FieldConfig(
             name=name,
             is_pull_team=is_pull_team,
-            parent_field=parent.config.name if parent else None
+            parent_field=parent.config.name if parent else None,
+            rules=rules or []
         )
         
-        # Initialize field state
-        self.state = FieldState(config=self.config)
+        # Set workflow from parent if available
+        if parent and parent.workflow:
+            self.workflow = parent.workflow
+        
+        # Initialize field state with validation
+        self.state = FieldState(
+            config=self.config,
+            active=True,
+            registered_teams=set(),
+            active_flows={},
+            repelled_teams=set(),
+            child_fields=set()  # Use set instead of list
+        )
         
         # Set up parent relationship
         self.parent = parent
@@ -113,17 +171,17 @@ class MagneticField:
         # Initialize event handling
         self._event_handlers = defaultdict(list)
         
-        # Initialize logger
-        self.logger = logging.getLogger(f"glue.magnetic.field.{name}")
-        
         # Register this field
         MagneticField._fields[name] = self
         
-        # Initialize protection mechanisms
+        # Initialize protection mechanisms with validation
         self._circuit_breakers: Dict[str, CircuitBreaker] = {}
         self._rate_limiters: Dict[str, RateLimiter] = {}
         self._retry_strategies: Dict[str, RetryStrategy] = {}
         self._health_monitors: Dict[str, FlowHealth] = {}
+        
+        # Initialize pattern tracking
+        self._active_patterns: Dict[str, PatternState] = {}
 
     # ==================== Debug Methods ====================
     def get_debug_info(self) -> FieldDebugInfo:
@@ -503,6 +561,7 @@ class MagneticField:
         )
         return True
         
+    @handle_flow_errors
     async def set_team_flow(
         self,
         source_team: str,
@@ -510,11 +569,53 @@ class MagneticField:
         operator: str  # "><", "->", "<-", or "<>"
     ) -> None:
         """Set up magnetic flow between teams"""
+        flow_id = f"{source_team}_to_{target_team}"
+        
+        log_flow_event(
+            "Starting Team Flow Setup",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type=operator,
+                metadata={
+                    "field": self.config.name,
+                    "operation": "set_flow"
+                }
+            )
+        )
+        
+        # Validate teams and flow
         if not self._validate_team_flow(source_team, target_team, operator):
+            log_error(
+                "Team Flow Setup Failed",
+                f"Invalid flow {operator} between {source_team} and {target_team}",
+                "set_team_flow",
+                {
+                    "field": self.config.name,
+                    "source_team": source_team,
+                    "target_team": target_team,
+                    "operator": operator
+                }
+            )
             raise ValueError(f"Invalid flow {operator} between {source_team} and {target_team}")
             
         # Set up flow based on operator
         await self._setup_flow(source_team, target_team, operator)
+        
+        log_flow_event(
+            "Team Flow Setup Complete",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type=operator,
+                metadata={
+                    "field": self.config.name,
+                    "status": "success"
+                }
+            )
+        )
 
     @handle_flow_errors
     async def _setup_flow(
@@ -1091,6 +1192,7 @@ class MagneticField:
             )
             return False
             
+    @handle_flow_errors
     async def process_team_flow(
         self,
         source_team: str,
@@ -1099,14 +1201,61 @@ class MagneticField:
         flow_type: str  # "><", "->", "<-", "<>"
     ) -> Optional[Any]:
         """Process information flow between teams using magnetic operators"""
+        flow_id = f"{source_team}_to_{target_team}"
+        
+        log_flow_event(
+            "Starting Team Flow Processing",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type=flow_type,
+                metadata={
+                    "field": self.config.name,
+                    "has_content": content is not None,
+                    "content_type": type(content).__name__ if content is not None else None
+                }
+            )
+        )
+        
+        # Validate flow
         if not self._validate_team_flow(source_team, target_team, flow_type):
+            log_error(
+                "Team Flow Processing Failed",
+                f"Invalid flow {flow_type} between {source_team} and {target_team}",
+                "process_team_flow",
+                {
+                    "field": self.config.name,
+                    "source_team": source_team,
+                    "target_team": target_team,
+                    "flow_type": flow_type
+                }
+            )
             raise ValueError(f"Invalid flow {flow_type} between {source_team} and {target_team}")
             
         # Set up flow and emit event
         await self._setup_flow(source_team, target_team, flow_type)
         
-        # Return content for all flows except repulsion
-        return None if flow_type == "<>" else content
+        # Process content based on flow type
+        result = None if flow_type == "<>" else content
+        
+        log_flow_event(
+            "Team Flow Processing Complete",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type=flow_type,
+                metadata={
+                    "field": self.config.name,
+                    "status": "success",
+                    "has_result": result is not None,
+                    "result_type": type(result).__name__ if result is not None else None
+                }
+            )
+        )
+        
+        return result
         
     def get_team_flows(self, team_name: str) -> Dict[str, str]:
         """Get all flows for a team"""
@@ -1403,6 +1552,181 @@ class MagneticField:
             )
             return False
 
+    @handle_flow_errors
+    async def register_pattern(self, pattern: FlowPattern) -> None:
+        """Register a new flow pattern"""
+        if pattern.name in self._active_patterns:
+            log_error(
+                "Pattern Registration Failed",
+                f"Pattern {pattern.name} already exists",
+                "register_pattern",
+                {
+                    "field": self.config.name,
+                    "pattern": pattern.name
+                }
+            )
+            raise ValueError(f"Pattern {pattern.name} already exists")
+            
+        # Validate all teams exist
+        for team in pattern.teams:
+            if team not in self.state.registered_teams:
+                log_error(
+                    "Pattern Registration Failed",
+                    f"Team {team} not registered",
+                    "register_pattern",
+                    {
+                        "field": self.config.name,
+                        "pattern": pattern.name,
+                        "missing_team": team
+                    }
+                )
+                raise TeamRegistrationError(f"Team {team} not registered")
+                
+        # Initialize pattern state
+        self._active_patterns[pattern.name] = PatternState(
+            pattern=pattern,
+            active_flows=set(),
+            message_counts={},
+            current_phase=pattern.teams[0] if pattern.teams else None
+        )
+        
+        log_flow_event(
+            "Pattern Registered",
+            FlowLogContext(
+                flow_id=f"pattern_{pattern.name}",
+                source_team="system",
+                target_team="system",
+                flow_type="pattern",
+                metadata={
+                    "field": self.config.name,
+                    "pattern": pattern.name,
+                    "teams": pattern.teams,
+                    "total_patterns": len(self._active_patterns)
+                }
+            )
+        )
+        
+    @handle_flow_errors
+    async def advance_pattern_phase(self, pattern_name: str) -> bool:
+        """Advance a pattern to its next phase"""
+        if pattern_name not in self._active_patterns:
+            log_error(
+                "Phase Advance Failed",
+                f"Pattern {pattern_name} not found",
+                "advance_pattern_phase",
+                {
+                    "field": self.config.name,
+                    "pattern": pattern_name
+                }
+            )
+            return False
+            
+        pattern_state = self._active_patterns[pattern_name]
+        pattern = pattern_state.pattern
+        
+        if not pattern_state.current_phase:
+            log_error(
+                "Phase Advance Failed",
+                "No current phase set",
+                "advance_pattern_phase",
+                {
+                    "field": self.config.name,
+                    "pattern": pattern_name
+                }
+            )
+            return False
+            
+        # Find next phase
+        current_idx = pattern.teams.index(pattern_state.current_phase)
+        next_idx = (current_idx + 1) % len(pattern.teams)
+        next_phase = pattern.teams[next_idx]
+        
+        # Validate transition using pattern rules
+        if not self._validate_phase_transition(pattern_state, next_phase):
+            log_error(
+                "Phase Transition Failed",
+                "Transition validation failed",
+                "advance_pattern_phase",
+                {
+                    "field": self.config.name,
+                    "pattern": pattern_name,
+                    "current_phase": pattern_state.current_phase,
+                    "next_phase": next_phase
+                }
+            )
+            return False
+            
+        # Update pattern state
+        pattern_state.current_phase = next_phase
+        
+        log_flow_event(
+            "Pattern Phase Advanced",
+            FlowLogContext(
+                flow_id=f"pattern_{pattern_name}",
+                source_team=pattern_state.current_phase,
+                target_team=next_phase,
+                flow_type="phase",
+                metadata={
+                    "field": self.config.name,
+                    "pattern": pattern_name,
+                    "new_phase": next_phase
+                }
+            )
+        )
+        return True
+        
+    def _validate_phase_transition(
+        self,
+        pattern_state: PatternState,
+        next_phase: str
+    ) -> bool:
+        """Validate if a phase transition is allowed"""
+        pattern = pattern_state.pattern
+        
+        # Check sequence rules
+        sequence_rule = next(
+            (r for r in pattern.rules if r["type"] == "sequence"),
+            None
+        )
+        if sequence_rule:
+            order = sequence_rule["order"]
+            current_idx = order.index(pattern_state.current_phase)
+            next_idx = order.index(next_phase)
+            if next_idx != (current_idx + 1) % len(order):
+                return False
+                
+        # Check threshold rules
+        threshold_rule = next(
+            (r for r in pattern.rules if r["type"] == "threshold"),
+            None
+        )
+        if threshold_rule:
+            min_messages = threshold_rule.get("min_messages", 1)
+            current_messages = pattern_state.message_counts.get(
+                pattern_state.current_phase,
+                0
+            )
+            if current_messages < min_messages:
+                return False
+                
+        return True
+        
+    @handle_flow_errors
+    def get_pattern_state(self, pattern_name: str) -> Optional[PatternState]:
+        """Get the current state of a pattern"""
+        if pattern_name not in self._active_patterns:
+            log_error(
+                "Pattern State Retrieval Failed",
+                f"Pattern {pattern_name} not found",
+                "get_pattern_state",
+                {
+                    "field": self.config.name,
+                    "pattern": pattern_name
+                }
+            )
+            return None
+        return self._active_patterns[pattern_name]
+        
     @handle_flow_errors
     async def enable_push(self, source_team: str, target_team: str) -> bool:
         """Enable one-way push flow from source team to target team"""

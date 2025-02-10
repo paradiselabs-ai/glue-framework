@@ -127,60 +127,82 @@ def test_pattern():
 async def test_circular_flow_pattern(test_teams, test_pattern):
     """Test circular flow pattern between teams"""
     # Create magnetic field
-    field = MagneticField()
+    field = MagneticField("test_field")
+    
+    # Register teams
+    for team_name in test_teams:
+        await field.add_team(test_teams[team_name])
+    
+    # Register pattern
+    await field.register_pattern(test_pattern)
     
     # Set up flows from pattern
     for flow in test_pattern.flows:
-        field.add_flow({
-            "source": flow["source"],
-            "target": flow["target"],
-            "type": flow["type"],
-            "strength": flow["strength"]
-        })
+        await field.set_team_flow(
+            source_team=flow["source"],
+            target_team=flow["target"],
+            operator="->" if flow["type"] == "push" else "<-"
+        )
     
-    # Verify flow connections
-    assert field.has_flow("research", "analysis")
-    assert field.has_flow("analysis", "docs")
-    assert field.has_flow("docs", "research")
+    # Verify flow connections through debug info
+    debug_info = field.get_debug_info()
     
-    # Verify flow strengths
-    assert field.get_flow_strength("research", "analysis") == 0.8
-    assert field.get_flow_strength("analysis", "docs") == 0.6
-    assert field.get_flow_strength("docs", "research") == 0.4
+    # Check active flows
+    assert f"research_to_analysis" in debug_info.active_flows
+    assert f"analysis_to_docs" in debug_info.active_flows
+    assert f"docs_to_research" in debug_info.active_flows
+    
+    # Check pattern state
+    pattern_state = field.get_pattern_state("research_cycle")
+    assert pattern_state is not None
+    assert pattern_state.pattern.name == "research_cycle"
+    assert pattern_state.current_phase == "research"  # Initial phase
 
 @pytest.mark.asyncio
-async def test_pattern_state_tracking(test_pattern):
+async def test_pattern_state_tracking(test_teams, test_pattern):
     """Test pattern state tracking"""
-    state = PatternState(
-        pattern=test_pattern,
-        active_flows={"research_to_analysis", "analysis_to_docs"},
-        message_counts={
-            "research_to_analysis": 5,
-            "analysis_to_docs": 3,
-            "docs_to_research": 0
-        },
-        current_phase="analysis"
-    )
+    # Create field and register teams
+    field = MagneticField("test_field")
+    for team_name in test_teams:
+        await field.add_team(test_teams[team_name])
     
-    assert len(state.active_flows) == 2
-    assert state.message_counts["research_to_analysis"] == 5
-    assert state.current_phase == "analysis"
+    # Register pattern
+    await field.register_pattern(test_pattern)
+    
+    # Advance through phases
+    assert await field.advance_pattern_phase("research_cycle")
+    
+    # Verify state through debug info
+    pattern_state = field.get_pattern_state("research_cycle")
+    assert pattern_state is not None
+    assert pattern_state.current_phase == "analysis"  # Advanced to next phase
 
 @pytest.mark.asyncio
-async def test_flow_metrics_tracking():
+async def test_flow_metrics_tracking(test_teams, test_pattern):
     """Test flow performance metrics tracking"""
-    metrics = FlowMetrics(
-        flow_id="research_to_analysis",
-        message_count=10,
-        average_latency=0.5,
-        success_rate=0.95,
-        last_active=datetime.now()
-    )
+    # Create field and register teams
+    field = MagneticField("test_field")
+    for team_name in test_teams:
+        await field.add_team(test_teams[team_name])
     
-    assert metrics.message_count == 10
-    assert metrics.average_latency == 0.5
-    assert metrics.success_rate == 0.95
-    assert isinstance(metrics.last_active, datetime)
+    # Register pattern and set up flows
+    await field.register_pattern(test_pattern)
+    for flow in test_pattern.flows:
+        await field.set_team_flow(
+            source_team=flow["source"],
+            target_team=flow["target"],
+            operator="->" if flow["type"] == "push" else "<-"
+        )
+    
+    # Get metrics through debug endpoint
+    flow_id = "research_to_analysis"
+    metrics = field.get_flow_metrics(flow_id)
+    
+    assert "message_rate" in metrics
+    assert "error_rate" in metrics
+    assert "latency" in metrics
+    assert "throughput" in metrics
+    assert "uptime" in metrics
 
 @pytest.mark.asyncio
 async def test_pattern_rule_evaluation(test_pattern):
