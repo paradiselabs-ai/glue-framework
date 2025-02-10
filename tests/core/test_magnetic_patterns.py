@@ -5,13 +5,12 @@ from datetime import datetime
 from typing import Dict, Set, Any, Optional, List
 from pydantic import BaseModel, Field
 
-from glue.core.team import Team
-from glue.core.model import Model
+from glue.core.team_pydantic import Team
+from glue.core.model_pydantic import Model
 from glue.core.types import AdhesiveType
-from glue.magnetic.field import MagneticField
+from glue.magnetic.field_pydantic import MagneticField
 from glue.magnetic.rules import MagneticRules
-from glue.core.team_communication import TeamCommunication
-from glue.core.group_chat import GroupChat
+from glue.core.pydantic_models import ModelConfig
 
 # ==================== Advanced Pattern Models ====================
 class FlowPattern(BaseModel):
@@ -47,21 +46,21 @@ def test_models():
             provider="test",
             team="research",
             available_adhesives={AdhesiveType.GLUE, AdhesiveType.VELCRO},
-            config={"temperature": 0.7}
+            config=ModelConfig(temperature=0.7)
         ),
         "analyst": Model(
             name="analyst",
             provider="test",
             team="analysis",
             available_adhesives={AdhesiveType.VELCRO},
-            config={"temperature": 0.5}
+            config=ModelConfig(temperature=0.5)
         ),
         "writer": Model(
             name="writer",
             provider="test",
             team="docs",
             available_adhesives={AdhesiveType.TAPE},
-            config={"temperature": 0.3}
+            config=ModelConfig(temperature=0.3)
         )
     }
 
@@ -234,30 +233,29 @@ async def test_pattern_rule_evaluation(test_pattern):
 @pytest.mark.asyncio
 async def test_multi_team_collaboration(test_teams, test_pattern):
     """Test collaboration between multiple teams"""
-    # Set up team communications
-    comms = {
-        team_name: TeamCommunication(team=team)
-        for team_name, team in test_teams.items()
-    }
+    # Create magnetic field
+    field = MagneticField("test_field")
     
-    # Create pattern state
-    state = PatternState(pattern=test_pattern)
+    # Register teams
+    for team_name in test_teams:
+        await field.add_team(test_teams[team_name])
     
-    # Simulate research phase
-    research_message = {
-        "sender": "researcher",
-        "content": "Initial research findings",
-        "source_team": "research",
-        "target_team": "analysis",
-        "flow_type": "push"
-    }
+    # Register pattern
+    await field.register_pattern(test_pattern)
     
-    await comms["research"].send_message(research_message)
-    state.message_counts["research_to_analysis"] = 1
-    state.current_phase = "analysis"
+    # Set up flows from pattern
+    for flow in test_pattern.flows:
+        await field.set_team_flow(
+            source_team=flow["source"],
+            target_team=flow["target"],
+            operator="->" if flow["type"] == "push" else "<-"
+        )
     
-    assert state.message_counts["research_to_analysis"] == 1
-    assert state.current_phase == "analysis"
+    # Verify pattern state
+    pattern_state = field.get_pattern_state("research_cycle")
+    assert pattern_state is not None
+    assert pattern_state.pattern.name == "research_cycle"
+    assert pattern_state.current_phase == "research"  # Initial phase
 
 @pytest.mark.asyncio
 async def test_adhesive_flow_compatibility(test_teams):
