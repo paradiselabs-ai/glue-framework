@@ -16,7 +16,7 @@ from ..core.workspace import WorkspaceManager
 from ..core.conversation import ConversationManager
 from ..core.tool_binding import ToolBinding
 from ..core.group_chat import GroupChatManager
-from ..core.logger import init_logger, get_logger
+from ..core.logger import setup_logging, get_logger
 from ..magnetic.field import MagneticField
 
 # Tool system imports
@@ -118,7 +118,7 @@ class GlueExecutor:
         output_dir.mkdir(exist_ok=True)
         
         # Initialize logger with development mode and log directory
-        init_logger(
+        setup_logging(
             name=self.app_config.name,
             log_dir=str(output_dir),
             development=self.app_config.config.get("development", False)

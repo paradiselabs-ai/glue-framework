@@ -9,8 +9,8 @@ from glue.core.team import Team
 from glue.core.model import Model
 from glue.core.types import AdhesiveType
 from glue.magnetic.field import MagneticField
-from glue.core.team_communication import TeamCommunication
-from glue.core.group_chat import GroupChat
+from glue.core.team_communication import TeamCommunicationManager
+from glue.core.group_chat import GroupChatManager
 
 # ==================== Communication Models ====================
 class Message(BaseModel):
@@ -179,8 +179,13 @@ async def test_model_to_model_communication(test_team_a):
     model_a = test_team_a.models["model_a"]
     model_b = test_team_a.models["model_b"]
     
-    # Create group chat for the models
-    chat = GroupChat(models=[model_a, model_b])
+    # Create group chat manager
+    chat_manager = GroupChatManager("test_chat")
+    chat_manager.add_model(model_a)
+    chat_manager.add_model(model_b)
+    
+    # Start a chat between models
+    chat_id = await chat_manager.start_chat(model_a.name, model_b.name)
     
     # Test message exchange
     message = ModelMessage(
@@ -190,12 +195,20 @@ async def test_model_to_model_communication(test_team_a):
         adhesive_type=AdhesiveType.GLUE
     )
     
-    await chat.broadcast(message.dict())
+    response = await chat_manager.process_message(
+        chat_id,
+        message.content,
+        from_model=model_a.name,
+        target_model=model_b.name
+    )
     
-    # Verify message was received
-    assert len(chat.history) == 1
-    assert chat.history[0]["sender"] == model_a.name
-    assert chat.history[0]["content"] == "Request for analysis"
+    # Verify chat history
+    assert len(chat_manager.chat_history) == 1
+    assert chat_manager.chat_history[0]["from_model"] == model_a.name
+    assert chat_manager.chat_history[0]["content"] == "Request for analysis"
+    
+    # Cleanup
+    await chat_manager.end_chat(chat_id)
 
 @pytest.mark.asyncio
 async def test_team_to_team_communication(test_team_a, test_team_b):
@@ -209,8 +222,9 @@ async def test_team_to_team_communication(test_team_a, test_team_b):
     )
     
     # Set up team communication
-    comm_a = TeamCommunication(team=test_team_a)
-    comm_b = TeamCommunication(team=test_team_b)
+    comm = TeamCommunicationManager("test_comm")
+    await comm.add_team(test_team_a)
+    await comm.add_team(test_team_b)
     
     # Create and track flow state
     state = FlowState(flow=flow)
@@ -224,8 +238,9 @@ async def test_team_to_team_communication(test_team_a, test_team_b):
         flow_type="push"
     )
     
-    # Send message
-    await comm_a.send_message(message.dict())
+    # Set up flow and send message
+    flow_id = await comm.set_team_flow(test_team_a.name, test_team_b.name, "push")
+    await comm.share_results(flow_id, {"message": message.dict()}, test_team_a.name)
     state.message_count += 1
     state.last_message = message
     

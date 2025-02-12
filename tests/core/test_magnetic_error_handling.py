@@ -10,7 +10,6 @@ from glue.core.model import Model
 from glue.core.types import AdhesiveType
 from glue.magnetic.field import MagneticField
 from glue.magnetic.rules import MagneticRules
-from glue.core.team_communication import TeamCommunication
 
 # ==================== Error Models ====================
 class FlowError(BaseModel):

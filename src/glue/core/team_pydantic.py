@@ -66,7 +66,6 @@ class Team(BaseModel):
     class Config:
         arbitrary_types_allowed = True
 
-    @task
     async def add_member(
         self,
         model_name: str,
@@ -98,7 +97,6 @@ class Team(BaseModel):
         self.updated_at = datetime.now()
         logger.info(f"Added member {model_name} to team {self.name}")
 
-    @task
     async def add_tool(
         self,
         tool: SmolAgentsTool,
@@ -120,7 +118,6 @@ class Team(BaseModel):
         self.updated_at = datetime.now()
         logger.info(f"Added tool {tool.name} to team {self.name}")
 
-    @flow(name="share_result")
     async def share_result(
         self,
         tool_name: str,
@@ -150,10 +147,9 @@ class Team(BaseModel):
         self.updated_at = datetime.now()
         logger.info(f"Shared {tool_name} result in team {self.name}")
 
-    @flow(name="push_to_team")
     async def push_to(
         self,
-        target_team: 'Team',
+        target_team: "Team",  # Use string literal for forward reference
         results: Optional[Dict[str, ToolResult]] = None
     ) -> None:
         """Push results to target team based on relationship"""
@@ -176,10 +172,9 @@ class Team(BaseModel):
         self.updated_at = datetime.now()
         logger.info(f"Pushed results to team {target_team.name}")
 
-    @flow(name="pull_from_team")
     async def pull_from(
         self,
-        source_team: 'Team',
+        source_team: "Team",  # Use string literal for forward reference
         tools: Optional[Set[str]] = None
     ) -> None:
         """Pull specific or all results from source team"""
@@ -198,7 +193,6 @@ class Team(BaseModel):
         self.updated_at = datetime.now()
         logger.info(f"Pulled results from team {source_team.name}")
 
-    @task
     async def receive_results(
         self,
         results: Dict[str, ToolResult],
@@ -219,10 +213,9 @@ class Team(BaseModel):
         self.updated_at = datetime.now()
         logger.info(f"Received {len(results)} results in team {self.name}")
 
-    @task
     async def share_results_with(
         self,
-        target_team: 'Team',
+        target_team: "Team",  # Use string literal for forward reference
         tools: Optional[Set[str]] = None
     ) -> None:
         """Share specific or all results with pulling team"""
@@ -236,7 +229,6 @@ class Team(BaseModel):
         await target_team.receive_results(results)
         logger.info(f"Shared results with team {target_team.name}")
 
-    @task
     async def send_message(
         self,
         sender: str,
@@ -405,3 +397,13 @@ class Team(BaseModel):
         # Update timestamp
         self.updated_at = datetime.now()
         logger.info(f"Updated role for member {member_name} to {new_role}")
+
+# Add Prefect decorators after class definition
+Team.add_member = task(Team.add_member)
+Team.add_tool = task(Team.add_tool)
+Team.share_result = flow(name="share_result")(Team.share_result)
+Team.push_to = flow(name="push_to_team")(Team.push_to)
+Team.pull_from = flow(name="pull_from_team")(Team.pull_from)
+Team.receive_results = task(Team.receive_results)
+Team.share_results_with = task(Team.share_results_with)
+Team.send_message = task(Team.send_message)

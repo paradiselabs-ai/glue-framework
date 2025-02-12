@@ -2,11 +2,13 @@
 
 import pytest
 import pytest_asyncio
+import os
 from pathlib import Path
 
 from glue.core.app import GlueApp
 from glue.dsl.parser import parse_glue_file
 from glue.dsl.executor import execute_glue_app
+from glue.core.types import AdhesiveType
 
 @pytest_asyncio.fixture
 async def app():

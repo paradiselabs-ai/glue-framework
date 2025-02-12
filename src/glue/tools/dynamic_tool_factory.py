@@ -5,15 +5,17 @@ with SmolAgents while maintaining GLUE's team and adhesive mechanics.
 """
 
 import asyncio
-from typing import Dict, Any, Optional, List, Union, Callable
+from typing import Dict, Any, Optional, List, Union, Callable, TYPE_CHECKING
 from dataclasses import dataclass
 from datetime import datetime
 
 from ..core.types import AdhesiveType
 from .base import BaseTool
-from ..core.team import Team
 from ..core.model import Model
 from ..core.logger import get_logger
+
+if TYPE_CHECKING:
+    from ..core.team import Team
 
 @dataclass
 class ToolSpec:
@@ -59,7 +61,7 @@ class DynamicToolFactory:
     async def create_tool_from_spec(
         self,
         spec: ToolSpec,
-        team: Optional[Team] = None
+        team: Optional['Team'] = None
     ) -> BaseTool:
         """Create a tool from specification"""
         from smolagents import tool
@@ -99,7 +101,7 @@ class DynamicToolFactory:
     async def create_mcp_server_from_spec(
         self,
         spec: MCPServerSpec,
-        team: Optional[Team] = None
+        team: Optional['Team'] = None
     ) -> Dict[str, BaseTool]:
         """Create MCP server and its tools"""
         from smolagents import SmolAgent
@@ -129,7 +131,7 @@ class DynamicToolFactory:
     async def parse_natural_request(
         self,
         request: str,
-        team: Optional[Team] = None
+        team: Optional['Team'] = None
     ) -> Union[BaseTool, Dict[str, BaseTool], None]:
         """Parse natural language tool creation request"""
         from smolagents import SmolAgent
@@ -176,7 +178,7 @@ class DynamicToolFactory:
         self,
         tool_name: str,
         enhancement_request: str,
-        team: Optional[Team] = None
+        team: Optional['Team'] = None
     ) -> BaseTool:
         """Enhance existing tool based on natural language request"""
         from smolagents import SmolAgent

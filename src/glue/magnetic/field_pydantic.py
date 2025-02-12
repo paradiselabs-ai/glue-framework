@@ -9,8 +9,11 @@ from ..core.pydantic_models import (
     ModelState, TeamContext, ToolResult, PrefectTaskConfig,
     MagneticFlow
 )
+from ..core.team_pydantic import Team
 
 class FlowPattern(BaseModel):
+    class Config:
+        arbitrary_types_allowed = True
     """Model for magnetic flow patterns"""
     name: str = Field(..., description="Pattern name")
     teams: List[str] = Field(..., description="Teams involved in pattern")
@@ -24,6 +27,9 @@ class PatternState(BaseModel):
     active_flows: Set[str] = Field(default_factory=set)
     message_counts: Dict[str, int] = Field(default_factory=dict)
     current_phase: Optional[str] = Field(default=None)
+    
+    class Config:
+        arbitrary_types_allowed = True
 
 class FlowMetrics(BaseModel):
     """Model for flow performance metrics"""
@@ -38,6 +44,10 @@ class DebugInfo(BaseModel):
     active_flows: Set[str] = Field(default_factory=set)
     flow_metrics: Dict[str, Dict[str, float]] = Field(default_factory=dict)
     pattern_states: Dict[str, PatternState] = Field(default_factory=dict)
+    
+    class Config:
+        arbitrary_types_allowed = True
+
 from ..core.types import AdhesiveType
 from ..core.logger import get_logger
 from ..core.team_pydantic import Team
@@ -53,7 +63,7 @@ class FieldState(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     metadata: Dict[str, Any] = Field(default_factory=dict)
-
+    
     class Config:
         arbitrary_types_allowed = True
 
@@ -168,12 +178,6 @@ class MagneticField:
             "throughput": metrics.message_count,
             "uptime": (datetime.now() - metrics.last_active).total_seconds() if metrics.last_active else 0
         }
-
-class DebugInfo(BaseModel):
-    """Debug information for magnetic field"""
-    active_flows: Set[str] = Field(default_factory=set)
-    flow_metrics: Dict[str, Dict[str, float]] = Field(default_factory=dict)
-    pattern_states: Dict[str, PatternState] = Field(default_factory=dict)
 
     @task
     async def add_team(self, team: Team) -> None:

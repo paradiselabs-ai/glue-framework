@@ -11,7 +11,8 @@ from glue.core.pydantic_models import (
     PrefectTaskConfig
 )
 from glue.core.types import AdhesiveType
-from glue.tools import FileHandler, WebSearch
+from glue.tools.file_handler import FileHandlerTool
+from glue.tools.web_search import WebSearchTool
 
 @pytest.fixture
 def team_context():

@@ -12,9 +12,9 @@ from glue.core.pydantic_models import (
     PrefectTaskConfig
 )
 from glue.core.types import AdhesiveType
-from glue.tools.file_handler import FileHandler
-from glue.tools.web_search import WebSearch
-from glue.tools.code_interpreter import CodeInterpreter
+from glue.tools.file_handler import FileHandlerTool
+from glue.tools.web_search import WebSearchTool
+from glue.tools.code_interpreter import CodeInterpreterTool
 
 @pytest.fixture
 def output_dir():
@@ -87,8 +87,8 @@ def research_team(researcher, assistant):
     )
     team.add_model(researcher)
     team.add_model(assistant)
-    team.add_tool(WebSearch())
-    team.add_tool(CodeInterpreter())
+    team.add_tool(WebSearchTool())
+    team.add_tool(CodeInterpreterTool())
     return team
 
 @pytest.fixture
@@ -99,7 +99,7 @@ def docs_team(writer):
         context=TeamContext()
     )
     team.add_model(writer)
-    team.add_tool(FileHandler())
+    team.add_tool(FileHandlerTool())
     return team
 
 @pytest.fixture

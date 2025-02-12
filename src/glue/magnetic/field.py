@@ -1,7 +1,7 @@
 """GLUE Magnetic Field System"""
 
 from datetime import datetime
-from typing import Dict, List, Optional, Type, Callable, Any, Set, TYPE_CHECKING
+from typing import Dict, List, Optional, Type, Callable, Any, Set, TYPE_CHECKING, ClassVar
 from collections import defaultdict
 from pydantic import BaseModel, Field
 from loguru import logger

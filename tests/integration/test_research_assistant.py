@@ -19,10 +19,10 @@ from glue.core.memory import MemoryManager
 from glue.core.workspace import WorkspaceManager
 from glue.core.group_chat import GroupChatManager
 from glue.core.state import StateManager, StateContext
-from glue.core.logger import get_logger, init_logger
+from glue.core.logger import get_logger, setup_logging
 
 # Configure logging
-logger = init_logger(
+logger = setup_logging(
     name="test_research_assistant",
     log_dir=".",
     development=True

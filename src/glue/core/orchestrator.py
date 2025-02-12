@@ -9,7 +9,7 @@ from .team import Team, TeamRole
 from .model import Model
 from .logger import get_logger
 
-logger = get_logger()
+logger = get_logger("orchestrator")
 
 # ==================== Pydantic Models ====================
 class ToolCapabilities(BaseModel):
@@ -68,6 +68,8 @@ class AnalysisResult(BaseModel):
     strategy: Dict[str, ExecutionStrategy] = Field(default_factory=dict, description="Execution strategies")
 
 class WorkflowContext(BaseModel):
+    class Config:
+        arbitrary_types_allowed = True
     """Context for workflow execution"""
     prompt: str = Field(..., description="The prompt to execute")
     teams: Dict[str, Team] = Field(..., description="Available teams")
