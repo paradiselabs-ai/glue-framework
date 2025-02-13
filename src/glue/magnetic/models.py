@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from typing import Dict, List, Set, Any, Optional
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 from ..core.types import AdhesiveType
 
@@ -16,7 +16,8 @@ class FlowConfig(BaseModel):
     enabled: bool = Field(default=True, description="Whether flow is enabled")
     metadata: Dict[str, Any] = Field(default_factory=dict)
     
-    @validator('flow_type')
+    @field_validator('flow_type')
+    @classmethod
     def validate_flow_type(cls, v):
         if v not in {'><', '->', '<-', '<>'}:
             raise ValueError(f'Invalid flow type: {v}')
@@ -118,7 +119,8 @@ class CircuitBreaker(BaseModel):
     last_error: Optional[datetime] = Field(default=None)
     state: str = Field(default="closed")  # closed, open, half-open
     
-    @validator('state')
+    @field_validator('state')
+    @classmethod
     def validate_state(cls, v):
         if v not in {'closed', 'open', 'half-open'}:
             raise ValueError(f'Invalid circuit breaker state: {v}')

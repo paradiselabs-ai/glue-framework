@@ -1,6 +1,6 @@
 """Team Implementation"""
 
-from typing import Dict, Set, Any, Optional, List
+from typing import Dict, Set, Any, Optional, List, TYPE_CHECKING
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -8,8 +8,10 @@ from enum import Enum
 from .types import ToolResult, AdhesiveType
 from .state import StateManager
 from .tool_binding import ToolBinding
-from ..tools.base import BaseTool
 from .model import Model
+
+if TYPE_CHECKING:
+    from ..tools.base import BaseTool
 
 class TeamRole(Enum):
     """Team member roles"""
@@ -56,7 +58,7 @@ class Team:
         name: str,
         models: Optional[Dict[str, Model]] = None,
         members: Optional[Dict[str, TeamMember]] = None,
-        tools: Optional[Dict[str, BaseTool]] = None,
+        tools: Optional[Dict[str, Any]] = None,  # Changed from BaseTool to Any
         shared_results: Optional[Dict[str, ToolResult]] = None,
         state_manager: Optional[StateManager] = None
     ):
@@ -108,7 +110,7 @@ class Team:
         
     async def add_tool(
         self,
-        tool: BaseTool,
+        tool: Any,  # Changed from BaseTool to Any
         members: Optional[List[str]] = None
     ) -> None:
         """Add a tool and optionally assign to specific members"""

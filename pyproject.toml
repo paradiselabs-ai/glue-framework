@@ -57,13 +57,15 @@ glue = "glue.cli:main"
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
 testpaths = ["tests"]
-python_files = ["test_*.py"]
-addopts = "-v --tb=short --cov=glue"
-asyncio_fixture_loop_scope = "function"
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "--cov=src/glue --cov-report=term-missing"
+asyncio_fixture_loop_scope = "function"  # Added to fix the warning
 timeout = 300  # 5 minutes timeout for tests
 
 [tool.coverage.run]
-source = ["glue"]
+source = ["src"]
 omit = [
     "tests/*",
     "setup.py",

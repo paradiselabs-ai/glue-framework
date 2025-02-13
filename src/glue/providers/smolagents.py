@@ -101,10 +101,10 @@ class SmolAgentsProvider(BaseProvider):
                 await tool.import_team_data(self.team.shared_results.get(tool_name))
                 
         # Execute through SmolAgents
-        from smolagents import SmolAgent
-        agent = SmolAgent()
+        from smolagents import ToolCallingAgent
+        agent = ToolCallingAgent()
         smol_tool = await self._convert_tool(tool)
-        result = await agent.execute_tool(smol_tool, input_data)
+        result = await agent.execute(smol_tool, input_data)
         
         # Create result
         tool_result = ToolResult(
@@ -125,14 +125,13 @@ class SmolAgentsProvider(BaseProvider):
     async def _make_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
         """Make request to SmolAgents"""
         try:
-            from smolagents import SmolAgent
-            agent = SmolAgent()
+            from smolagents import ToolCallingAgent
+            agent = ToolCallingAgent()
             
             # Process request through SmolAgents
-            response = await agent.process_request(
-                messages=request_data["messages"],
-                tools=list(self.team.tools.values()),
-                adhesives=[a.name for a in self.available_adhesives]
+            response = await agent.process_message(
+                request_data["messages"],
+                tools=list(self.team.tools.values())
             )
             
             return response
@@ -199,8 +198,8 @@ Available Tools:
             content = response["choices"][0]["message"]["content"]
             
             # Parse natural language into tool intent
-            from smolagents import SmolAgent
-            agent = SmolAgent()
+            from smolagents import ToolCallingAgent
+            agent = ToolCallingAgent()
             
             # First check for tool creation request
             tool = await self.handle_tool_creation_request(content)
@@ -209,13 +208,9 @@ Available Tools:
             
             # Then try to parse tool usage intent
             try:
-                intent = await agent.parse_intent(
-                    content,
-                    available_tools=list(self.team.tools.keys()),
-                    available_adhesives=[a.name for a in self.available_adhesives]
-                )
+                intent = await agent.parse_message(content)
                 
-                if intent:
+                if intent and "tool" in intent:
                     # Execute tool
                     result = await self.use_tool(
                         tool_name=intent["tool"],
@@ -237,28 +232,15 @@ Available Tools:
         """Convert GLUE tool to SmolAgents tool"""
         from smolagents import Tool
         
-        # Create SmolAgents tool class factory
-        def create_converted_tool_class():
-            class ConvertedTool(Tool):
-                name = tool.name
-                description = tool.description
-                inputs = {
-                    "input": {
-                        "type": "string",
-                        "description": "Input for the tool"
-                    }
-                }
-                output_type = "string"
+        class ConvertedTool(Tool):
+            name = tool.name
+            description = tool.description
+            
+            async def forward(self, input: str) -> str:
+                """Execute the GLUE tool"""
+                return await tool.execute(input)
                 
-                async def forward(self, input: str) -> str:
-                    """Execute the GLUE tool"""
-                    return await tool.execute(input)
-            return ConvertedTool
-        
-        # Create SmolAgents tool instance
-        ConvertedTool = create_converted_tool_class()
-        converted = ConvertedTool()
-        return converted
+        return ConvertedTool()
             
     async def _get_mcp_schema(self, server: str, tool: str) -> Dict[str, Any]:
         """Get tool schema from MCP server"""

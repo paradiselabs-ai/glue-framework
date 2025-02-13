@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from typing import Dict, List, Set, Any, Optional, Union
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from enum import Enum
 
 from .types import AdhesiveType, IntentAnalysis
@@ -48,7 +48,8 @@ class ToolBinding(BaseModel):
     permissions: List[str] = Field(default_factory=list)
     config: Dict[str, Any] = Field(default_factory=dict)
 
-    @validator('adhesive')
+    @field_validator('adhesive')
+    @classmethod
     def validate_adhesive(cls, v):
         if v not in AdhesiveType:
             raise ValueError(f'Invalid adhesive type: {v}')
@@ -69,8 +70,7 @@ class ModelState(BaseModel):
     attracted_to: Set[str] = Field(default_factory=set)
     repelled_by: Set[str] = Field(default_factory=set)
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class SmolAgentsTool(BaseModel):
     """SmolAgents tool wrapper"""
@@ -81,8 +81,7 @@ class SmolAgentsTool(BaseModel):
     forward_func: Any = Field(..., description="Tool implementation function")
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 class PrefectTaskConfig(BaseModel):
     """Configuration for Prefect task integration"""
@@ -101,7 +100,8 @@ class MagneticFlow(BaseModel):
     prefect_config: Optional[PrefectTaskConfig] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
-    @validator('flow_type')
+    @field_validator('flow_type')
+    @classmethod
     def validate_flow_type(cls, v):
         if v not in {'push', 'pull', 'repel'}:
             raise ValueError(f'Invalid flow type: {v}')
