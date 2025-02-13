@@ -73,7 +73,7 @@ class GlueParser:
         self.models: Dict[str, ModelConfig] = {}
         self.tools: Dict[str, ToolConfig] = {}
         self.workflow: Optional[WorkflowConfig] = None
-        self.logger = get_logger()
+        self.logger = get_logger("glue_parser")
     
     def parse(self, content: str) -> GlueAppConfig:
         """Parse GLUE DSL content"""

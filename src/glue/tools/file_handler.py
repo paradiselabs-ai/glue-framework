@@ -143,7 +143,7 @@ class FileHandlerTool(BaseTool, SmolTool):
         )
         
         # Initialize logger and binding
-        self.logger = get_logger()
+        self.logger = get_logger(name)
         self.logger.debug(f"Initialized file handler with base_path: {self.base_path}")
         self.binding = ToolBinding(self)
 

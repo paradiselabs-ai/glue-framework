@@ -177,7 +177,7 @@ class CodeInterpreterTool(Tool):
         self.tags = {"code_interpreter", "execute", "sandbox"}
         
         # Initialize logger
-        self.logger = get_logger()
+        self.logger = get_logger(name)
         
         # Initialize configuration from tool_specific_config
         config = self.config.tool_specific_config

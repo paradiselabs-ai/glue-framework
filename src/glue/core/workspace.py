@@ -31,7 +31,7 @@ class WorkspaceManager:
         """Initialize workspace manager"""
         self.base_dir = Path(base_dir)
         self.workspaces_file = self.base_dir / "workspaces.json"
-        self.logger = get_logger()
+        self.logger = get_logger("workspace_manager")
         self._load_workspaces()
     
     def __enter__(self):

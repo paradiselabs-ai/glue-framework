@@ -65,7 +65,7 @@ class GlueExecutor:
         
         # Initialize logger
         self._setup_logger()
-        self.logger = get_logger()
+        self.logger = get_logger("glue_executor")
         
         # Initialize workspace manager and get workspace path
         self.workspace_manager = WorkspaceManager()
@@ -508,7 +508,7 @@ class GlueExecutor:
 
 def _print_app_summary(app: GlueApp, executor: GlueExecutor):
     """Print summary of app structure"""
-    logger = get_logger()
+    logger = get_logger("glue_app_summary")
     
     # Log app initialization with user_facing flag for minimal output
     logger.info(f"\n{app.name} is ready.", extra={"user_facing": True})
