@@ -36,9 +36,9 @@ class ToolInput(BaseModel):
     @field_validator("type")
     @classmethod
     def validate_type(cls, v: str) -> str:
-        valid_types = {"string", "number", "boolean", "object", "array"}
-        if v not in valid_types:
-            raise ValueError(f"Invalid type: {v}. Must be one of {valid_types}")
+        from smolagents import AUTHORIZED_TYPES
+        if v not in AUTHORIZED_TYPES:
+            raise ValueError(f"Invalid type: {v}. Must be one of {AUTHORIZED_TYPES}")
         return v
 
 
@@ -53,6 +53,7 @@ class ToolSpec(BaseModel):
         default=None, description="Allowed adhesive types"
     )
     team_name: Optional[str] = Field(default=None, description="Team name")
+    function: Optional[Callable] = Field(default=None, description="Tool implementation function")
 
     @field_validator("name")
     @classmethod
@@ -120,12 +121,30 @@ class DynamicToolFactory:
         class DynamicTool(Tool):
             name = spec.name
             description = spec.description
+            inputs = spec.inputs or {
+                "text": {
+                    "type": "string",
+                    "description": "Input text to format"
+                }
+            }
+            output_type = "string"
             
-            async def forward(self, input: str) -> str:
+            async def forward(self, *args, **kwargs) -> str:
                 """Execute the tool implementation"""
                 if function:
-                    return await function(input)
-                return input
+                    # Get the first parameter name from the function signature
+                    import inspect
+                    sig = inspect.signature(function)
+                    param_name = next(iter(sig.parameters))
+                    
+                    # Extract value from kwargs based on parameter name
+                    if param_name in kwargs:
+                        return await function(**{param_name: kwargs[param_name]})
+                    elif args:
+                        return await function(**{param_name: args[0]})
+                    else:
+                        raise ValueError(f"Missing required parameter: {param_name}")
+                return kwargs.get('input', '')
         
         tool = DynamicTool()
         agent = ToolCallingAgent(tools=[tool], model=Model())
@@ -136,11 +155,22 @@ class DynamicToolFactory:
         self, name: str, description: str, function: Callable, team: Optional[Any] = None
     ) -> BaseTool:
         """Create a tool from specification with Prefect orchestration"""
+        # Extract first parameter name from function
+        import inspect
+        sig = inspect.signature(function)
+        param_name = next(iter(sig.parameters))
+        
         spec = ToolSpec(
             name=name,
             description=description,
-            inputs={"input": ToolInput(type="string", description="Tool input")},
+            inputs={
+                param_name: ToolInput(
+                    type="string",
+                    description=f"Input for {param_name}"
+                )
+            },
             output_type="string",
+            function=function
         )
         return await self.create_tool_from_spec(spec, team)
 
@@ -158,13 +188,25 @@ class DynamicToolFactory:
             # Create SmolAgents tool with function if provided
             dynamic_tool = await self.create_smol_tool(spec, function=getattr(spec, 'function', None))
 
-            # Wrap in GLUE BaseTool
-            tool_instance = BaseTool(
+            # Create tool class
+            class CustomTool(BaseTool):
+                name = spec.name
+                description = spec.description
+                inputs = spec.inputs
+                output_type = spec.output_type
+                
+                async def execute(self, input_data: Any) -> Any:
+                    # Convert input_data to kwargs based on first input key
+                    input_key = next(iter(spec.inputs))
+                    kwargs = {input_key: input_data}
+                    return await dynamic_tool(**kwargs)
+            
+            # Create instance with required name and config
+            tool_instance = CustomTool(
                 name=spec.name,
-                description=spec.description,
-                execute=dynamic_tool,
-                inputs=spec.inputs,
-                output_type=spec.output_type,
+                config={
+                    "required_permissions": [],  # Default to no special permissions required
+                }
             )
 
             # Add to team if provided
@@ -369,11 +411,20 @@ class DynamicToolFactory:
         self, tool_spec: Dict[str, Any], team: Optional[Any] = None
     ) -> BaseTool:
         """Create a single tool as a parallel task"""
+        # Extract first parameter name from function if provided
+        param_name = tool_spec.get("name", "input").split("_")[0]
+        
         spec = ToolSpec(
             name=tool_spec["name"],
             description=tool_spec["description"],
-            inputs={"input": ToolInput(type="string", description="Tool input")},
+            inputs={
+                param_name: ToolInput(
+                    type="string",
+                    description=f"Input for {param_name}"
+                )
+            },
             output_type="string",
+            function=tool_spec.get("function")  # Pass function if provided
         )
         return await self.create_tool_from_spec(spec, team)
 
@@ -408,12 +459,22 @@ class DynamicToolFactory:
         async def retrying_function(*args, **kwargs):
             return await function(*args, **kwargs)
 
+        # Extract first parameter name from function
+        import inspect
+        sig = inspect.signature(function)
+        param_name = next(iter(sig.parameters))
+        
         spec = ToolSpec(
             name=name,
             description=description,
-            inputs={"input": ToolInput(type="string", description="Tool input")},
+            inputs={
+                param_name: ToolInput(
+                    type="string",
+                    description=f"Input for {param_name}"
+                )
+            },
             output_type="string",
-            function=function,  # Store function in spec
+            function=function  # Store function in spec
         )
 
         tool = await self.create_tool_from_spec(spec, team)
@@ -430,11 +491,22 @@ class DynamicToolFactory:
         team: Optional[Any] = None,
     ) -> BaseTool:
         """Create a tool that maintains state"""
+        # Extract first parameter name from function
+        import inspect
+        sig = inspect.signature(function)
+        param_name = next(iter(sig.parameters))
+        
         spec = ToolSpec(
             name=name,
             description=description,
-            inputs={"input": ToolInput(type="string", description="Tool input")},
+            inputs={
+                param_name: ToolInput(
+                    type="string",
+                    description=f"Input for {param_name}"
+                )
+            },
             output_type="string",
+            function=function  # Store function in spec
         )
 
         tool = await self.create_tool_from_spec(spec, team)
@@ -458,11 +530,25 @@ class DynamicToolFactory:
             return result
 
         # Create chain tool
+        # Extract first parameter name from first tool's function
+        import inspect
+        first_tool = created_tools[0]
+        if hasattr(first_tool, 'function') and first_tool.function:
+            sig = inspect.signature(first_tool.function)
+            param_name = next(iter(sig.parameters))
+        else:
+            param_name = "input"
+            
         chain_spec = ToolSpec(
             name=f"chain_{created_tools[0].name}",
             description=f"Chain of tools: {', '.join(t.name for t in created_tools)}",
-            inputs={"input": ToolInput(type="string", description="Chain input")},
-            output_type="string",
+            inputs={
+                param_name: ToolInput(
+                    type="string",
+                    description=f"Input for chain of tools"
+                )
+            },
+            output_type="string"
         )
 
         chain_tool = await self.create_tool_from_spec(chain_spec, team)
