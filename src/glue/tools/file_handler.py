@@ -10,8 +10,8 @@ import asyncio
 from enum import Enum
 from pathlib import Path
 from pydantic import BaseModel, Field
-from smolagents import Tool as SmolTool
-from .base import BaseTool
+from prefect import task, flow
+from smolagents.tools import Tool
 from .base import ToolConfig, ToolPermission
 from ..core.types import AdhesiveType
 from ..core.logger import get_logger
@@ -76,24 +76,15 @@ class FileOperationResult(BaseModel):
     content: Optional[Any] = Field(None, description="File content for read operations")
 
 # ==================== File Handler Tool ====================
-class FileHandlerTool(BaseTool, SmolTool):
-    """Tool for handling file operations"""
+class FileHandlerTool(Tool):
+    """Tool for handling file operations with Prefect orchestration and Pydantic validation"""
     
-    def __init__(
-        self,
-        name: str = "file_handler",
-        description: str = "Handles file operations with format support",
-        base_path: Optional[str] = None,
-        allowed_formats: Optional[List[str]] = None,
-        workspace_dir: Optional[str] = None,
-        binding_type: Optional[AdhesiveType] = None,
-        shared_resources: Optional[List[str]] = None,
-        **kwargs
-    ):
-        # Initialize SmolAgents tool attributes
-        self.name = name
-        self.description = description
-        self.inputs = {
+    # Required SmolAgents class attributes
+    name = "file_handler"
+    description = "Handles file operations with format support"
+    skip_forward_signature_validation = True  # Using Prefect flows
+    # SmolAgents interface
+    inputs = {
             "action": {
                 "type": "string",
                 "description": "The action to perform (read/write/append/delete)",
@@ -109,21 +100,34 @@ class FileHandlerTool(BaseTool, SmolTool):
                 "nullable": True
             }
         }
-        self.output_type = "string"
+    output_type = "string"
+
+    def __init__(
+        self,
+        base_path: Optional[str] = None,
+        allowed_formats: Optional[List[str]] = None,
+        workspace_dir: Optional[str] = None,
+        binding_type: Optional[AdhesiveType] = None,
+        shared_resources: Optional[List[str]] = None,
+        **kwargs
+    ):
+        super().__init__()
         
-        # Initialize GLUE tool config
+        # Initialize GLUE tool config with Pydantic validation
+        config = FileHandlerConfig(
+            workspace_dir=workspace_dir,
+            base_path=base_path,
+            allowed_formats=allowed_formats,
+            shared_resources=shared_resources or ["file_content", "file_path", "file_format"]
+        )
+        
         self.config = ToolConfig(
             required_permissions=[
                 ToolPermission.FILE_SYSTEM,  # For workspace access
                 ToolPermission.READ,         # For reading files
                 ToolPermission.WRITE         # For writing files
             ],
-            tool_specific_config={
-                "workspace_dir": workspace_dir,
-                "base_path": base_path,
-                "allowed_formats": allowed_formats,
-                "shared_resources": shared_resources or ["file_content", "file_path", "file_format"]
-            }
+            tool_specific_config=config.model_dump()
         )
         self.adhesive_type = binding_type or AdhesiveType.VELCRO
         self.tags = {"file_handler", "io", "filesystem"}
@@ -143,7 +147,7 @@ class FileHandlerTool(BaseTool, SmolTool):
         )
         
         # Initialize logger and binding
-        self.logger = get_logger(name)
+        self.logger = get_logger(self.name)
         self.logger.debug(f"Initialized file handler with base_path: {self.base_path}")
         self.binding = ToolBinding(self)
 
@@ -371,37 +375,79 @@ class FileHandlerTool(BaseTool, SmolTool):
             # Default to write for research summaries and other content
             return "write", file_path, content_str
 
+    @task(name="validate_operation", retries=2)
+    async def _validate_operation(
+        self,
+        action: str,
+        path: str,
+        content: Optional[str] = None
+    ) -> Tuple[FileOperationInput, Path, str]:
+        """Validate operation inputs with Prefect task"""
+        # Validate input using Pydantic
+        operation_input = FileOperationInput(
+            action=FileOperation(action),
+            path=path,
+            content=content
+        )
+        self.logger.debug(f"Validating operation: {operation_input.model_dump_json()}")
+        
+        # Validate and resolve path
+        validated_path = self._validate_path(operation_input.path)
+        format_handler = self._get_format_handler(validated_path)
+        
+        return operation_input, validated_path, format_handler
+
+    @task(name="execute_operation", retries=3, retry_delay_seconds=1)
+    async def _execute_operation(
+        self,
+        operation_input: FileOperationInput,
+        validated_path: Path,
+        format_handler: str
+    ) -> FileOperationResult:
+        """Execute file operation with Prefect task"""
+        # Store operation details in binding
+        self.binding.store_resource("operation", operation_input.action.value)
+        self.binding.store_resource("file_path", str(validated_path))
+        self.binding.store_resource("format", format_handler)
+        
+        # Execute operation
+        result = None
+        if operation_input.action == FileOperation.READ:
+            result = await self._read_file(validated_path, format_handler)
+            self.binding.store_resource("file_content", result.content)
+        elif operation_input.action == FileOperation.WRITE:
+            result = await self._write_file(validated_path, operation_input.content, format_handler, mode='w')
+        elif operation_input.action == FileOperation.APPEND:
+            result = await self._write_file(validated_path, operation_input.content, format_handler, mode='a')
+        elif operation_input.action == FileOperation.DELETE:
+            result = await self._delete_file(validated_path)
+            
+        return result
+
+    @flow(
+        name="file_handler_flow",
+        description="Execute file operations with validation and retries",
+        retries=3,
+        retry_delay_seconds=1,
+        persist_result=True,
+        version="1.0.0"
+    )
     async def forward(self, action: str, path: str, content: Optional[str] = None) -> str:
-        """Execute file operation"""
+        """Execute file operation as a Prefect flow"""
         try:
-            # Validate input using Pydantic
-            operation_input = FileOperationInput(
-                action=FileOperation(action),
+            # Validate operation
+            operation_input, validated_path, format_handler = await self._validate_operation(
+                action=action,
                 path=path,
                 content=content
             )
-            self.logger.debug(f"Executing operation: {operation_input.model_dump_json()}")
-            
-            # Validate and resolve path
-            validated_path = self._validate_path(operation_input.path)
-            format_handler = self._get_format_handler(validated_path)
-            
-            # Store operation details in binding
-            self.binding.store_resource("operation", operation_input.action.value)
-            self.binding.store_resource("file_path", str(validated_path))
-            self.binding.store_resource("format", format_handler)
             
             # Execute operation
-            result = None
-            if operation_input.action == FileOperation.READ:
-                result = await self._read_file(validated_path, format_handler)
-                self.binding.store_resource("file_content", result.content)
-            elif operation_input.action == FileOperation.WRITE:
-                result = await self._write_file(validated_path, operation_input.content, format_handler, mode='w')
-            elif operation_input.action == FileOperation.APPEND:
-                result = await self._write_file(validated_path, operation_input.content, format_handler, mode='a')
-            elif operation_input.action == FileOperation.DELETE:
-                result = await self._delete_file(validated_path)
+            result = await self._execute_operation(
+                operation_input=operation_input,
+                validated_path=validated_path,
+                format_handler=format_handler
+            )
 
             # Convert result to string as required by SmolAgents
             if result:

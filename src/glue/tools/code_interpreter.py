@@ -20,10 +20,12 @@ import re
 import importlib.util
 import traceback
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type, Tuple, Union
 from dataclasses import dataclass
 
-from smolagents import Tool
+from smolagents.tools import Tool
+from pydantic import BaseModel, Field
+from prefect import task, flow
 from .base import ToolConfig, ToolPermission
 from ..core.types import AdhesiveType
 from ..core.context import ContextState, ComplexityLevel
@@ -78,31 +80,30 @@ DANGEROUS_IMPORTS = {
     "socket": {"name": "socket", "description": "Network operations", "level": "suspicious"}
 }
 
-# ==================== Code Result ====================
-@dataclass
-class CodeResult:
-    """Result from code execution"""
-    output: str
-    error: Optional[str] = None
-    files: List[str] = None
-    success: bool = True
-    error_type: Optional[str] = None
-    error_context: Optional[Dict[str, Any]] = None
-    suggestions: Optional[List[str]] = None
-    analysis: Optional[Dict[str, Any]] = None
-    resource_usage: Optional[Dict[str, Any]] = None
+# ==================== Pydantic Models ====================
+class CodeExecutionConfig(BaseModel):
+    """Configuration for code execution"""
+    workspace_dir: Optional[str] = Field(None, description="Working directory for code execution")
+    supported_languages: Optional[List[str]] = Field(None, description="List of supported languages")
+    enable_security_checks: bool = Field(default=True, description="Enable security validation")
+    enable_code_analysis: bool = Field(default=True, description="Enable code analysis")
+    enable_error_suggestions: bool = Field(default=True, description="Enable error suggestions")
+    max_memory_mb: int = Field(default=500, description="Maximum memory usage in MB")
+    max_execution_time: int = Field(default=30, description="Maximum execution time in seconds")
+    max_file_size_kb: int = Field(default=10240, description="Maximum file size in KB")
+    max_subprocess_count: int = Field(default=2, description="Maximum number of subprocesses")
 
-    def __post_init__(self):
-        if self.files is None:
-            self.files = []
-        if self.error_context is None:
-            self.error_context = {}
-        if self.suggestions is None:
-            self.suggestions = []
-        if self.analysis is None:
-            self.analysis = {}
-        if self.resource_usage is None:
-            self.resource_usage = {}
+class CodeExecutionResult(BaseModel):
+    """Result from code execution"""
+    output: str = Field(..., description="Output from code execution")
+    error: Optional[str] = Field(None, description="Error message if execution failed")
+    files: List[str] = Field(default_factory=list, description="Generated files")
+    success: bool = Field(default=True, description="Whether execution succeeded")
+    error_type: Optional[str] = Field(None, description="Type of error if any")
+    error_context: Dict[str, Any] = Field(default_factory=dict, description="Error context")
+    suggestions: List[str] = Field(default_factory=list, description="Error suggestions")
+    analysis: Dict[str, Any] = Field(default_factory=dict, description="Code analysis results")
+    resource_usage: Dict[str, Any] = Field(default_factory=dict, description="Resource usage metrics")
 
 # ==================== Code Interpreter Tool ====================
 class CodeInterpreterTool(Tool):
@@ -117,25 +118,15 @@ class CodeInterpreterTool(Tool):
     - Adhesive-based persistence
     """
     
-    def __init__(
-        self,
-        name: str = "code_interpreter",
-        description: str = "Executes code in a sandboxed environment",
-        workspace_dir: Optional[str] = None,
-        supported_languages: Optional[List[str]] = None,
-        adhesive_type: Optional[AdhesiveType] = None,
-        enable_security_checks: bool = True,
-        enable_code_analysis: bool = True,
-        enable_error_suggestions: bool = True,
-        max_memory_mb: int = 500,
-        max_execution_time: int = 30,
-        max_file_size_kb: int = 10240,
-        max_subprocess_count: int = 2
-    ):
-        # Initialize SmolAgents tool attributes
-        self.name = name
-        self.description = description
-        self.inputs = {
+    """Advanced code interpreter tool with security, analysis, and orchestration features"""
+    
+    # Required SmolAgents class attributes
+    name = "code_interpreter"
+    description = "Executes code in a sandboxed environment with security and analysis features"
+    skip_forward_signature_validation = True  # Using Prefect flows
+    
+    # SmolAgents interface
+    inputs = {
             "code": {
                 "type": "string",
                 "description": "The code to execute"
@@ -151,7 +142,24 @@ class CodeInterpreterTool(Tool):
                 "nullable": True
             }
         }
-        self.output_type = "string"
+    output_type = "string"
+
+    def __init__(
+        self,
+        workspace_dir: Optional[str] = None,
+        supported_languages: Optional[List[str]] = None,
+        adhesive_type: Optional[AdhesiveType] = None,
+        config: Optional[CodeExecutionConfig] = None,
+        **kwargs
+    ):
+        super().__init__()
+        
+        # Initialize configuration with Pydantic validation
+        self.execution_config = config or CodeExecutionConfig(
+            workspace_dir=workspace_dir,
+            supported_languages=supported_languages,
+            **kwargs
+        )
         
         # Initialize GLUE tool config
         self.config = ToolConfig(
@@ -161,23 +169,13 @@ class CodeInterpreterTool(Tool):
                 ToolPermission.READ,  # For reading files
                 ToolPermission.WRITE  # For writing temp files
             ],
-            tool_specific_config={
-                "enable_security_checks": enable_security_checks,
-                "enable_code_analysis": enable_code_analysis,
-                "enable_error_suggestions": enable_error_suggestions,
-                "max_memory_mb": max_memory_mb,
-                "max_execution_time": max_execution_time,
-                "max_file_size_kb": max_file_size_kb,
-                "max_subprocess_count": max_subprocess_count,
-                "supported_languages": supported_languages,
-                "workspace_dir": workspace_dir
-            }
+            tool_specific_config=self.execution_config.model_dump()
         )
         self.adhesive_type = adhesive_type
         self.tags = {"code_interpreter", "execute", "sandbox"}
         
         # Initialize logger
-        self.logger = get_logger(name)
+        self.logger = get_logger(self.name)
         
         # Initialize configuration from tool_specific_config
         config = self.config.tool_specific_config
@@ -226,10 +224,14 @@ class CodeInterpreterTool(Tool):
                 
         return has_code_markers
 
-    async def forward(self, code: str, language: Optional[str] = None, timeout: Optional[float] = None) -> str:
-        """Execute code with automatic language detection and validation"""
-        context = None  # Context is now handled internally
-        
+    @task(name="prepare_execution", retries=2)
+    async def _prepare_execution(
+        self,
+        code: str,
+        language: Optional[str],
+        context: Optional[ContextState]
+    ) -> Tuple[str, str, Dict[str, Any]]:
+        """Prepare code execution with Prefect task"""
         # Set default limits
         limits = {
             "memory_mb": self.max_memory_mb,
@@ -242,43 +244,46 @@ class CodeInterpreterTool(Tool):
         if self.enable_security_checks and context:
             validation = await self.validate_code(code, context)
             if not validation["valid"]:
-                return {
-                    "success": False,
-                    "error": "Code validation failed",
-                    "validation": validation
-                }
+                raise ValueError(f"Code validation failed: {validation}")
             
             # Update limits based on context
             context_limits = await self.get_resource_limits(context)
             limits.update(context_limits)
-            
-        # Apply timeout limit
-        timeout = min(timeout or self.max_execution_time, limits["time_seconds"])
-
+        
         # Infer language if not provided
         if not language:
             language = await self.detect_language(code) if context else self._infer_language(code)
-            print(f"Inferred language: {language}")
+            self.logger.debug(f"Inferred language: {language}")
         
-        # Clean up code
-        code = self._clean_code(code, language)
-        print(f"Cleaned code:\n{code}")
-
         if language not in self.supported_languages:
             raise ValueError(
                 f"Unsupported language: {language}. "
                 f"Supported: {list(self.supported_languages.keys())}"
             )
+        
+        # Clean up code
+        code = self._clean_code(code, language)
+        self.logger.debug(f"Cleaned code:\n{code}")
+        
+        return code, language, limits
 
+    @task(name="execute_code", retries=3, retry_delay_seconds=1)
+    async def _execute_code(
+        self,
+        code: str,
+        language: str,
+        timeout: float,
+        limits: Dict[str, Any]
+    ) -> CodeExecutionResult:
+        """Execute code with Prefect task"""
         lang_config = self.supported_languages[language]
-        timeout = timeout or lang_config["timeout"]
-
+        
         # Create temporary file
         temp_file = None
         try:
             # Create workspace directory if needed
             os.makedirs(self.workspace_dir, exist_ok=True)
-        
+            
             # Create and write temp file
             temp_file = tempfile.NamedTemporaryFile(
                 suffix=f".{lang_config['extension']}",
@@ -289,7 +294,7 @@ class CodeInterpreterTool(Tool):
             temp_file.write(code)
             temp_file.close()
             self._temp_files.append(temp_file.name)
-
+            
             # Execute code
             process = await asyncio.create_subprocess_exec(
                 lang_config["command"],
@@ -297,7 +302,7 @@ class CodeInterpreterTool(Tool):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
-
+            
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
@@ -310,71 +315,111 @@ class CodeInterpreterTool(Tool):
                         await process.wait()
                     except:
                         pass
-                raise TimeoutError(
-                    f"Code execution timed out after {timeout} seconds"
-                )
-
+                raise TimeoutError(f"Code execution timed out after {timeout} seconds")
+            
             stdout_str = stdout.decode().strip()
             stderr_str = stderr.decode().strip()
-
-            # Process execution results
-            result = {
-                "success": process.returncode == 0,
-                "output": stdout_str,
-                "error": stderr_str if stderr_str else None,  # Only include error if present
-                "language": language,
-                "execution_info": {
+            
+            return CodeExecutionResult(
+                output=stdout_str,
+                error=stderr_str if stderr_str else None,
+                success=process.returncode == 0,
+                files=[temp_file.name],
+                execution_info={
                     "exit_code": process.returncode,
                     "time_limit": timeout,
-                    "memory_limit": limits["memory_mb"] if self.enable_security_checks else None
+                    "memory_limit": limits["memory_mb"]
                 }
-            }
+            )
+            
+        except Exception as e:
+            return CodeExecutionResult(
+                output="",
+                error=str(e),
+                success=False,
+                files=[temp_file.name] if temp_file else []
+            )
 
-            # Add analysis if enabled and context provided
-            if self.enable_code_analysis and context:
-                # Get code complexity
-                complexity = await self.analyze_complexity(code)
-                result["analysis"] = {"complexity": complexity.name}
-                
-                # Add security analysis if enabled
-                if self.enable_security_checks:
-                    security = await self.assess_security(code)
-                    result["analysis"]["security"] = {
-                        "level": security["level"],
-                        "concerns": security["concerns"] if security["concerns"] else None
-                    }
+    @task(name="analyze_result", retries=2)
+    async def _analyze_result(
+        self,
+        result: CodeExecutionResult,
+        code: str,
+        context: Optional[ContextState]
+    ) -> CodeExecutionResult:
+        """Analyze execution result with Prefect task"""
+        if self.enable_code_analysis and context:
+            # Get code complexity
+            complexity = await self.analyze_complexity(code)
+            result.analysis["complexity"] = complexity.name
+            
+            # Add security analysis if enabled
+            if self.enable_security_checks:
+                security = await self.assess_security(code)
+                result.analysis["security"] = {
+                    "level": security["level"],
+                    "concerns": security["concerns"] if security["concerns"] else None
+                }
+            
+            # Add suggestions if execution failed
+            if not result.success and self.enable_error_suggestions:
+                result.suggestions = self._generate_error_suggestions(result.error or "")
+                # Add context-specific suggestions for moderate/complex code
+                if context.complexity >= ComplexityLevel.MODERATE:
+                    result.suggestions.extend([
+                        "Consider breaking down complex operations",
+                        "Add more error handling",
+                        "Use logging for debugging"
+                    ])
+        
+        return result
 
-                # Add suggestions if execution failed
-                if not result["success"] and self.enable_error_suggestions:
-                    result["suggestions"] = self._generate_error_suggestions(stderr_str)
-                    # Add context-specific suggestions for moderate/complex code
-                    if context.complexity >= ComplexityLevel.MODERATE:
-                        result["suggestions"].extend([
-                            "Consider breaking down complex operations",
-                            "Add more error handling",
-                            "Use logging for debugging"
-                        ])
-
+    @flow(
+        name="code_interpreter_flow",
+        description="Execute code with validation, analysis, and error handling",
+        retries=3,
+        retry_delay_seconds=1,
+        persist_result=True,
+        version="1.0.0"
+    )
+    async def forward(
+        self,
+        code: str,
+        language: Optional[str] = None,
+        timeout: Optional[float] = None
+    ) -> str:
+        """Execute code as a Prefect flow"""
+        try:
+            # Prepare execution
+            code, language, limits = await self._prepare_execution(code, language, None)
+            
+            # Apply timeout limit
+            timeout = min(timeout or self.max_execution_time, limits["time_seconds"])
+            
+            # Execute code
+            result = await self._execute_code(code, language, timeout, limits)
+            
+            # Analyze result
+            result = await self._analyze_result(result, code, None)
+            
             # Convert result to string as required by SmolAgents
-            if isinstance(result, dict):
-                output = []
-                if result.get("output"):
-                    output.append(result["output"])
-                if result.get("error"):
-                    output.append(f"Error: {result['error']}")
-                if result.get("suggestions"):
-                    output.append("\nSuggestions:")
-                    output.extend(f"- {s}" for s in result["suggestions"])
-                return "\n".join(output)
-            return str(result)
-
-        except TimeoutError:
+            output = []
+            if result.output:
+                output.append(result.output)
+            if result.error:
+                output.append(f"Error: {result.error}")
+            if result.suggestions:
+                output.append("\nSuggestions:")
+                output.extend(f"- {s}" for s in result.suggestions)
+            return "\n".join(output)
+            
+        except TimeoutError as e:
             suggestions = [
                 "Check for infinite loops",
                 "Add timeout handling",
                 "Consider optimizing long-running operations"
             ]
-            return f"Error: Code execution timed out after {timeout} seconds\n\nSuggestions:\n" + "\n".join(f"- {s}" for s in suggestions)
+            return f"Error: {str(e)}\n\nSuggestions:\n" + "\n".join(f"- {s}" for s in suggestions)
             
         except Exception as e:
             error_msg = str(e)
@@ -384,11 +429,6 @@ class CodeInterpreterTool(Tool):
             if suggestions:
                 output.append("\nSuggestions:")
                 output.extend(f"- {s}" for s in suggestions)
-                
-            # Add traceback for debugging
-            if context and context.complexity >= ComplexityLevel.MODERATE:
-                output.append("\nTraceback:")
-                output.append(traceback.format_exc())
             
             return "\n".join(output)
 
