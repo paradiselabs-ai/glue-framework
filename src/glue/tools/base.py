@@ -30,30 +30,39 @@ class ToolData(BaseModel):
 class BaseTool(Tool):
     """Base class for all GLUE tools"""
     
-    def __init__(self, name: str, config: Optional[Dict[str, Any]] = None):
-        # Set required attributes before super().__init__ to satisfy smolagents validation
-        self.name = name
-        self.description = "Base GLUE tool"  # Default description
-        super().__init__()  # No args needed since we set attributes directly
+    def __init__(self, name: Optional[str] = None, config: Optional[Dict[str, Any]] = None):
+        # Initialize SmolAgents Tool first
+        super().__init__()
+        
+        # Set tool name if provided, otherwise use class attribute
+        self.name = name or getattr(self, 'name', self.__class__.__name__)
+        
+        # Set description if not already set by class
+        if not hasattr(self, 'description'):
+            self.description = getattr(self, 'tool_description', "Base GLUE tool")
         
         # Add validated config wrapper
         self.config = ToolConfig(**(config or {}))
         
-        # Set up SmolAgents interface
-        self.inputs = {
-            "input_data": {
-                "type": "string",
-                "description": "Primary input for the tool"
-            },
-            "params": {
-                "type": "object",
-                "description": "Additional parameters",
-                "optional": True
+        # Set up SmolAgents interface if not already set by class
+        if not hasattr(self, 'inputs'):
+            self.inputs = {
+                "input_data": {
+                    "type": "string",
+                    "description": "Primary input for the tool"
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Additional parameters",
+                    "optional": True,
+                    "nullable": True,
+                    "default": None
+                }
             }
-        }
-        self.output_type = "string"
+        if not hasattr(self, 'output_type'):
+            self.output_type = "string"
         
-        logger.debug(f"Initialized tool {name} with config: {self.config}")
+        logger.debug(f"Initialized tool {self.name} with config: {self.config}")
         
     async def forward(self, **kwargs) -> str:
         """Execute the tool with the given input"""

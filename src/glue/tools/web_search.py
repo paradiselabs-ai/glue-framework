@@ -3,8 +3,9 @@
 from typing import Any, Dict, Optional, List
 from pydantic import BaseModel, Field
 from prefect import task, flow
-from smolagents.tools import Tool
-from .base import ToolConfig, ToolPermission
+from smolagents.tools import Tool, AUTHORIZED_TYPES
+from smolagents.agents import ToolCallingAgent
+from .base import BaseTool, ToolConfig, ToolPermission
 from ..core.types import AdhesiveType
 
 # Pydantic models for validation
@@ -20,10 +21,10 @@ class SearchConfig(BaseModel):
     timeout: float = Field(default=30.0, description="Search timeout in seconds")
     retry_count: int = Field(default=3, description="Number of retry attempts")
 
-class WebSearchTool(Tool):
+class WebSearchTool(BaseTool):
     """Tool for performing web searches with Prefect orchestration and Pydantic validation"""
     
-    # Required SmolAgents class attributes
+    # SmolAgents interface
     name = "web_search"
     description = "Search the web for information"
     skip_forward_signature_validation = True  # Using Prefect flows
@@ -35,27 +36,36 @@ class WebSearchTool(Tool):
         "num_results": {
             "type": "integer",
             "description": "Number of results to return (default: 3)",
-            "nullable": True
+            "nullable": True,
+            "optional": True,
+            "default": 3
         }
     }
     output_type = "string"
+    
+    # GLUE interface
+    tool_name = "web_search"
+    tool_description = "Search the web for information"
 
     def __init__(
         self,
+        name: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
         adhesive_type: Optional[AdhesiveType] = None,
-        config: Optional[SearchConfig] = None
+        search_config: Optional[SearchConfig] = None
     ):
-        super().__init__()
-        self.adhesive_type = adhesive_type
-        self.search_config = config or SearchConfig()
+        # Initialize base tool first
+        super().__init__(name=name, config=config)
         
-        # Set GLUE tool configuration
-        self.config = ToolConfig(
-            required_permissions=[
-                ToolPermission.NETWORK  # For web access
-            ],
-            tool_specific_config=self.search_config.model_dump()
-        )
+        self.adhesive_type = adhesive_type
+        self.search_config = search_config or SearchConfig()
+        
+        # Update tool config with search-specific settings
+        if not config:
+            self.config = ToolConfig(
+                required_permissions=[ToolPermission.NETWORK],
+                tool_specific_config=self.search_config.model_dump()
+            )
 
     @task(name="execute_search", retries=3, retry_delay_seconds=1)
     async def _execute_search(self, query: str, num_results: int) -> List[SearchResult]:

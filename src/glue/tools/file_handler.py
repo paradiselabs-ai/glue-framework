@@ -11,8 +11,9 @@ from enum import Enum
 from pathlib import Path
 from pydantic import BaseModel, Field
 from prefect import task, flow
-from smolagents.tools import Tool
-from .base import ToolConfig, ToolPermission
+from smolagents.tools import Tool, AUTHORIZED_TYPES
+from smolagents.agents import ToolCallingAgent
+from .base import BaseTool, ToolConfig, ToolPermission
 from ..core.types import AdhesiveType
 from ..core.logger import get_logger
 from ..core.tool_binding import ToolBinding
@@ -76,34 +77,41 @@ class FileOperationResult(BaseModel):
     content: Optional[Any] = Field(None, description="File content for read operations")
 
 # ==================== File Handler Tool ====================
-class FileHandlerTool(Tool):
+class FileHandlerTool(BaseTool):
     """Tool for handling file operations with Prefect orchestration and Pydantic validation"""
     
-    # Required SmolAgents class attributes
+    # SmolAgents interface
     name = "file_handler"
     description = "Handles file operations with format support"
     skip_forward_signature_validation = True  # Using Prefect flows
-    # SmolAgents interface
     inputs = {
-            "action": {
-                "type": "string",
-                "description": "The action to perform (read/write/append/delete)",
-                "enum": list(FileFormats.OPERATIONS)
-            },
-            "path": {
-                "type": "string",
-                "description": "Path to the file"
-            },
-            "content": {
-                "type": "string",
-                "description": "Content to write (for write/append actions)",
-                "nullable": True
-            }
+        "action": {
+            "type": "string",
+            "description": "The action to perform (read/write/append/delete)",
+            "enum": list(FileFormats.OPERATIONS)
+        },
+        "path": {
+            "type": "string",
+            "description": "Path to the file"
+        },
+        "content": {
+            "type": "string",
+            "description": "Content to write (for write/append actions)",
+            "nullable": True,
+            "optional": True,
+            "default": None
         }
+    }
     output_type = "string"
+    
+    # GLUE interface
+    tool_name = "file_handler"
+    tool_description = "Handles file operations with format support"
 
     def __init__(
         self,
+        name: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
         base_path: Optional[str] = None,
         allowed_formats: Optional[List[str]] = None,
         workspace_dir: Optional[str] = None,
@@ -111,24 +119,27 @@ class FileHandlerTool(Tool):
         shared_resources: Optional[List[str]] = None,
         **kwargs
     ):
-        super().__init__()
-        
         # Initialize GLUE tool config with Pydantic validation
-        config = FileHandlerConfig(
+        file_config = FileHandlerConfig(
             workspace_dir=workspace_dir,
             base_path=base_path,
             allowed_formats=allowed_formats,
             shared_resources=shared_resources or ["file_content", "file_path", "file_format"]
         )
         
-        self.config = ToolConfig(
-            required_permissions=[
-                ToolPermission.FILE_SYSTEM,  # For workspace access
-                ToolPermission.READ,         # For reading files
-                ToolPermission.WRITE         # For writing files
-            ],
-            tool_specific_config=config.model_dump()
-        )
+        # Create tool config if not provided
+        if not config:
+            config = {
+                "required_permissions": [
+                    ToolPermission.FILE_SYSTEM,  # For workspace access
+                    ToolPermission.READ,         # For reading files
+                    ToolPermission.WRITE         # For writing files
+                ],
+                "tool_specific_config": file_config.model_dump()
+            }
+        
+        # Initialize base tool with config
+        super().__init__(name=name, config=config)
         self.adhesive_type = binding_type or AdhesiveType.VELCRO
         self.tags = {"file_handler", "io", "filesystem"}
         

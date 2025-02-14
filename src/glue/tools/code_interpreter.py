@@ -23,10 +23,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, Tuple, Union
 from dataclasses import dataclass
 
-from smolagents.tools import Tool
+from smolagents.tools import Tool, AUTHORIZED_TYPES
+from smolagents.agents import ToolCallingAgent
 from pydantic import BaseModel, Field
 from prefect import task, flow
-from .base import ToolConfig, ToolPermission
+from .base import BaseTool, ToolConfig, ToolPermission
 from ..core.types import AdhesiveType
 from ..core.context import ContextState, ComplexityLevel
 from ..core.logger import get_logger
@@ -106,7 +107,7 @@ class CodeExecutionResult(BaseModel):
     resource_usage: Dict[str, Any] = Field(default_factory=dict, description="Resource usage metrics")
 
 # ==================== Code Interpreter Tool ====================
-class CodeInterpreterTool(Tool):
+class CodeInterpreterTool(BaseTool):
     """
     Advanced code interpreter tool with security and analysis features.
     
@@ -118,59 +119,67 @@ class CodeInterpreterTool(Tool):
     - Adhesive-based persistence
     """
     
-    """Advanced code interpreter tool with security, analysis, and orchestration features"""
-    
-    # Required SmolAgents class attributes
+    # SmolAgents interface
     name = "code_interpreter"
     description = "Executes code in a sandboxed environment with security and analysis features"
     skip_forward_signature_validation = True  # Using Prefect flows
-    
-    # SmolAgents interface
     inputs = {
-            "code": {
-                "type": "string",
-                "description": "The code to execute"
-            },
-            "language": {
-                "type": "string",
-                "description": "Programming language (python/javascript)",
-                "nullable": True
-            },
-            "timeout": {
-                "type": "number",
-                "description": "Execution timeout in seconds",
-                "nullable": True
-            }
+        "code": {
+            "type": "string",
+            "description": "The code to execute"
+        },
+        "language": {
+            "type": "string",
+            "description": "Programming language (python/javascript)",
+            "nullable": True,
+            "optional": True,
+            "default": "python"
+        },
+        "timeout": {
+            "type": "number",
+            "description": "Execution timeout in seconds",
+            "nullable": True,
+            "optional": True,
+            "default": 30.0
         }
+    }
     output_type = "string"
+    
+    # GLUE interface
+    tool_name = "code_interpreter"
+    tool_description = "Executes code in a sandboxed environment with security and analysis features"
 
     def __init__(
         self,
+        name: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
         workspace_dir: Optional[str] = None,
         supported_languages: Optional[List[str]] = None,
         adhesive_type: Optional[AdhesiveType] = None,
-        config: Optional[CodeExecutionConfig] = None,
+        execution_config: Optional[CodeExecutionConfig] = None,
         **kwargs
     ):
-        super().__init__()
-        
         # Initialize configuration with Pydantic validation
-        self.execution_config = config or CodeExecutionConfig(
+        self.execution_config = execution_config or CodeExecutionConfig(
             workspace_dir=workspace_dir,
             supported_languages=supported_languages,
             **kwargs
         )
         
-        # Initialize GLUE tool config
-        self.config = ToolConfig(
-            required_permissions=[
-                ToolPermission.EXECUTE,  # For running code
-                ToolPermission.FILE_SYSTEM,  # For workspace management
-                ToolPermission.READ,  # For reading files
-                ToolPermission.WRITE  # For writing temp files
-            ],
-            tool_specific_config=self.execution_config.model_dump()
-        )
+        # Create tool config if not provided
+        if not config:
+            config = {
+                "required_permissions": [
+                    ToolPermission.EXECUTE,  # For running code
+                    ToolPermission.FILE_SYSTEM,  # For workspace management
+                    ToolPermission.READ,  # For reading files
+                    ToolPermission.WRITE  # For writing temp files
+                ],
+                "tool_specific_config": self.execution_config.model_dump()
+            }
+        
+        # Initialize base tool with config
+        super().__init__(name=name, config=config)
         self.adhesive_type = adhesive_type
         self.tags = {"code_interpreter", "execute", "sandbox"}
         

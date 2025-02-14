@@ -5,7 +5,8 @@ with SmolAgents while maintaining GLUE's team and adhesive mechanics.
 """
 
 import asyncio
-from smolagents import ToolCallingAgent, Tool, tools
+from smolagents.tools import Tool, AUTHORIZED_TYPES
+from smolagents.agents import ToolCallingAgent
 from typing import Dict, Any, Optional, List, Union, Callable, TYPE_CHECKING
 from dataclasses import dataclass
 from datetime import datetime
@@ -116,7 +117,9 @@ class DynamicToolFactory:
     @task(name="create_smol_tool")
     async def create_smol_tool(self, spec: ToolSpec, function: Optional[Callable] = None) -> Callable:
         """Create SmolAgents tool implementation"""
-        from smolagents import ToolCallingAgent, Tool, Model
+        from smolagents.tools import Tool
+        from smolagents.agent import ToolCallingAgent
+        from smolagents.model import Model
         
         class DynamicTool(Tool):
             name = spec.name
@@ -194,18 +197,27 @@ class DynamicToolFactory:
                 description = spec.description
                 inputs = spec.inputs
                 output_type = spec.output_type
+                tool_name = spec.name
+                tool_description = spec.description
                 
                 async def execute(self, input_data: Any) -> Any:
                     # Convert input_data to kwargs based on first input key
                     input_key = next(iter(spec.inputs))
                     kwargs = {input_key: input_data}
                     return await dynamic_tool(**kwargs)
+                
+                async def forward(self, **kwargs) -> str:
+                    # Forward to execute with proper input handling
+                    input_key = next(iter(spec.inputs))
+                    if input_key in kwargs:
+                        return await self.execute(kwargs[input_key])
+                    return await self.execute(kwargs)
             
-            # Create instance with required name and config
+            # Create instance with required config
             tool_instance = CustomTool(
-                name=spec.name,
                 config={
                     "required_permissions": [],  # Default to no special permissions required
+                    "tool_specific_config": spec.model_dump()
                 }
             )
 
@@ -324,9 +336,9 @@ class DynamicToolFactory:
         self, tool: BaseTool, enhancement_request: str
     ) -> Callable:
         """Generate enhanced tool implementation using SmolAgents"""
-        from smolagents import SmolAgent
+        from smolagents.agent import ToolCallingAgent
 
-        agent = SmolAgent()
+        agent = ToolCallingAgent()
         return await agent.enhance_tool_implementation(
             name=tool.name,
             description=tool.description,

@@ -7,13 +7,22 @@ This provider uses SmolAgents to:
 4. Handle MCP tool integration
 """
 
-from typing import Dict, Any, Optional, List, Union, Tuple, Pattern
+from typing import Dict, Any, Optional, List, Union, Tuple, Pattern, Callable
 import re
+import inspect
 from datetime import datetime
 from .base import BaseProvider
 from ..core.types import AdhesiveType, ToolResult
 from ..tools.base import BaseTool
-from ..tools.dynamic_tool_factory import DynamicToolFactory, ToolSpec, MCPServerSpec
+from ..tools.dynamic_tool_factory import (
+    DynamicToolFactory, 
+    ToolSpec, 
+    MCPServerSpec,
+    ToolInput
+)
+from smolagents.tools import Tool, AUTHORIZED_TYPES
+from smolagents.agents import ToolCallingAgent
+
 
 class SmolAgentsProvider(BaseProvider):
     """Provider that uses SmolAgents for enhanced tool capabilities"""
@@ -40,19 +49,14 @@ class SmolAgentsProvider(BaseProvider):
         self.team = team  # Store team name
         self._available_adhesives = available_adhesives  # Store available adhesives
         
-    async def create_tool(self, name: str, description: str, function: Any) -> BaseTool:
-        """Create a new tool on the fly"""
-        # Extract function signature info
-        import inspect
+    async def create_tool(self, name: str, description: str, function: Callable) -> BaseTool:
+        """Create a new tool on the fly with enhanced validation and documentation"""
+        # Extract function signature and docstring
         sig = inspect.signature(function)
-        param_name = next(iter(sig.parameters))
-        
-        # Get docstring if available
         doc = inspect.getdoc(function) or ""
-        param_docs = {}
         
         # Parse docstring for parameter descriptions
-        import re
+        param_docs = {}
         param_section = False
         for line in doc.split('\n'):
             if ':param' in line:
@@ -63,42 +67,36 @@ class SmolAgentsProvider(BaseProvider):
             elif param_section and not line.strip():
                 param_section = False
         
-        # Create input specification
-        input_name = name.split('_')[0]  # e.g., 'citation' from 'citation_formatter'
-        input_desc = param_docs.get(param_name, f"The {input_name} text to process")
+        # Create input specifications for each parameter
+        inputs = {}
+        for param_name, param in sig.parameters.items():
+            # Get description from docstring or generate default
+            param_desc = param_docs.get(param_name, f"Input parameter: {param_name}")
+            
+            # Determine if parameter is optional
+            is_optional = param.default != inspect.Parameter.empty
+            default_value = param.default if is_optional else None
+            
+            # Create input specification
+            inputs[param_name] = ToolInput(
+                type="string",  # Default to string, can be enhanced based on type hints
+                description=param_desc,
+                optional=is_optional,
+                default=default_value
+            )
         
-        # Determine if the tool is for formatting
-        is_formatter = any(word in name.lower() for word in ['format', 'style', 'convert'])
-        
-        # Create appropriate input description
-        if is_formatter:
-            input_desc = f"Text to format according to the specified {input_name} style"
-        elif "search" in name.lower():
-            input_desc = "Search query to process"
-        elif "weather" in name.lower():
-            input_desc = "City name to get weather information for"
-        
+        # Create tool specification
         spec = ToolSpec(
             name=name,
             description=description,
-            inputs={
-                input_name: ToolInput(
-                    type="string",
-                    description=input_desc,
-                    optional=False,
-                    # Add examples based on tool type
-                    examples=[
-                        "'Title' by Author, Year" if is_formatter else
-                        "London" if "weather" in name.lower() else
-                        "quantum computing latest developments" if "search" in name.lower() else
-                        "Sample input"
-                    ]
-                )
-            },
+            inputs=inputs,
             output_type="string",
             team_name=self.team,
             function=function
         )
+        
+        # Validate inputs against SmolAgents requirements
+        validate_tool_inputs(inputs)
         return await self.tool_factory.create_tool_from_spec(spec, self.team)
         
     async def create_mcp_tool(self, server_name: str, tool_name: str) -> BaseTool:
