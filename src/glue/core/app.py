@@ -100,7 +100,7 @@ class GlueApp:
             return response
             
         except Exception as e:
-            self.logger.error(f"Error processing prompt: {str(e)}")
+            logger.error(f"Error processing prompt: {str(e)}")
             raise
             
     def _is_tool_request(self, prompt: str) -> bool:
@@ -193,16 +193,32 @@ class GlueApp:
         context: Dict[str, Any]
     ) -> None:
         """Store interaction in memory"""
-        key = f"interaction_{datetime.now().timestamp()}"
-        await self.memory_manager.store(
-            key=key,
-            content={
-                "prompt": prompt,
-                "response": response,
-                "context": context["context"]
-            },
-            context=context["context"]
-        )
+        try:
+            # Atomic capture of references
+            memory_manager: Optional[MemoryManager] = self.memory_manager
+            context_context = context.get("context") if context else None
+            
+            if not memory_manager or not context_context:
+                logger.warning(f"Skipping storage - memory_manager: {bool(memory_manager)}, context: {bool(context_context)}")
+                return
+
+            key = f"interaction_{datetime.now().timestamp()}"
+            await memory_manager.store(
+                key=key,
+                content={
+                    "prompt": prompt,
+                    "response": response,
+                    "context": context_context
+                },
+                context=context_context
+            )
+        except KeyError as e:
+            logger.error(f"Missing context key: {str(e)}")
+        except TypeError as e:
+            logger.error(f"Invalid context type: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error storing interaction: {str(e)}")
+            raise
             
     def _get_relevant_team(self, prompt: str) -> Optional[Team]:
         """Get most relevant team based on prompt context"""
