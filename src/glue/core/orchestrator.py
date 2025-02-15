@@ -774,6 +774,9 @@ class GlueOrchestrator:
     ) -> str:
         """Combine results into final response"""
         # Use last team's model to combine results
+        if not results:
+            return "Error: No results generated during prompt execution"
+            
         last_step = results[-1]
         team = context.teams[last_step["team"]]
         model = next(iter(team.models.values()))
