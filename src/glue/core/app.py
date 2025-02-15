@@ -41,7 +41,7 @@ class GlueApp:
     ):
         self.name = name
         self.config = config
-        self.logger = get_logger()
+        self.logger = get_logger("glue.app")
         
         # Core components
         self.teams: Dict[str, Team] = {}

@@ -80,7 +80,7 @@ class ConversationManager:
         
         # Core components
         self.memory_manager = MemoryManager()
-        self.logger = get_logger()
+        self.logger = get_logger("glue.conversation")
         self.context_analyzer = ContextAnalyzer()
         self.tool_optimizer = ToolChainOptimizer()
         

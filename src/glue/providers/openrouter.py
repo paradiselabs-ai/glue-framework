@@ -61,7 +61,7 @@ class OpenRouterProvider(BaseProvider):
         self.base_url = "https://openrouter.ai/api/v1"
         # Use model from config if provided, otherwise use default
         self.model_id = config.config.get("model") if config else model
-        self.logger = get_logger()
+        self.logger = get_logger("glue.providers.openrouter")
     
     async def _prepare_request(self, prompt: str) -> Dict[str, Any]:
         """Prepare request for OpenRouter API"""

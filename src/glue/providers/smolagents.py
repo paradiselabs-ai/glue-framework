@@ -302,7 +302,7 @@ class SmolAgentsProvider(BaseProvider):
                         await tool.import_team_data(shared_data)
             
             # Execute through SmolAgents with timeout handling
-            from smolagents import ToolCallingAgent
+            from smolagents.agents import ToolCallingAgent
             import asyncio
             
             agent = ToolCallingAgent()
@@ -365,7 +365,7 @@ class SmolAgentsProvider(BaseProvider):
     async def _make_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
         """Make request to SmolAgents with enhanced processing and error handling"""
         try:
-            from smolagents import ToolCallingAgent
+            from smolagents.agents import ToolCallingAgent
             import asyncio
             
             # Validate request data
@@ -546,7 +546,7 @@ Available Tools:
             content = response["choices"][0]["message"]["content"]
             
             # Parse natural language into tool intent
-            from smolagents import ToolCallingAgent
+            from smolagents.agents import ToolCallingAgent
             agent = ToolCallingAgent()
             
             # First check for tool creation request

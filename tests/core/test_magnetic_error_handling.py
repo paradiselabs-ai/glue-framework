@@ -4,7 +4,6 @@ import pytest
 from datetime import datetime
 from typing import Dict, Set, Any, Optional, List
 from pydantic import BaseModel, Field, ValidationError
-
 from glue.core.team import Team
 from glue.core.model import Model
 from glue.core.types import AdhesiveType

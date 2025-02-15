@@ -48,7 +48,7 @@ class TeamCommunicationManager:
     
     def __init__(self, name: str):
         self.name = name
-        self.logger = get_logger()
+        self.logger = get_logger("glue.team_communication")
         
         # Core components
         self.teams: Dict[str, Team] = {}

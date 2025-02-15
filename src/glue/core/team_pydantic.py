@@ -14,7 +14,7 @@ from .model import Model
 from .logger import get_logger
 from .pydantic_models import TeamContext, ModelState, SmolAgentsTool
 
-logger = get_logger("team")
+logger = get_logger("team_pydantic")
 
 class TeamRole(str, Enum):
     """Team member roles"""

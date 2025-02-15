@@ -47,7 +47,7 @@ class GroupChatManager:
     
     def __init__(self, name: str):
         self.name = name
-        self.logger = get_logger()
+        self.logger = get_logger("glue.core.group_chat")
         
         # Core components
         self.models: Dict[str, Model] = {}

@@ -300,7 +300,8 @@ def get_category_filter() -> Optional[str]:
 @cli.command()
 def list_models():
     """List available AI models with filtering and sorting options."""
-    logger = get_logger()
+    logger = get_logger("glue_cli.list_models")
+    logger.info("Listing available AI models...")
     try:
         # Create model catalog
         catalog = ModelCatalog()
@@ -540,7 +541,9 @@ async def handle_prompt(app: GlueApp, prompt: str) -> None:
         app: GLUE application instance
         prompt: User input prompt
     """
-    logger = get_logger()
+    logger = get_logger("glue_cli.handle_prompt")
+    logger.info(f"Processing prompt: {prompt}", extra={"user_facing": True})
+    logger.debug(f"Prompt details: {prompt}")
     try:
         result = await app.process_prompt(prompt)
         logger.info(result, extra={"user_facing": True})
@@ -558,7 +561,7 @@ def run(file, env):
 
     FILE is the path to your .glue application file.
     """
-    logger = get_logger()
+    logger = get_logger("glue_cli.run")
     try:
         # Validate file extension
         if not file.endswith('.glue'):

@@ -16,7 +16,7 @@ class ModelCommunication:
     
     def __init__(self, memory_manager: Optional[MemoryManager] = None):
         self.memory_manager = memory_manager or MemoryManager()
-        self.logger = get_logger()
+        self.logger = get_logger("glue.communication")
         self.active_workflows: Dict[str, WorkflowState] = {}
         self.pending_messages: Dict[str, List[Message]] = defaultdict(list)
         self.message_handlers: Dict[MessageType, List[callable]] = defaultdict(list)

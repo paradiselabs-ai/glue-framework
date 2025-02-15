@@ -118,8 +118,8 @@ class DynamicToolFactory:
     async def create_smol_tool(self, spec: ToolSpec, function: Optional[Callable] = None) -> Callable:
         """Create SmolAgents tool implementation"""
         from smolagents.tools import Tool
-        from smolagents.agent import ToolCallingAgent
-        from smolagents.model import Model
+        from smolagents.agents import ToolCallingAgent
+        from smolagents.models import Model
         
         class DynamicTool(Tool):
             name = spec.name
@@ -336,7 +336,7 @@ class DynamicToolFactory:
         self, tool: BaseTool, enhancement_request: str
     ) -> Callable:
         """Generate enhanced tool implementation using SmolAgents"""
-        from smolagents.agent import ToolCallingAgent
+        from smolagents.agents import ToolCallingAgent
 
         agent = ToolCallingAgent()
         return await agent.enhance_tool_implementation(
