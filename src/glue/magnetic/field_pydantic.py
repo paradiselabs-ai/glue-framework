@@ -67,7 +67,7 @@ class FieldState(BaseModel):
     class Config:
         arbitrary_types_allowed = True
 
-class MagneticField:
+class MagneticField(BaseModel):
     """
     Magnetic field implementation with Prefect workflow orchestration.
     
