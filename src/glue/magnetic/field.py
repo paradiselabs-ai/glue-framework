@@ -160,7 +160,7 @@ class MagneticField(BaseModel):
             config=self.config,
             active=True,
             registered_teams=set(),
-            active_flows={},
+            flows={},
             repelled_teams=set(),
             child_fields=set()  # Use set instead of list
         )

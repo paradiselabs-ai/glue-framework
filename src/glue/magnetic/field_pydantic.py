@@ -25,7 +25,7 @@ class FlowPattern(BaseModel):
 class PatternState(BaseModel):
     """Model for pattern execution state"""
     pattern: FlowPattern
-    active_flows: Set[str] = Field(default_factory=set)
+    active_flows: Dict[str, bool] = Field(default_factory=dict)
     message_counts: Dict[str, int] = Field(default_factory=dict)
     current_phase: Optional[str] = Field(default=None)
     
@@ -45,7 +45,7 @@ class FlowMetrics(BaseModel):
 
 class DebugInfo(BaseModel):
     """Debug information for magnetic field"""
-    active_flows: Set[str] = Field(default_factory=set)
+    active_flows: Dict[str, bool] = Field(default_factory=dict)
     flow_metrics: Dict[str, Dict[str, float]] = Field(default_factory=dict)
     pattern_states: Dict[str, PatternState] = Field(default_factory=dict)
     
@@ -64,6 +64,7 @@ class FieldState(BaseModel):
     teams: Dict[str, Team] = Field(default_factory=dict)
     flows: Dict[str, MagneticFlow] = Field(default_factory=dict)
     active: bool = Field(default=True)
+    active_flows: Dict[str, bool] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     metadata: Dict[str, Any] = Field(default_factory=dict)
@@ -123,7 +124,7 @@ class MagneticField(BaseModel):
         # Initialize pattern state
         self._active_patterns[pattern.name] = PatternState(
             pattern=pattern,
-            active_flows=set(),
+            active_flows={},
             message_counts={},
             current_phase=pattern.teams[0] if pattern.teams else None
         )
@@ -153,7 +154,7 @@ class MagneticField(BaseModel):
 
         # Store flow
         self.state.flows[flow_id] = flow
-        self._debug_info.active_flows.add(flow_id)
+        self._debug_info.active_flows[flow_id] = True
 
         # Initialize metrics
         self._metrics[flow_id] = FlowMetrics(

@@ -119,8 +119,7 @@ class GlueExecutor:
         
         # Initialize logger with development mode and log directory
         setup_logging(
-            name=self.app_config.name,
-            log_dir=str(output_dir),
+            log_file=str(output_dir / f"{self.app_config.name}.log"),
             development=self.app_config.config.get("development", False)
         )
     
@@ -527,14 +526,17 @@ def _print_app_summary(app: GlueApp, executor: GlueExecutor):
             
     if app.magnetic_field:
         logger.debug("\nMagnetic Flows:")
-        for source_team, flows in app.magnetic_field._flows.items():
-            for target_team, flow_type in flows.items():
-                if flow_type == "><":
-                    logger.debug(f"  {source_team} <-> {target_team}")
-                elif flow_type == "->":
-                    logger.debug(f"  {source_team} -> {target_team}")
-                elif flow_type == "<-":
-                    logger.debug(f"  {source_team} <- {target_team}")
+        for flow_state in app.magnetic_field.state.active_flows.values():
+            source = flow_state.config.source
+            target = flow_state.config.target
+            flow_type = flow_state.config.flow_type
+            
+            if flow_type == "><":
+                logger.debug(f"  {source} <-> {target}")
+            elif flow_type == "->":
+                logger.debug(f"  {source} -> {target}")
+            elif flow_type == "<-":
+                logger.debug(f"  {source} <- {target}")
 
 async def execute_glue_app(app_config: GlueAppConfig) -> GlueApp:
     """Execute GLUE application
