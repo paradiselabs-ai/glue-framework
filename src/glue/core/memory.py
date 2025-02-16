@@ -351,12 +351,18 @@ class MemoryManager:
                 segment.last_accessed.isoformat()
                 if segment.last_accessed else None
             ),
-            "context": segment.context.__dict__ if segment.context else None,
+            "context": (
+                {
+                    **segment.context.__dict__,
+                    "tools_required": list(segment.context.tools_required), # Convert set to list for serialization
+                    "complexity": segment.context.complexity.name
+                } if segment.context else None
+            ),
             "tags": list(segment.tags)
         }
         
         with open(file_path, 'w') as f:
-            json.dump(segment_data, f, indent=2)
+            json.dump(segment_data, f, indent=2, default=str)
 
     def _load_persistent_memory(self) -> None:
         """Load persistent memory from disk"""
@@ -382,7 +388,11 @@ class MemoryManager:
                         datetime.fromisoformat(data["last_accessed"])
                         if data["last_accessed"] else None
                     ),
-                    context=ContextState(**data["context"]) if data["context"] else None,
+                    context=ContextState(**{
+                        **data["context"], 
+                        'complexity': ComplexityLevel[data["context"]["complexity"]],
+                        'tools_required': set(data["context"]["tools_required"]) # Convert list back to set
+                    }) if data["context"] else None,
                     tags=set(data["tags"])
                 )
                 

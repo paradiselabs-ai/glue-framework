@@ -179,7 +179,7 @@ class GlueApp:
         
     def _log_context_analysis(self, context: ContextState) -> None:
         """Log context analysis results"""
-        logger.info(f"Context Analysis:")
+        logger.info(f"Context Analysis: {context}")
         logger.info(f"- Complexity: {context.complexity}")
         logger.info(f"- Tools Required: {list(context.tools_required) if context.tools_required else 'None'}")
         logger.info(f"- Persistence: {context.requires_persistence}")
@@ -194,12 +194,15 @@ class GlueApp:
     ) -> None:
         """Store interaction in memory"""
         try:
-            # Atomic capture of references
+            # Capture atomic references to prevent issues if they are changed during execution
             memory_manager: Optional[MemoryManager] = self.memory_manager
-            context_context = context.get("context") if context else None
-            
+            context_context = context.get("context")
+
             if not memory_manager or not context_context:
-                logger.warning(f"Skipping storage - memory_manager: {bool(memory_manager)}, context: {bool(context_context)}")
+                logger.warning(
+                    "Invalid context type: object NoneType can't be used in 'await' expression. "
+                    "Ensure a valid context object is passed to memory_manager.store()."
+                )
                 return
 
             key = f"interaction_{datetime.now().timestamp()}"
@@ -215,11 +218,11 @@ class GlueApp:
         except KeyError as e:
             logger.error(f"Missing context key: {str(e)}")
         except TypeError as e:
-            logger.error(f"Invalid context type: {str(e)}")
+            logger.error(f"Invalid context type: {str(e)}. Ensure a valid context object is passed to memory_manager.store().")
         except Exception as e:
             logger.error(f"Error storing interaction: {str(e)}")
             raise
-            
+
     def _get_relevant_team(self, prompt: str) -> Optional[Team]:
         """Get most relevant team based on prompt context"""
         # Check for explicit team mentions
