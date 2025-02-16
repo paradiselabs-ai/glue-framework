@@ -161,6 +161,8 @@ class GlueOrchestrator:
         5. Handles errors and retries
         """
         try:
+            logger.info(f"Starting execution of prompt: {prompt}")
+            
             # Create and validate workflow context
             context = WorkflowContext(
                 prompt=prompt,
@@ -169,19 +171,23 @@ class GlueOrchestrator:
                 models=app_context["models"],
                 adhesives=app_context["adhesives"]
             )
+            logger.debug(f"Created workflow context: {context}")
             
             # Analyze prompt for tool requirements
             required_tools = await self._analyze_tool_requirements(prompt, context)
+            logger.info(f"Analyzed tool requirements: {required_tools}")
             
             # Map tools to teams
             team_tasks = {}
             for tool_name in required_tools.tools:
                 team_name = self._tool_mapping.get(tool_name)
                 if not team_name:
+                    logger.warning(f"No team found for tool: {tool_name}")
                     continue
                 if team_name not in team_tasks:
                     team_tasks[team_name] = set()
                 team_tasks[team_name].add(tool_name)
+            logger.info(f"Mapped tools to teams: {team_tasks}")
             
             # Create and validate execution plan
             plan = ExecutionPlan(
@@ -195,6 +201,7 @@ class GlueOrchestrator:
                 team_tasks,
                 context
             )
+            logger.info(f"Created execution plan with {len(execution_steps)} steps")
             
             # Validate and add steps to plan
             plan.steps = [
@@ -203,12 +210,16 @@ class GlueOrchestrator:
             
             # Execute plan
             results = []
-            for step in plan.steps:
+            for i, step in enumerate(plan.steps):
+                logger.info(f"Executing step {i+1}/{len(plan.steps)}: {step}")
                 result = await self._execute_step(step, context)
                 results.append(result)
+                logger.info(f"Step {i+1} result: {result}")
                 
             # Combine results
-            return await self._combine_results(results, context)
+            final_response = await self._combine_results(results, context)
+            logger.info(f"Final response: {final_response}")
+            return final_response
             
         except Exception as e:
             # Log the error
@@ -223,12 +234,17 @@ class GlueOrchestrator:
         from ..tools.executor import SmolAgentsToolExecutor
         from ..magnetic.field import MagneticField
         
+        logger.info(f"Analyzing tool requirements for prompt: {prompt}")
+        
         # Get initial tool intent using first available team
         first_team = next(iter(self._team_tools.keys()), None)
         if not first_team or first_team not in context.teams:
+            logger.warning("No available team found for tool intent analysis")
             return AnalysisResult()
             
         team = context.teams[first_team]
+        logger.info(f"Using team {first_team} for initial tool intent analysis")
+        
         executor = SmolAgentsToolExecutor(
             team=team,
             available_adhesives=set().union(*(
@@ -237,6 +253,7 @@ class GlueOrchestrator:
             ))
         )
         intent = await executor._parse_tool_intent(prompt)
+        logger.info(f"Parsed tool intent: {intent}")
         
         # Analyze dependencies and relationships
         dependencies = {}
@@ -244,6 +261,7 @@ class GlueOrchestrator:
         execution_strategy = {}
         
         for team_name, team in self._team_tools.items():
+            logger.debug(f"Analyzing capabilities for team: {team_name}")
             # Analyze team capabilities
             capabilities = self._analyze_team_capabilities(team)
             
@@ -252,11 +270,13 @@ class GlueOrchestrator:
                 deps = self._get_tool_dependencies(tool)
                 if deps:
                     dependencies[tool] = deps
+                    logger.debug(f"Dependencies for tool {tool}: {deps}")
                     
             # Check magnetic relationships
             field = MagneticField.get_field(team_name)
             if field:
                 relationships[team_name] = field.get_relationships()
+                logger.debug(f"Magnetic relationships for team {team_name}: {relationships[team_name]}")
                 
             # Determine execution strategy
             strategy = self._determine_strategy(
@@ -266,13 +286,16 @@ class GlueOrchestrator:
                 relationships
             )
             execution_strategy[team_name] = strategy
+            logger.debug(f"Execution strategy for team {team_name}: {strategy}")
             
-        return AnalysisResult(
+        result = AnalysisResult(
             tools={intent.tool_name} if intent else set(),
             dependencies=dependencies,
             relationships=relationships,
             strategy=execution_strategy
         )
+        logger.info(f"Analysis result: {result}")
+        return result
         
     def _analyze_team_capabilities(self, team: Set[str]) -> TeamCapabilities:
         """Analyze what a team can do based on its tools and models"""

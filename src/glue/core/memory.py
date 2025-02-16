@@ -63,7 +63,7 @@ class MemoryManager:
             self.persistence_dir.mkdir(parents=True, exist_ok=True)
             self._load_persistent_memory()
     
-    def store(
+    async def store(
         self,
         key: str,
         content: Any,

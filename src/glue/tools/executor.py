@@ -107,11 +107,20 @@ class SmolAgentsToolExecutor:
             # Initialize SmolAgent for parsing
             from smolagents import CodeAgent
             
+            # Add detailed logging for debugging
+            logger.debug(f"Team object: {self.team}")
+            logger.debug(f"Team models: {self.team.models}")
+            
             # Get first available model from team
+            if not self.team.models:
+                raise ValueError("No models available in team")
+            
             model = next(iter(self.team.models.values()))
             if not model:
                 raise ValueError("No model available in team")
-                
+            
+            logger.debug(f"Selected model: {model}")
+            
             agent = CodeAgent(
                 model=model,
                 tools=list(self.team.tools.values())

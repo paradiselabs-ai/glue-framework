@@ -87,11 +87,8 @@ class GlueApp:
             if self._is_tool_request(prompt):
                 return await self._handle_tool_request(prompt)
 
-            # Get and validate app context for orchestrator
+            # Get validated context for orchestrator
             context = await self._prepare_context(prompt)
-            if not context:
-                context = {"teams": self.teams, "models": self.models}  # Minimal valid context
-                logger.warning("Created fallback context for prompt execution")
 
             # Let orchestrator handle execution
             response = await self.orchestrator.execute_prompt(prompt, context)
@@ -137,39 +134,32 @@ class GlueApp:
         
     async def _prepare_context(self, prompt: str) -> Dict[str, Any]:
         """Prepare context for orchestrator"""
-        # Analyze context with validation
-        context = self.conversation_manager.context_analyzer.analyze(
-            prompt,
-            available_tools=self._get_available_tools()
-        )
-        
-        # Strict validation without fallback
-        if not isinstance(context, ContextState):
-            logger.error("Context analysis failed! Received type: {}", type(context))
-            raise ValueError(
-                f"Invalid context type: {type(context).__name__}. "
-                "Context analyzer must return a valid ContextState instance."
+        try:
+            # Analyze context with validation
+            context = self.conversation_manager.context_analyzer.analyze(
+                prompt,
+                available_tools=self._get_available_tools()
             )
             
-        if not context.is_valid():
-            logger.error("Context validation failed! Context: {}", context)
-            raise ValueError("ContextState failed validation checks")
+            if not isinstance(context, ContextState) or not context.is_valid():
+                raise ValueError("Invalid context analysis result")
+            # Log analysis
+            self._log_context_analysis(context)
+            return {
+                "teams": self.teams,
+                "models": self.models,
+                "tools": self._get_team_tools(),
+                "adhesives": self._get_model_adhesives(),
+                "context": context,
+                "memory": self.memory_manager,
+                "workspace": self.workspace_manager,
+                "validation_time": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error("Context preparation failed: {}", str(e))
+            raise ValueError("Could not create valid execution context") from e
 
-        # Log analysis
-        self._log_context_analysis(context)
-        
-        # Prepare orchestrator context
-        logger.debug(f"Prepared context: {context}") 
-        return {
-            "teams": self.teams,
-            "models": self.models,
-            "tools": self._get_team_tools(),
-            "adhesives": self._get_model_adhesives(),
-            "context": context,
-            "memory": self.memory_manager,
-            "workspace": self.workspace_manager,
-            "validation_time": datetime.now().isoformat()
-        }
         
     def _get_available_tools(self) -> List[str]:
         """Get all available tools across teams"""
@@ -209,29 +199,37 @@ class GlueApp:
     ) -> None:
         """Store interaction in memory"""
         try:
-            # Capture atomic references to prevent issues if they are changed during execution
-            memory_manager: Optional[MemoryManager] = self.memory_manager
-
-            if not memory_manager:
-                logger.warning("Memory manager not initialized")
+            # Validate context structure before proceeding
+            if not context or not isinstance(context, dict):
+                logger.warning("Invalid context structure - skipping memory storage")
                 return
 
-            if not context: 
-                logger.warning(
-                    "Skipping memory storage - no valid context provided"
-                )
+            # Safely extract and validate ContextState
+            context_state = context.get("context")
+            if not isinstance(context_state, ContextState) or context_state is None:
+                logger.error("Invalid or missing ContextState - found: %s", type(context_state))
                 return
-            
-            key = f"interaction_{datetime.now().timestamp()}"
-            await memory_manager.store(
-                key=key,
-                content={
-                    "prompt": prompt,
-                    "response": response,
-                    "context": context 
-                },
-                context=context 
-            )
+
+            # Create memory entry with raw context state
+            memory_entry = {
+                "prompt": prompt,
+                "response": response,
+                "context": context_state
+            }
+
+            # Store with enhanced error handling
+            if self.memory_manager and context_state:
+                key = f"interaction_{datetime.now().timestamp()}"
+                try:
+                    logger.debug("Attempting to store interaction with context_state type: {}", type(context_state).__name__)
+                    await self.memory_manager.store(
+                        key=key,
+                        content=memory_entry,
+                        context=context_state
+                    )
+                except Exception as e:
+                    logger.error("Failed to store interaction: {}", str(e))
+                    logger.debug("Problematic context_state content: {}", context_state)
         except KeyError as e:
             logger.error(f"Missing context key: {str(e)}")
         except TypeError as e:
