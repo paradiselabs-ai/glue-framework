@@ -3,7 +3,6 @@
 import asyncio
 from typing import Dict, Any, Optional, List, Set
 from pathlib import Path
-# from dataclasses import dataclass  <- Remove dataclass import
 from datetime import datetime
 
 from .context import ContextState, ComplexityLevel
@@ -84,21 +83,23 @@ class GlueApp:
         logger.info(f"{'='*50}")
         
         try:
-            # Handle tool/MCP creation requests
+            # Handle tool/MCP creation requests first
             if self._is_tool_request(prompt):
                 return await self._handle_tool_request(prompt)
-                
-            # Get app context for orchestrator
+
+            # Get and validate app context for orchestrator
             context = await self._prepare_context(prompt)
-            
+            if not context:
+                context = {"teams": self.teams, "models": self.models}  # Minimal valid context
+                logger.warning("Created fallback context for prompt execution")
+
             # Let orchestrator handle execution
             response = await self.orchestrator.execute_prompt(prompt, context)
-            
-            # Store in memory
+
+            # Validate and store interaction with latest context
             await self._store_interaction(prompt, response, context)
-            
             return response
-            
+
         except Exception as e:
             logger.error(f"Error processing prompt: {str(e)}")
             raise
@@ -136,16 +137,29 @@ class GlueApp:
         
     async def _prepare_context(self, prompt: str) -> Dict[str, Any]:
         """Prepare context for orchestrator"""
-        # Analyze context
+        # Analyze context with validation
         context = self.conversation_manager.context_analyzer.analyze(
             prompt,
             available_tools=self._get_available_tools()
         )
         
+        # Strict validation without fallback
+        if not isinstance(context, ContextState):
+            logger.error("Context analysis failed! Received type: {}", type(context))
+            raise ValueError(
+                f"Invalid context type: {type(context).__name__}. "
+                "Context analyzer must return a valid ContextState instance."
+            )
+            
+        if not context.is_valid():
+            logger.error("Context validation failed! Context: {}", context)
+            raise ValueError("ContextState failed validation checks")
+
         # Log analysis
         self._log_context_analysis(context)
         
         # Prepare orchestrator context
+        logger.debug(f"Prepared context: {context}") 
         return {
             "teams": self.teams,
             "models": self.models,
@@ -153,7 +167,8 @@ class GlueApp:
             "adhesives": self._get_model_adhesives(),
             "context": context,
             "memory": self.memory_manager,
-            "workspace": self.workspace_manager
+            "workspace": self.workspace_manager,
+            "validation_time": datetime.now().isoformat()
         }
         
     def _get_available_tools(self) -> List[str]:
@@ -196,24 +211,26 @@ class GlueApp:
         try:
             # Capture atomic references to prevent issues if they are changed during execution
             memory_manager: Optional[MemoryManager] = self.memory_manager
-            context_context = context.get("context")
 
-            if not memory_manager or not context_context:
-                logger.warning(
-                    "Invalid context type: object NoneType can't be used in 'await' expression. "
-                    "Ensure a valid context object is passed to memory_manager.store()."
-                )
+            if not memory_manager:
+                logger.warning("Memory manager not initialized")
                 return
 
+            if not context: 
+                logger.warning(
+                    "Skipping memory storage - no valid context provided"
+                )
+                return
+            
             key = f"interaction_{datetime.now().timestamp()}"
             await memory_manager.store(
                 key=key,
                 content={
                     "prompt": prompt,
                     "response": response,
-                    "context": context_context
+                    "context": context 
                 },
-                context=context_context
+                context=context 
             )
         except KeyError as e:
             logger.error(f"Missing context key: {str(e)}")

@@ -59,6 +59,17 @@ class ContextState:
     confidence: float          # 0.0 to 1.0
     magnetic_flow: Optional[str] = None  # Suggested magnetic operator if needed
 
+    def is_valid(self) -> bool:
+        """Validate context state meets basic requirements"""
+        return (
+            isinstance(self.complexity, ComplexityLevel) and
+            isinstance(self.tools_required, set) and
+            all(isinstance(t, str) for t in self.tools_required) and
+            isinstance(self.requires_persistence, bool) and
+            isinstance(self.requires_memory, bool) and
+            0.0 <= self.confidence <= 1.0
+        )
+
 class ContextAnalyzer:
     """Analyzes user input to provide helpful context to models"""
     
