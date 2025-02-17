@@ -17,7 +17,7 @@ from .state import StateManager
 from loguru import logger
 from .orchestrator import GlueOrchestrator
 from ..tools.dynamic_tool_factory import DynamicToolFactory, ToolSpec, MCPServerSpec
-from ..magnetic.field_pydantic import MagneticField
+from ..magnetic.field import MagneticField
 
 from pydantic import BaseModel, Field  # Import Pydantic
 

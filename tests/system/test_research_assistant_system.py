@@ -4,7 +4,7 @@ import pytest
 import os
 from datetime import datetime
 
-from glue.magnetic.field_pydantic import MagneticField
+from glue.magnetic.field import MagneticField
 from glue.core.team_pydantic import Team, TeamRole
 from glue.core.model_pydantic import Model
 from glue.core.pydantic_models import (

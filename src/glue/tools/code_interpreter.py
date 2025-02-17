@@ -27,7 +27,7 @@ from smolagents.tools import Tool, AUTHORIZED_TYPES
 from smolagents.agents import ToolCallingAgent
 from pydantic import BaseModel, Field
 from prefect import task, flow
-from .base import BaseTool, ToolConfig, ToolPermission
+from .base import BaseTool, ToolConfig
 from ..core.types import AdhesiveType
 from ..core.context import ContextState, ComplexityLevel
 from ..core.logger import get_logger
@@ -120,10 +120,10 @@ class CodeInterpreterTool(BaseTool):
     """
     
     # SmolAgents interface
-    name = "code_interpreter"
-    description = "Executes code in a sandboxed environment with security and analysis features"
-    skip_forward_signature_validation = True  # Using Prefect flows
-    inputs = {
+    name: str = "code_interpreter"
+    description: str = "Executes code in a sandboxed environment with security and analysis features"
+    skip_forward_signature_validation: bool = True  # Using Prefect flows
+    inputs: Dict[str, Dict[str, Any]] = {
         "code": {
             "type": "string",
             "description": "The code to execute"
@@ -143,11 +143,11 @@ class CodeInterpreterTool(BaseTool):
             "default": 30.0
         }
     }
-    output_type = "string"
+    output_type: str = "string"
     
     # GLUE interface
-    tool_name = "code_interpreter"
-    tool_description = "Executes code in a sandboxed environment with security and analysis features"
+    tool_name: str = "code_interpreter"
+    tool_description: str = "Executes code in a sandboxed environment with security and analysis features"
 
     def __init__(
         self,
@@ -169,12 +169,7 @@ class CodeInterpreterTool(BaseTool):
         # Create tool config if not provided
         if not config:
             config = {
-                "required_permissions": [
-                    ToolPermission.EXECUTE,  # For running code
-                    ToolPermission.FILE_SYSTEM,  # For workspace management
-                    ToolPermission.READ,  # For reading files
-                    ToolPermission.WRITE  # For writing temp files
-                ],
+                "required_permissions": [],  # Permissions managed by team magnetic fields
                 "tool_specific_config": self.execution_config.model_dump()
             }
         
@@ -189,7 +184,7 @@ class CodeInterpreterTool(BaseTool):
         # Initialize configuration from tool_specific_config
         config = self.config.tool_specific_config
         self.enable_security_checks = config["enable_security_checks"]
-        self.enable_code_analysis = config["enable_code_analysis"]
+        self.enable_co s = config["enable_code_analysis"]
         self.enable_error_suggestions = config["enable_error_suggestions"]
         self.max_memory_mb = config["max_memory_mb"]
         self.max_execution_time = config["max_execution_time"]

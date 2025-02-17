@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from prefect import task, flow
 from smolagents.tools import Tool, AUTHORIZED_TYPES
 from smolagents.agents import ToolCallingAgent
-from .base import BaseTool, ToolConfig, ToolPermission
+from .base import BaseTool, ToolConfig
 from ..core.types import AdhesiveType
 
 # Pydantic models for validation
@@ -25,10 +25,10 @@ class WebSearchTool(BaseTool):
     """Tool for performing web searches with Prefect orchestration and Pydantic validation"""
     
     # SmolAgents interface
-    name = "web_search"
-    description = "Search the web for information"
-    skip_forward_signature_validation = True  # Using Prefect flows
-    inputs = {
+    name: str = "web_search"
+    description: str = "Search the web for information"
+    skip_forward_signature_validation: bool = True  # Using Prefect flows
+    inputs: Dict[str, Dict[str, Any]] = {
         "query": {
             "type": "string",
             "description": "The search query to execute"
@@ -41,11 +41,11 @@ class WebSearchTool(BaseTool):
             "default": 3
         }
     }
-    output_type = "string"
+    output_type: str = "string"
     
     # GLUE interface
-    tool_name = "web_search"
-    tool_description = "Search the web for information"
+    tool_name: str = "web_search"
+    tool_description: str = "Search the web for information"
 
     def __init__(
         self,
@@ -63,7 +63,7 @@ class WebSearchTool(BaseTool):
         # Update tool config with search-specific settings
         if not config:
             self.config = ToolConfig(
-                required_permissions=[ToolPermission.NETWORK],
+                required_permissions=[],  # Permissions managed by team magnetic fields
                 tool_specific_config=self.search_config.model_dump()
             )
 

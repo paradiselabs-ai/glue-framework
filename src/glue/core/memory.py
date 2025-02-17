@@ -1,13 +1,18 @@
 """GLUE Memory Management System"""
 
-from typing import Dict, Any, Optional, List, Set, TypeVar, Generic
+from typing import Dict, Any, Optional, List, Set, TypeVar, Generic, Union
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from collections import defaultdict
 import json
 import os
 from pathlib import Path
+from pydantic import BaseModel, Field
+from loguru import logger
+
 from .context import ContextState, ComplexityLevel
+from .mem0_manager import Mem0Manager, Mem0Config
+from .types import AdhesiveType
 
 @dataclass
 class MemorySegment:
@@ -42,8 +47,12 @@ class LearningOutcome:
 
 class MemoryManager:
     """Manages different types of memory for models"""
-    def __init__(self, persistence_dir: Optional[str] = None):
-        # Memory stores
+    def __init__(
+        self,
+        persistence_dir: Optional[str] = None,
+        mem0_config: Optional[Mem0Config] = None
+    ):
+        # Initialize standard memory stores
         self.short_term: Dict[str, MemorySegment] = {}
         self.long_term: Dict[str, MemorySegment] = {}
         self.working: Dict[str, MemorySegment] = {}
@@ -57,11 +66,17 @@ class MemoryManager:
         self.recall_success: Dict[str, bool] = {}
         self.pattern_matches: Dict[str, int] = defaultdict(int)
         
-        # Persistence
+        # File-based persistence
         self.persistence_dir = Path(persistence_dir) if persistence_dir else None
         if self.persistence_dir:
             self.persistence_dir.mkdir(parents=True, exist_ok=True)
             self._load_persistent_memory()
+            
+        # Initialize Mem0 if configured
+        self.mem0: Optional[Mem0Manager] = None
+        if mem0_config:
+            self.mem0 = Mem0Manager(mem0_config)
+            logger.info("Initialized Mem0 manager")
     
     async def store(
         self,
@@ -71,9 +86,14 @@ class MemoryManager:
         duration: Optional[timedelta] = None,
         metadata: Optional[Dict[str, Any]] = None,
         context: Optional[ContextState] = None,
-        tags: Optional[Set[str]] = None
-    ) -> None:
-        """Store content in specified memory type"""
+        tags: Optional[Set[str]] = None,
+        user_id: Optional[str] = None
+    ) -> Union[None, str]:
+        """
+        Store content in specified memory type.
+        Returns memory_id if using Mem0, None otherwise.
+        """
+        # Store in standard memory
         expires_at = datetime.now() + duration if duration else None
         segment = MemorySegment(
             content=content,
@@ -83,23 +103,55 @@ class MemoryManager:
             tags=tags or set()
         )
         
-        if memory_type == "short_term":
-            self.short_term[key] = segment
-        elif memory_type == "long_term":
-            self.long_term[key] = segment
-            if self.persistence_dir:
-                self._save_segment(key, segment)
-        elif memory_type == "working":
-            self.working[key] = segment
-        else:
-            raise ValueError(f"Unknown memory type: {memory_type}")
+        memory_store = self._get_memory_store(memory_type)
+        memory_store[key] = segment
+        
+        if memory_type == "long_term" and self.persistence_dir:
+            self._save_segment(key, segment)
+            
+        # If Mem0 is configured, also store there
+        if self.mem0 and user_id:
+            try:
+                memory_id = await self.mem0.store(
+                    content=content,
+                    adhesive_type=memory_type,  # Use memory_type as adhesive_type
+                    user_id=user_id,
+                    metadata=metadata,
+                    context=context,
+                    tags=tags
+                )
+                return memory_id
+            except Exception as e:
+                logger.error(f"Failed to store in Mem0: {str(e)}")
+                
+        return None
 
-    def recall(
+    async def recall(
         self,
         key: str,
-        memory_type: str = "short_term"
+        memory_type: str = "short_term",
+        user_id: Optional[str] = None,
+        semantic_query: Optional[str] = None
     ) -> Optional[Any]:
-        """Retrieve content from specified memory type"""
+        """
+        Retrieve content from memory.
+        If semantic_query is provided and Mem0 is configured, use semantic search.
+        """
+        if self.mem0 and user_id and semantic_query:
+            try:
+                memories = await self.mem0.retrieve(
+                    query=semantic_query,
+                    user_id=user_id,
+                    adhesive_type=memory_type,
+                    limit=1
+                )
+                if memories:
+                    return memories[0]
+                return None
+            except Exception as e:
+                logger.error(f"Failed to retrieve from Mem0: {str(e)}")
+                
+        # Fall back to standard memory
         memory_store = self._get_memory_store(memory_type)
         
         if key not in memory_store:
@@ -121,7 +173,7 @@ class MemoryManager:
         
         return segment.content
 
-    def share(
+    async def share(
         self,
         from_model: str,
         to_model: str,
@@ -151,14 +203,48 @@ class MemoryManager:
         if to_model not in self.shared:
             self.shared[to_model] = {}
         self.shared[to_model][f"from_{from_model}_{key}"] = segment
+        
+        # If Mem0 is configured, store shared memory there too
+        if self.mem0:
+            try:
+                await self.mem0.store(
+                    content=content,
+                    adhesive_type="shared",
+                    user_id=to_model,  # Use recipient as user_id
+                    metadata={
+                        **metadata or {},
+                        "shared_from": from_model,
+                        "shared_key": key
+                    },
+                    context=context,
+                    tags=tags
+                )
+            except Exception as e:
+                logger.error(f"Failed to store shared memory in Mem0: {str(e)}")
 
-    def forget(self, key: str, memory_type: str = "short_term") -> None:
+    async def forget(
+        self,
+        key: str,
+        memory_type: str = "short_term",
+        user_id: Optional[str] = None
+    ) -> None:
         """Remove content from specified memory type"""
         memory_store = self._get_memory_store(memory_type)
         if key in memory_store:
             del memory_store[key]
+            
+        # If Mem0 is configured, delete there too
+        if self.mem0 and user_id:
+            try:
+                await self.mem0.delete(key)
+            except Exception as e:
+                logger.error(f"Failed to delete from Mem0: {str(e)}")
 
-    def clear(self, memory_type: Optional[str] = None) -> None:
+    async def clear(
+        self,
+        memory_type: Optional[str] = None,
+        user_id: Optional[str] = None
+    ) -> None:
         """Clear specified or all memory types"""
         if memory_type:
             memory_store = self._get_memory_store(memory_type)
@@ -172,6 +258,13 @@ class MemoryManager:
             self.outcomes.clear()
             self.recall_success.clear()
             self.pattern_matches.clear()
+            
+        # If Mem0 is configured, clear there too
+        if self.mem0 and user_id:
+            try:
+                await self.mem0.clear_all(memory_type)
+            except Exception as e:
+                logger.error(f"Failed to clear Mem0: {str(e)}")
 
     def _get_memory_store(self, memory_type: str) -> Dict[str, MemorySegment]:
         """Get the appropriate memory store"""
@@ -402,12 +495,24 @@ class MemoryManager:
             except Exception as e:
                 print(f"Error loading {file_path}: {e}")
 
+    async def cleanup(self) -> None:
+        """Clean up resources"""
+        # Clean up Mem0 if configured
+        if self.mem0:
+            try:
+                await self.mem0.cleanup()
+                logger.info("Cleaned up Mem0 manager")
+            except Exception as e:
+                logger.error(f"Error during Mem0 cleanup: {str(e)}")
+
     def __str__(self) -> str:
+        mem0_status = "with Mem0" if self.mem0 else "without Mem0"
         return (
             f"MemoryManager("
             f"short_term={len(self.short_term)}, "
             f"long_term={len(self.long_term)}, "
             f"working={len(self.working)}, "
             f"shared_spaces={len(self.shared)}, "
-            f"patterns={len(self.patterns)})"
+            f"patterns={len(self.patterns)}, "
+            f"{mem0_status})"
         )

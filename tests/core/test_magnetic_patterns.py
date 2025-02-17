@@ -2,39 +2,16 @@
 
 import pytest
 from datetime import datetime
-from typing import Dict, Set, Any, Optional, List
+from typing import Dict, List, Any, Optional
 from pydantic import BaseModel, Field
 
 from glue.core.team_pydantic import Team
 from glue.core.model_pydantic import Model
 from glue.core.types import AdhesiveType
-from glue.magnetic.field_pydantic import MagneticField
+from glue.magnetic.field import MagneticField
 from glue.magnetic.rules import MagneticRules
 from glue.core.pydantic_models import ModelConfig
-
-# ==================== Advanced Pattern Models ====================
-class FlowPattern(BaseModel):
-    """Model for magnetic flow patterns"""
-    name: str = Field(..., description="Pattern name")
-    teams: List[str] = Field(..., description="Teams involved in pattern")
-    flows: List[Dict[str, Any]] = Field(..., description="Flow configurations")
-    rules: List[Dict[str, Any]] = Field(default_factory=list)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-class PatternState(BaseModel):
-    """Model for pattern execution state"""
-    pattern: FlowPattern
-    active_flows: Set[str] = Field(default_factory=set)
-    message_counts: Dict[str, int] = Field(default_factory=dict)
-    current_phase: Optional[str] = Field(default=None)
-
-class FlowMetrics(BaseModel):
-    """Model for flow performance metrics"""
-    flow_id: str = Field(..., description="Flow identifier")
-    message_count: int = Field(default=0)
-    average_latency: float = Field(default=0.0)
-    success_rate: float = Field(default=1.0)
-    last_active: Optional[datetime] = Field(default=None)
+from glue.magnetic.models import FlowPattern, PatternState, FlowMetrics
 
 # ==================== Test Fixtures ====================
 @pytest.fixture

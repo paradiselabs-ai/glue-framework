@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from prefect import task, flow
 from smolagents.tools import Tool, AUTHORIZED_TYPES
 from smolagents.agents import ToolCallingAgent
-from .base import BaseTool, ToolConfig, ToolPermission
+from .base import BaseTool, ToolConfig
 from ..core.types import AdhesiveType
 from ..core.logger import get_logger
 from ..core.tool_binding import ToolBinding
@@ -81,10 +81,10 @@ class FileHandlerTool(BaseTool):
     """Tool for handling file operations with Prefect orchestration and Pydantic validation"""
     
     # SmolAgents interface
-    name = "file_handler"
-    description = "Handles file operations with format support"
-    skip_forward_signature_validation = True  # Using Prefect flows
-    inputs = {
+    name: str = "file_handler"
+    description: str = "Handles file operations with format support"
+    skip_forward_signature_validation: bool = True  # Using Prefect flows
+    inputs: Dict[str, Dict[str, Any]] = {
         "action": {
             "type": "string",
             "description": "The action to perform (read/write/append/delete)",
@@ -102,11 +102,11 @@ class FileHandlerTool(BaseTool):
             "default": None
         }
     }
-    output_type = "string"
+    output_type: str = "string"
     
     # GLUE interface
-    tool_name = "file_handler"
-    tool_description = "Handles file operations with format support"
+    tool_name: str = "file_handler"
+    tool_description: str = "Handles file operations with format support"
 
     def __init__(
         self,
@@ -130,11 +130,7 @@ class FileHandlerTool(BaseTool):
         # Create tool config if not provided
         if not config:
             config = {
-                "required_permissions": [
-                    ToolPermission.FILE_SYSTEM,  # For workspace access
-                    ToolPermission.READ,         # For reading files
-                    ToolPermission.WRITE         # For writing files
-                ],
+                "required_permissions": [],  # Permissions managed by team magnetic fields
                 "tool_specific_config": file_config.model_dump()
             }
         

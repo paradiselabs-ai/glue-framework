@@ -1,16 +1,26 @@
-"""SmolAgents Provider Implementation
+"""SmolAgents Provider Implementation with Enhanced Validation and Logging
 
 This provider uses SmolAgents to:
 1. Create tools dynamically
 2. Parse natural language into tool intents
 3. Execute tools with proper adhesive bindings
 4. Handle MCP tool integration
+
+Features:
+- Pydantic validation for all data structures
+- Enhanced logging with Loguru
+- Comprehensive error handling
+- SmolAgents integration
+- Prefect task orchestration
 """
 
 from typing import Dict, Any, Optional, List, Union, Tuple, Pattern, Callable
 import re
 import inspect
 from datetime import datetime
+from pydantic import BaseModel, Field, ConfigDict
+from prefect import task, flow
+
 from .base import BaseProvider
 from ..core.types import AdhesiveType, ToolResult
 from ..tools.base import BaseTool
@@ -23,10 +33,39 @@ from ..tools.dynamic_tool_factory import (
 from smolagents.tools import Tool, AUTHORIZED_TYPES
 from smolagents.agents import ToolCallingAgent
 
+from ..core.logger import log_tool_event, ToolLogContext
+from ..core.errors import ToolError, error_handler, ErrorSeverity
+
+class SmolAgentsState(BaseModel):
+    """State tracking for SmolAgents provider"""
+    team_name: str
+    available_adhesives: Set[AdhesiveType]
+    tool_factory: Optional[DynamicToolFactory] = None
+    dynamic_tools: Dict[str, BaseTool] = Field(default_factory=dict)
+    last_used: Optional[datetime] = None
+    call_count: int = Field(default=0)
+    error_count: int = Field(default=0)
+    average_latency: float = Field(default=0.0)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+class SmolAgentsConfig(BaseModel):
+    """Configuration for SmolAgents provider"""
+    api_key: str
+    base_url: Optional[str] = None
+    timeout: float = Field(default=30.0, gt=0)
+    retry_count: int = Field(default=3, ge=0)
+    cache_results: bool = Field(default=True)
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
 
 class SmolAgentsProvider(BaseProvider):
     """Provider that uses SmolAgents for enhanced tool capabilities"""
     
+    state: SmolAgentsState
+    config: SmolAgentsConfig
+
     def __init__(
         self,
         name: str,
@@ -44,10 +83,18 @@ class SmolAgentsProvider(BaseProvider):
             api_key=api_key,
             config=config
         )
-        self.base_url = base_url
-        self.tool_factory = DynamicToolFactory()
-        self.team = team  # Store team name
-        self._available_adhesives = available_adhesives  # Store available adhesives
+        
+        # Initialize state and config with Pydantic models
+        self.state = SmolAgentsState(
+            team_name=team,
+            available_adhesives=available_adhesives,
+            tool_factory=DynamicToolFactory()
+        )
+        
+        self.config = SmolAgentsConfig(
+            api_key=api_key,
+            base_url=base_url
+        )
         
     async def create_tool(self, name: str, description: str, function: Callable) -> BaseTool:
         """Create a new tool on the fly with enhanced validation and documentation"""
@@ -267,232 +314,335 @@ class SmolAgentsProvider(BaseProvider):
         # Default to factory's natural request parser
         return await self.tool_factory.parse_natural_request(request, self.team)
         
+    @error_handler
+    @flow(name="use_tool")
     async def use_tool(self, tool_name: str, adhesive: AdhesiveType, input_data: Any) -> ToolResult:
-        """Use tool with enhanced execution and error handling"""
-        try:
-            # Validate adhesive
-            if adhesive not in self.available_adhesives:
-                raise ValueError(f"Model {self.name} cannot use {adhesive.name} adhesive")
-            
-            # Get tool with enhanced error handling
-            tool = None
-            if tool_name in self.team.tools:
-                tool = self.team.tools[tool_name]
-            elif hasattr(self, '_dynamic_tools') and tool_name in self._dynamic_tools:
-                tool = self._dynamic_tools[tool_name]
-            
-            if not tool:
-                available_tools = list(self.team.tools.keys())
-                if hasattr(self, '_dynamic_tools'):
-                    available_tools.extend(self._dynamic_tools.keys())
-                raise ValueError(
-                    f"Tool '{tool_name}' not available to team {self.team.name}.\n"
-                    f"Available tools: {', '.join(available_tools)}"
-                )
-            
-            # Pre-execution validation
-            if not input_data:
-                raise ValueError("Input data cannot be empty")
-                
-            # Import team data if using GLUE
-            if adhesive == AdhesiveType.GLUE:
-                if hasattr(tool, 'import_team_data'):
-                    shared_data = self.team.shared_results.get(tool_name)
-                    if shared_data:
-                        await tool.import_team_data(shared_data)
-            
-            # Execute through SmolAgents with timeout handling
-            from smolagents.agents import ToolCallingAgent
-            import asyncio
-            
-            agent = ToolCallingAgent()
-            smol_tool = await self._convert_tool(tool)
-            
-            # Get first input key from tool's inputs
-            input_key = next(iter(tool.inputs))
-            # Create kwargs with the correct parameter name
-            kwargs = {input_key: input_data}
-            
-            try:
-                # Execute with timeout
-                result = await asyncio.wait_for(
-                    agent.execute(smol_tool, **kwargs),
-                    timeout=30.0  # 30 second timeout
-                )
-            except asyncio.TimeoutError:
-                raise TimeoutError(f"Tool execution timed out after 30 seconds")
-            
-            # Validate result
-            if result is None:
-                raise ValueError("Tool execution returned None")
-            
-            # Create result with metadata
-            tool_result = ToolResult(
+        """Use tool with enhanced execution and logging"""
+        start_time = datetime.now()
+
+        # Log tool execution start
+        log_tool_event(
+            ToolLogContext(
+                component="smolagents",
+                action="execute",
                 tool_name=tool_name,
-                result=result,
-                adhesive=adhesive,
-                timestamp=datetime.now(),
-                metadata={
-                    "input": input_data,
-                    "tool_type": tool.__class__.__name__,
-                    "execution_time": datetime.now().isoformat()
-                }
+                adhesive_type=adhesive.value,
+                team_name=self.state.team_name
+            ),
+            f"Starting tool execution: {tool_name}"
+        )
+
+        # Validate adhesive
+        if adhesive not in self.state.available_adhesives:
+            raise ToolError(
+                message=f"Model {self.name} cannot use {adhesive.name} adhesive",
+                tool_name=tool_name,
+                adhesive_type=adhesive.value,
+                team_name=self.state.team_name,
+                severity=ErrorSeverity.ERROR
             )
-            
-            # Handle based on adhesive with error handling
-            try:
-                if adhesive == AdhesiveType.GLUE:
-                    await self.team.share_result(tool_result)
-                elif adhesive == AdhesiveType.VELCRO:
-                    if not hasattr(self, '_session_results'):
-                        self._session_results = {}
-                    self._session_results[tool_name] = tool_result
-            except Exception as e:
-                print(f"Warning: Failed to handle adhesive result: {str(e)}")
-                # Continue since we still want to return the result
-            
-            return tool_result
-            
-        except Exception as e:
-            # Enhanced error handling with context
-            error_msg = f"Tool execution failed: {str(e)}"
-            if "timeout" in str(e).lower():
-                error_msg += "\nTool execution took too long. Please try again or use a simpler query."
-            elif "validation" in str(e).lower():
-                error_msg += f"\nPlease check the input format for {tool_name}."
-            raise ValueError(error_msg)
-        
-    async def _make_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Make request to SmolAgents with enhanced processing and error handling"""
+
+        # Get tool
+        tool = None
+        if tool_name in self.team.tools:
+            tool = self.team.tools[tool_name]
+        elif tool_name in self.state.dynamic_tools:
+            tool = self.state.dynamic_tools[tool_name]
+
+        if not tool:
+            available_tools = list(self.team.tools.keys()) + list(self.state.dynamic_tools.keys())
+            raise ToolError(
+                message=f"Tool '{tool_name}' not available to team {self.state.team_name}",
+                tool_name=tool_name,
+                adhesive_type=adhesive.value,
+                team_name=self.state.team_name,
+                severity=ErrorSeverity.ERROR,
+                metadata={"available_tools": available_tools}
+            )
+
+        # Pre-execution validation
+        if not input_data:
+            raise ToolError(
+                message="Input data cannot be empty",
+                tool_name=tool_name,
+                adhesive_type=adhesive.value,
+                team_name=self.state.team_name,
+                severity=ErrorSeverity.ERROR
+            )
+
+        # Import team data if using GLUE
+        if adhesive == AdhesiveType.GLUE and hasattr(tool, 'import_team_data'):
+            shared_data = self.team.shared_results.get(tool_name)
+            if shared_data:
+                await tool.import_team_data(shared_data)
+
+        # Execute through SmolAgents with timeout handling
+        from smolagents.agents import ToolCallingAgent
+        import asyncio
+
+        agent = ToolCallingAgent()
+        smol_tool = await self._convert_tool(tool)
+
+        # Get first input key from tool's inputs
+        input_key = next(iter(tool.inputs))
+        kwargs = {input_key: input_data}
+
         try:
-            from smolagents.agents import ToolCallingAgent
-            import asyncio
-            
-            # Validate request data
-            if not isinstance(request_data, dict):
-                raise TypeError("Request data must be a dictionary")
-            
-            if "messages" not in request_data:
-                raise ValueError("Request data must contain 'messages' key")
-            
-            if not request_data["messages"]:
-                raise ValueError("Messages list cannot be empty")
-            
-            # Get available tools with validation
-            tools = []
-            if hasattr(self.team, 'tools'):
-                tools.extend(self.team.tools.values())
-            if hasattr(self, '_dynamic_tools'):
-                tools.extend(self._dynamic_tools.values())
-            
-            if not tools:
-                raise ValueError(
-                    f"No tools available for team {self.team.name}. "
-                    "Please ensure tools are properly initialized."
-                )
-            
-            # Initialize agent with configuration
-            agent = ToolCallingAgent()
-            
-            # Process request with timeout
-            try:
-                response = await asyncio.wait_for(
-                    agent.process_message(
-                        request_data["messages"],
-                        tools=tools
-                    ),
-                    timeout=30.0  # 30 second timeout
-                )
-            except asyncio.TimeoutError:
-                raise TimeoutError("Request processing timed out after 30 seconds")
-            
-            # Validate response
-            if not response:
-                raise ValueError("Received empty response from SmolAgents")
-            
-            if "choices" not in response:
-                raise ValueError("Invalid response format: missing 'choices' key")
-            
-            # Add metadata to response
-            response["metadata"] = {
-                "timestamp": datetime.now().isoformat(),
-                "team_name": self.team.name,
-                "num_tools_available": len(tools),
-                "request_type": request_data["messages"][-1].get("role", "unknown")
+            # Execute with timeout from config
+            result = await asyncio.wait_for(
+                agent.execute(smol_tool, **kwargs),
+                timeout=self.config.timeout
+            )
+        except asyncio.TimeoutError:
+            raise ToolError(
+                message=f"Tool execution timed out after {self.config.timeout} seconds",
+                tool_name=tool_name,
+                adhesive_type=adhesive.value,
+                team_name=self.state.team_name,
+                severity=ErrorSeverity.ERROR,
+                metadata={"timeout": self.config.timeout}
+            )
+
+        # Validate result
+        if result is None:
+            raise ToolError(
+                message="Tool execution returned None",
+                tool_name=tool_name,
+                adhesive_type=adhesive.value,
+                team_name=self.state.team_name,
+                severity=ErrorSeverity.ERROR
+            )
+
+        # Update metrics
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        self.state.call_count += 1
+        self.state.last_used = end_time
+        self.state.average_latency = (
+            (self.state.average_latency * (self.state.call_count - 1) + duration)
+            / self.state.call_count
+        )
+
+        # Create result with metadata
+        tool_result = ToolResult(
+            tool_name=tool_name,
+            result=result,
+            adhesive=adhesive,
+            timestamp=end_time,
+            metadata={
+                "input": input_data,
+                "tool_type": tool.__class__.__name__,
+                "execution_time": duration,
+                "provider": "smolagents",
+                "team_name": self.state.team_name
             }
-            
-            return response
-            
+        )
+
+        # Handle based on adhesive
+        try:
+            if adhesive == AdhesiveType.GLUE:
+                await self.team.share_result(tool_result)
+            elif adhesive == AdhesiveType.VELCRO:
+                if not hasattr(self, '_session_results'):
+                    self._session_results = {}
+                self._session_results[tool_name] = tool_result
         except Exception as e:
-            # Enhanced error handling with context
-            error_msg = f"Failed to make request: {str(e)}"
-            if isinstance(e, TimeoutError):
-                error_msg += "\nRequest took too long to process. Try simplifying your request."
-            elif "no tools available" in str(e).lower():
-                error_msg += f"\nAvailable tools: {', '.join(t.name for t in tools) if tools else 'None'}"
-            elif "invalid response format" in str(e).lower():
-                error_msg += "\nReceived unexpected response format from SmolAgents"
-            raise ValueError(error_msg)
+            log_tool_event(
+                ToolLogContext(
+                    component="smolagents",
+                    action="adhesive_error",
+                    tool_name=tool_name,
+                    adhesive_type=adhesive.value,
+                    team_name=self.state.team_name
+                ),
+                f"Failed to handle adhesive result: {str(e)}"
+            )
+            # Continue since we still want to return the result
+
+        # Log successful execution
+        log_tool_event(
+            ToolLogContext(
+                component="smolagents",
+                action="success",
+                tool_name=tool_name,
+                adhesive_type=adhesive.value,
+                team_name=self.state.team_name
+            ),
+            f"Tool execution successful: {tool_name}"
+        )
+
+        return tool_result
+        
+    @error_handler
+    @flow(name="make_request")
+    async def _make_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Make request to SmolAgents with enhanced processing and logging"""
+        from smolagents.agents import ToolCallingAgent
+        import asyncio
+
+        # Log request start
+        log_tool_event(
+            ToolLogContext(
+                component="smolagents",
+                action="request",
+                tool_name="agent",
+                adhesive_type="none",
+                team_name=self.state.team_name
+            ),
+            "Starting SmolAgents request"
+        )
+
+        # Validate request data
+        if not isinstance(request_data, dict):
+            raise ToolError(
+                message="Request data must be a dictionary",
+                tool_name="smolagents",
+                adhesive_type="none",
+                team_name=self.state.team_name,
+                severity=ErrorSeverity.ERROR
+            )
+
+        if "messages" not in request_data:
+            raise ToolError(
+                message="Request data must contain 'messages' key",
+                tool_name="smolagents",
+                adhesive_type="none",
+                team_name=self.state.team_name,
+                severity=ErrorSeverity.ERROR
+            )
+
+        if not request_data["messages"]:
+            raise ToolError(
+                message="Messages list cannot be empty",
+                tool_name="smolagents",
+                adhesive_type="none",
+                team_name=self.state.team_name,
+                severity=ErrorSeverity.ERROR
+            )
+
+        # Get available tools
+        tools = []
+        if hasattr(self.team, 'tools'):
+            tools.extend(self.team.tools.values())
+        if hasattr(self, '_dynamic_tools'):
+            tools.extend(self._dynamic_tools.values())
+
+        if not tools:
+            raise ToolError(
+                message=f"No tools available for team {self.state.team_name}",
+                tool_name="smolagents",
+                adhesive_type="none",
+                team_name=self.state.team_name,
+                severity=ErrorSeverity.ERROR
+            )
+
+        # Initialize agent
+        agent = ToolCallingAgent()
+
+        try:
+            # Process request with timeout from config
+            response = await asyncio.wait_for(
+                agent.process_message(
+                    request_data["messages"],
+                    tools=tools
+                ),
+                timeout=self.config.timeout
+            )
+        except asyncio.TimeoutError:
+            raise ToolError(
+                message=f"Request processing timed out after {self.config.timeout} seconds",
+                tool_name="smolagents",
+                adhesive_type="none",
+                team_name=self.state.team_name,
+                severity=ErrorSeverity.ERROR,
+                metadata={"timeout": self.config.timeout}
+            )
+
+        # Validate response
+        if not response:
+            raise ToolError(
+                message="Received empty response from SmolAgents",
+                tool_name="smolagents",
+                adhesive_type="none",
+                team_name=self.state.team_name,
+                severity=ErrorSeverity.ERROR
+            )
+
+        if "choices" not in response:
+            raise ToolError(
+                message="Invalid response format: missing 'choices' key",
+                tool_name="smolagents",
+                adhesive_type="none",
+                team_name=self.state.team_name,
+                severity=ErrorSeverity.ERROR
+            )
+
+        # Add metadata
+        response["metadata"] = {
+            "timestamp": datetime.now().isoformat(),
+            "team_name": self.state.team_name,
+            "num_tools_available": len(tools),
+            "request_type": request_data["messages"][-1].get("role", "unknown"),
+            "provider": "smolagents"
+        }
+
+        # Log successful request
+        log_tool_event(
+            ToolLogContext(
+                component="smolagents",
+                action="success",
+                tool_name="agent",
+                adhesive_type="none",
+                team_name=self.state.team_name
+            ),
+            "SmolAgents request successful"
+        )
+
+        return response
             
+    @error_handler
     async def _handle_error(self, error: Exception) -> None:
         """Handle SmolAgents errors with enhanced logging and context"""
         import traceback
-        from datetime import datetime
         
-        try:
-            # Get error context
-            error_type = error.__class__.__name__
-            error_msg = str(error)
-            stack_trace = traceback.format_exc()
-            
-            # Create detailed error log
-            error_log = {
-                "timestamp": datetime.now().isoformat(),
+        # Get error context
+        error_type = error.__class__.__name__
+        error_msg = str(error)
+        stack_trace = traceback.format_exc()
+        
+        # Determine error severity and category
+        severity = ErrorSeverity.ERROR
+        if isinstance(error, TimeoutError):
+            category = ErrorCategory.RUNTIME
+            error_msg = "The operation took too long to complete. Try breaking it into smaller steps."
+        elif "validation" in error_msg.lower():
+            category = ErrorCategory.VALIDATION
+            error_msg = "The input provided was invalid. Check the tool's requirements and try again."
+        elif "permission" in error_msg.lower():
+            category = ErrorCategory.SYSTEM
+            error_msg = "The tool doesn't have the necessary permissions. Contact your administrator."
+        elif "not found" in error_msg.lower():
+            category = ErrorCategory.VALIDATION
+            available_tools = list(self.team.tools.keys()) if hasattr(self.team, 'tools') else []
+            error_msg = f"Tool not found. Available tools: {', '.join(available_tools)}" if available_tools else "No tools currently available."
+        else:
+            category = ErrorCategory.RUNTIME
+        
+        # Create error with context
+        raise ToolError(
+            message=error_msg,
+            tool_name="smolagents",
+            adhesive_type="none",
+            team_name=self.state.team_name,
+            severity=severity,
+            metadata={
                 "error_type": error_type,
-                "message": error_msg,
                 "stack_trace": stack_trace,
-                "context": {
-                    "team": self.team.name if hasattr(self, 'team') else None,
-                    "provider": self.provider,
-                    "available_adhesives": [a.name for a in self._available_adhesives] if hasattr(self, '_available_adhesives') else [],
-                    "tools": list(self.team.tools.keys()) if hasattr(self.team, 'tools') else []
-                }
+                "provider": self.provider,
+                "available_adhesives": [a.value for a in self.state.available_adhesives],
+                "tools": list(self.team.tools.keys()) if hasattr(self.team, 'tools') else []
             }
-            
-            # Log error details
-            print("\nSmolAgents Error Details:")
-            print("=" * 50)
-            print(f"Time: {error_log['timestamp']}")
-            print(f"Type: {error_log['error_type']}")
-            print(f"Message: {error_log['message']}")
-            print("\nContext:")
-            for key, value in error_log["context"].items():
-                print(f"- {key}: {value}")
-            print("\nStack Trace:")
-            print(stack_trace)
-            print("=" * 50)
-            
-            # Construct user-friendly error message
-            user_msg = f"SmolAgents error: {error_msg}"
-            
-            # Add context-specific help
-            if "timeout" in error_msg.lower():
-                user_msg += "\nThe operation took too long to complete. Try breaking it into smaller steps."
-            elif "validation" in error_msg.lower():
-                user_msg += "\nThe input provided was invalid. Check the tool's requirements and try again."
-            elif "permission" in error_msg.lower():
-                user_msg += "\nThe tool doesn't have the necessary permissions. Contact your administrator."
-            elif "not found" in error_msg.lower():
-                available_tools = error_log["context"]["tools"]
-                user_msg += f"\nAvailable tools: {', '.join(available_tools)}" if available_tools else "\nNo tools currently available."
-            
-            # Re-raise with enhanced message
-            raise ValueError(user_msg)
-            
-        except Exception as e:
-            # Fallback error handling if error processing fails
-            print(f"Error while handling error: {str(e)}")
-            raise ValueError(f"SmolAgents error: {str(error)} (Error handling failed)")
+        )
         
     async def _prepare_request(self, prompt: str) -> Dict[str, Any]:
         """Prepare request with SmolAgents context"""
@@ -540,63 +690,133 @@ Available Tools:
             ]
         }
         
+    @error_handler
+    @flow(name="process_response")
     async def _process_response(self, response: Dict[str, Any]) -> str:
-        """Process response and execute any tool intents"""
-        try:
-            content = response["choices"][0]["message"]["content"]
-            
-            # Parse natural language into tool intent
-            from smolagents.agents import ToolCallingAgent
-            agent = ToolCallingAgent()
-            
-            # First check for tool creation request
-            if any(phrase in content.lower() for phrase in ["create a tool", "create an mcp", "enhance the", "modify the"]):
-                tool = await self.handle_tool_creation_request(content)
-                if tool:
-                    # For citation tool, add example usage
-                    if "citation" in tool.name.lower():
-                        return (
-                            f"Created new tool: {tool.name}\n"
-                            f"{tool.description}\n\n"
-                            "Example usage: Format this citation: 'Title' by Author, Year"
-                        )
-                    # For weather tool, add example usage
-                    elif "weather" in tool.name.lower():
-                        return (
-                            f"Created new tool: {tool.name}\n"
-                            f"{tool.description}\n\n"
-                            "Example usage: What's the weather in London?"
-                        )
-                    # For enhanced tools, show what's new
-                    elif "enhanced" in content.lower():
-                        return (
-                            f"Enhanced tool: {tool.name}\n"
-                            f"New capabilities: {tool.description}"
-                        )
-                    else:
-                        return f"Created new tool: {tool.name}\n{tool.description}"
-            
-            # Then try to parse tool usage intent
-            try:
-                intent = await agent.parse_message(content)
-                
-                if intent and "tool" in intent:
-                    # Execute tool
-                    result = await self.use_tool(
-                        tool_name=intent["tool"],
-                        adhesive=AdhesiveType[intent.get("adhesive", "TAPE").upper()],
-                        input_data=intent["input"]
+        """Process response and execute any tool intents with enhanced logging"""
+        # Log response processing start
+        log_tool_event(
+            ToolLogContext(
+                component="smolagents",
+                action="process_response",
+                tool_name="agent",
+                adhesive_type="none",
+                team_name=self.state.team_name
+            ),
+            "Processing SmolAgents response"
+        )
+
+        # Validate response format
+        if not response.get("choices"):
+            raise ToolError(
+                message="Invalid response format: missing choices",
+                tool_name="smolagents",
+                adhesive_type="none",
+                team_name=self.state.team_name,
+                severity=ErrorSeverity.ERROR
+            )
+
+        content = response["choices"][0]["message"]["content"]
+        from smolagents.agents import ToolCallingAgent
+        agent = ToolCallingAgent()
+
+        # Check for tool creation request
+        if any(phrase in content.lower() for phrase in ["create a tool", "create an mcp", "enhance the", "modify the"]):
+            log_tool_event(
+                ToolLogContext(
+                    component="smolagents",
+                    action="tool_creation",
+                    tool_name="agent",
+                    adhesive_type="none",
+                    team_name=self.state.team_name
+                ),
+                "Handling tool creation request"
+            )
+
+            tool = await self.handle_tool_creation_request(content)
+            if tool:
+                result = None
+                if "citation" in tool.name.lower():
+                    result = (
+                        f"Created new tool: {tool.name}\n"
+                        f"{tool.description}\n\n"
+                        "Example usage: Format this citation: 'Title' by Author, Year"
                     )
-                    return str(result.result)
-                    
-            except Exception as e:
-                # If tool execution fails, return original response
-                pass
-                
-            return content
-            
+                elif "weather" in tool.name.lower():
+                    result = (
+                        f"Created new tool: {tool.name}\n"
+                        f"{tool.description}\n\n"
+                        "Example usage: What's the weather in London?"
+                    )
+                elif "enhanced" in content.lower():
+                    result = (
+                        f"Enhanced tool: {tool.name}\n"
+                        f"New capabilities: {tool.description}"
+                    )
+                else:
+                    result = f"Created new tool: {tool.name}\n{tool.description}"
+
+                log_tool_event(
+                    ToolLogContext(
+                        component="smolagents",
+                        action="tool_created",
+                        tool_name=tool.name,
+                        adhesive_type="none",
+                        team_name=self.state.team_name
+                    ),
+                    f"Successfully created tool: {tool.name}"
+                )
+                return result
+
+        # Try to parse tool usage intent
+        try:
+            intent = await agent.parse_message(content)
+            if intent and "tool" in intent:
+                log_tool_event(
+                    ToolLogContext(
+                        component="smolagents",
+                        action="tool_intent",
+                        tool_name=intent["tool"],
+                        adhesive_type=intent.get("adhesive", "TAPE"),
+                        team_name=self.state.team_name
+                    ),
+                    f"Executing tool intent: {intent['tool']}"
+                )
+
+                result = await self.use_tool(
+                    tool_name=intent["tool"],
+                    adhesive=AdhesiveType[intent.get("adhesive", "TAPE").upper()],
+                    input_data=intent["input"]
+                )
+                return str(result.result)
+
         except Exception as e:
-            raise ValueError(f"Failed to process response: {str(e)}")
+            log_tool_event(
+                ToolLogContext(
+                    component="smolagents",
+                    action="tool_error",
+                    tool_name=intent["tool"] if intent and "tool" in intent else "unknown",
+                    adhesive_type="none",
+                    team_name=self.state.team_name
+                ),
+                f"Tool execution failed: {str(e)}"
+            )
+            # If tool execution fails, return original response
+            pass
+
+        # Log successful processing
+        log_tool_event(
+            ToolLogContext(
+                component="smolagents",
+                action="success",
+                tool_name="agent",
+                adhesive_type="none",
+                team_name=self.state.team_name
+            ),
+            "Successfully processed response"
+        )
+
+        return content
             
     async def _convert_tool(self, tool: BaseTool) -> Any:
         """Convert GLUE tool to SmolAgents tool with enhanced validation and error handling"""

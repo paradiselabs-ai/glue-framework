@@ -71,10 +71,9 @@ htmlcov/
 docs/_build/
 docs/_static/
 docs/_templates/
-docs/*
 docs/MCP/
-docs/SmolAgents/
-docs/framework/
+docs/PydanticAI/
+docs/trae
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb
@@ -95,7 +94,7 @@ mcp_integration_analysis.md
 research_notes/
 
 ## Example apps and logs
-examples/*.glue
+
 examples/output/
 examples/logs/
 

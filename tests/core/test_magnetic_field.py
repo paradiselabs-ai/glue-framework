@@ -1,10 +1,10 @@
-"""Tests for Pydantic Magnetic Field implementation"""
+"""Tests for Magnetic Field implementation"""
 
 import pytest
 from datetime import datetime
 from typing import Dict, Set
 
-from glue.magnetic.field_pydantic import MagneticField, FieldState
+from glue.magnetic.field import MagneticField
 from glue.core.team_pydantic import Team, TeamRole
 from glue.core.pydantic_models import (
     ModelConfig, ModelState, ToolResult, SmolAgentsTool,

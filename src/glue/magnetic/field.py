@@ -3,10 +3,14 @@
 from datetime import datetime
 from typing import Dict, List, Optional, Type, Callable, Any, Set, TYPE_CHECKING, ClassVar
 from collections import defaultdict
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+from prefect import task, flow
 from loguru import logger
 
 from ..core.debug import FieldDebugInfo, FlowDebugInfo
+from ..core.pydantic_models import (
+    ModelState, TeamContext, ToolResult, MagneticFlow, PrefectTaskConfig
+)
 
 
 from ..core.errors import (
@@ -53,6 +57,15 @@ from .models import (
     FlowHealth
 )
 
+class _DebugInfo(BaseModel):
+    """Debug information for magnetic field"""
+    active_flows: Dict[str, bool] = Field(default_factory=dict)
+    flow_metrics: Dict[str, FlowMetrics] = Field(default_factory=dict)
+    pattern_states: Dict[str, PatternState] = Field(default_factory=dict)
+    
+    class Config:
+        arbitrary_types_allowed = True
+
 class FlowPattern(BaseModel):
     """Model for magnetic flow patterns"""
     name: str = Field(..., description="Pattern name")
@@ -61,12 +74,18 @@ class FlowPattern(BaseModel):
     rules: List[Dict[str, Any]] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    class Config:
+        arbitrary_types_allowed = True
+
 class PatternState(BaseModel):
     """Model for pattern execution state"""
     pattern: FlowPattern
     active_flows: Set[str] = Field(default_factory=set)
     message_counts: Dict[str, int] = Field(default_factory=dict)
     current_phase: Optional[str] = Field(default=None)
+
+    class Config:
+        arbitrary_types_allowed = True
 
 # ==================== Main Class ====================
 class MagneticField(BaseModel):
@@ -84,6 +103,9 @@ class MagneticField(BaseModel):
     - <- (Pull): Target team pulls results from source team
     - <> (Repel): Teams cannot communicate
     """
+
+    class Config:
+        arbitrary_types_allowed = True
     
     # Configuration and state
     config: FieldConfig = Field(..., description="Field configuration")
@@ -123,6 +145,18 @@ class MagneticField(BaseModel):
         description="Event handlers"
     )
     
+    # Flow decorators
+    register_pattern: ClassVar[Callable] = flow(name="register_pattern")
+    set_team_flow: ClassVar[Callable] = flow(name="set_team_flow")
+    advance_pattern_phase: ClassVar[Callable] = flow(name="advance_pattern_phase")
+    establish_flow: ClassVar[Callable] = flow(name="establish_flow")
+    break_flow: ClassVar[Callable] = flow(name="break_flow")
+    transfer_information: ClassVar[Callable] = flow(name="transfer_information")
+    
+    # Task decorators
+    add_team: ClassVar[Callable] = task()
+    remove_team: ClassVar[Callable] = task()
+    
     # Class-level field registry
     _fields: ClassVar[Dict[str, 'MagneticField']] = {}
     
@@ -143,6 +177,9 @@ class MagneticField(BaseModel):
     ):
         self.name = name
         """Initialize a magnetic field with Pydantic models for validation"""
+        # Set up logging
+        logger.add(f"magnetic_field_{name}_{{time}}.log", rotation="10 MB")
+        logger.info(f"Initializing MagneticField: {name}")
         # Initialize field configuration with validation
         self.config = FieldConfig(
             name=name,
@@ -162,7 +199,7 @@ class MagneticField(BaseModel):
             registered_teams=set(),
             flows={},
             repelled_teams=set(),
-            child_fields=set()  # Use set instead of list
+            child_fields=[]  # Use list as defined in models.py
         )
         
         # Set up parent relationship
@@ -180,8 +217,10 @@ class MagneticField(BaseModel):
         self._retry_strategies: Dict[str, RetryStrategy] = {}
         self._health_monitors: Dict[str, FlowHealth] = {}
         
-        # Initialize pattern tracking
+        # Initialize pattern tracking and metrics
         self._active_patterns: Dict[str, PatternState] = {}
+        self._metrics: Dict[str, FlowMetrics] = {}
+        self._debug_info = _DebugInfo()
 
     # ==================== Debug Methods ====================
     def get_debug_info(self) -> FieldDebugInfo:
@@ -192,9 +231,28 @@ class MagneticField(BaseModel):
         """Get debug information for a specific flow"""
         return DebugEndpoints.get_flow_debug_info(self, flow_id)
         
-    def get_flow_metrics(self, flow_id: str) -> Dict[str, Any]:
-        """Get detailed metrics for a flow"""
-        return DebugEndpoints.get_flow_metrics(self, flow_id)
+    def get_flow_metrics(self, flow_id: str) -> Dict[str, float]:
+        """Get metrics for a specific flow"""
+        logger.debug(f"Getting flow metrics for: {flow_id}")
+        if flow_id not in self._metrics:
+            logger.warning(f"No metrics found for flow: {flow_id}")
+            return {}
+
+        metrics = self._metrics[flow_id]
+        now = datetime.now()
+        uptime = (now - metrics.last_active).total_seconds() if metrics.last_active else 0
+        error_time = (now - metrics.last_error).total_seconds() if metrics.last_error else 0
+        
+        return {
+            "message_rate": metrics.message_count / max(uptime, 1),
+            "error_rate": metrics.error_count / max(metrics.message_count, 1),
+            "latency": metrics.average_latency,
+            "throughput": metrics.message_count,
+            "uptime": uptime,
+            "error_count": metrics.error_count,
+            "success_rate": metrics.success_rate,
+            "time_since_error": error_time
+        }
         
     def get_protection_status(self, flow_id: str) -> Dict[str, Any]:
         """Get detailed status of protection mechanisms for a flow"""
@@ -202,6 +260,7 @@ class MagneticField(BaseModel):
 
     # ==================== Core Methods ====================
     @handle_flow_errors
+    @task(retries=3, retry_delay_seconds=10)
     async def add_team(self, team: Any) -> None:
         """Register a team with the magnetic field"""
         log_team_event(
@@ -243,6 +302,85 @@ class MagneticField(BaseModel):
         self._retry_strategies[flow_id] = RetryStrategy()
 
     @handle_flow_errors
+    @flow(name="establish_flow")
+    async def establish_flow(
+        self,
+        source_team: str,
+        target_team: str,
+        flow_type: str,
+        prefect_config: Optional[PrefectTaskConfig] = None
+    ) -> None:
+        """Establish a magnetic flow between teams"""
+        logger.info(f"Establishing {flow_type} flow from {source_team} to {target_team}")
+
+        # Validate teams
+        if source_team not in self.state.teams:
+            logger.error(f"Source team {source_team} not found")
+            raise ValueError(f"Source team {source_team} not found")
+        if target_team not in self.state.teams:
+            logger.error(f"Target team {target_team} not found")
+            raise ValueError(f"Target team {target_team} not found")
+
+        # Check for repulsion
+        source = self.state.teams[source_team]
+        target = self.state.teams[target_team]
+
+        if target_team in source.repelled_by or source_team in target.repelled_by:
+            logger.error(f"Cannot establish flow - teams are repelled")
+            raise ValueError(f"Cannot establish flow - teams are repelled")
+
+        # Create flow
+        flow = MagneticFlow(
+            source_team=source_team,
+            target_team=target_team,
+            flow_type=flow_type,
+            prefect_config=prefect_config
+        )
+
+        # Store flow
+        flow_id = f"{source_team}->{target_team}"
+        self.state.flows[flow_id] = flow
+
+        # Update team relationships
+        if flow_type == "push":
+            source.relationships[target_team] = AdhesiveType.GLUE
+        elif flow_type == "pull":
+            target.relationships[source_team] = AdhesiveType.GLUE
+        elif flow_type == "repel":
+            source.repelled_by.add(target_team)
+            target.repelled_by.add(source_team)
+
+        self.state.updated_at = datetime.now()
+        logger.info(f"Established {flow_type} flow from {source_team} to {target_team}")
+
+    @handle_flow_errors
+    @flow(name="break_flow")
+    async def break_flow(self, source_team: str, target_team: str) -> None:
+        """Break a magnetic flow between teams"""
+        flow_id = f"{source_team}->{target_team}"
+        logger.info(f"Breaking flow between {source_team} and {target_team}")
+
+        if flow_id not in self.state.flows:
+            logger.error(f"No flow exists between {source_team} and {target_team} (flow_id: {flow_id})")
+            raise ValueError(f"No flow exists between {source_team} and {target_team}")
+
+        # Remove flow
+        flow = self.state.flows.pop(flow_id)
+
+        # Update team relationships
+        source = self.state.teams[source_team]
+        target = self.state.teams[target_team]
+
+        if target_team in source.relationships:
+            del source.relationships[target_team]
+        if source_team in target.relationships:
+            del target.relationships[source_team]
+
+        self.state.updated_at = datetime.now()
+        logger.info(f"Broke flow between {source_team} and {target_team}")
+
+    @handle_flow_errors
+    @flow(name="break_team_flow")
     async def break_team_flow(
         self,
         source_team: str,
@@ -318,6 +456,7 @@ class MagneticField(BaseModel):
             )
 
     @handle_flow_errors
+    @flow(name="cleanup_flows")
     async def cleanup_flows(self) -> None:
         """Clean up all team flows"""
         log_flow_event(
@@ -382,7 +521,7 @@ class MagneticField(BaseModel):
                     )
                     await child.cleanup_flows()
             
-            self.state.child_fields.clear()
+            self.state.child_fields = []
             
             log_flow_event(
                 "Child Fields Cleaned",
@@ -562,11 +701,13 @@ class MagneticField(BaseModel):
         return True
         
     @handle_flow_errors
+    @flow(name="set_team_flow")
     async def set_team_flow(
         self,
         source_team: str,
         target_team: str,
-        operator: str  # "><", "->", "<-", or "<>"
+        operator: str,  # "><", "->", "<-", or "<>"
+        prefect_config: Optional[PrefectTaskConfig] = None
     ) -> None:
         """Set up magnetic flow between teams"""
         flow_id = f"{source_team}_to_{target_team}"
@@ -601,7 +742,7 @@ class MagneticField(BaseModel):
             raise ValueError(f"Invalid flow {operator} between {source_team} and {target_team}")
             
         # Set up flow based on operator
-        await self._setup_flow(source_team, target_team, operator)
+        await self._setup_flow(source_team, target_team, operator, prefect_config)
         
         log_flow_event(
             "Team Flow Setup Complete",
@@ -618,11 +759,13 @@ class MagneticField(BaseModel):
         )
 
     @handle_flow_errors
+    @flow(name="setup_flow")
     async def _setup_flow(
         self,
         source_team: str,
         target_team: str,
-        flow_type: str  # "><", "->", "<-", "<>"
+        flow_type: str,  # "><", "->", "<-", "<>"
+        prefect_config: Optional[PrefectTaskConfig] = None
     ) -> None:
         """Set up flow between teams using magnetic operators"""
         flow_id = f"{source_team}_to_{target_team}"
@@ -648,13 +791,14 @@ class MagneticField(BaseModel):
         # Validate flow type
         validate_flow_type(flow_type, "_setup_flow")
         
-        # Create flow configuration
+        # Create flow configuration with Prefect config
         flow_config = FlowConfig(
             source=source_team,
             target=target_team,
             flow_type=flow_type,
             enabled=True,
-            strength=1.0  # Default strength for new flows
+            strength=1.0,  # Default strength for new flows
+            prefect_config=prefect_config
         )
         
         # Create flow state
@@ -867,6 +1011,7 @@ class MagneticField(BaseModel):
             )
 
     @handle_flow_errors
+    @flow(name="create_child_field")
     def create_child_field(self, name: str, is_pull_team: bool = False) -> 'MagneticField':
         """Create a child field that inherits from this field"""
         log_flow_event(
@@ -905,7 +1050,7 @@ class MagneticField(BaseModel):
             parent=self,
             is_pull_team=is_pull_team
         )
-        self.state.child_fields.add(child.config.name)
+        self.state.child_fields.append(child.config.name)
         
         log_flow_event(
             "Child Field Created Successfully",
@@ -959,6 +1104,7 @@ class MagneticField(BaseModel):
         return None
         
     @handle_flow_errors
+    @task
     def _is_repelled(self, other: 'MagneticField') -> bool:
         """Check if this field is repelled from another"""
         log_flow_event(
@@ -1060,6 +1206,7 @@ class MagneticField(BaseModel):
         return None
         
     @handle_flow_errors
+    @flow(name="attract_teams")
     async def attract(self, team1: str, team2: str) -> bool:
         """Attract two teams (bidirectional flow)"""
         flow_id = f"{team1}_to_{team2}"
@@ -1126,6 +1273,7 @@ class MagneticField(BaseModel):
             return False
             
     @handle_flow_errors
+    @flow(name="repel_teams")
     async def repel(self, team1: str, team2: str) -> bool:
         """Repel two teams (no communication)"""
         flow_id = f"repel_{team1}_{team2}"
@@ -1193,6 +1341,7 @@ class MagneticField(BaseModel):
             return False
             
     @handle_flow_errors
+    @flow(name="process_team_flow")
     async def process_team_flow(
         self,
         source_team: str,
@@ -1258,12 +1407,137 @@ class MagneticField(BaseModel):
         return result
         
     def get_team_flows(self, team_name: str) -> Dict[str, str]:
-        """Get all flows for a team"""
+        """Get all flows involving a team"""
+        logger.debug(f"Getting flows for team: {team_name}")
         flows = {}
         for flow_id, flow_state in self.state.active_flows.items():
             if flow_state.config.source == team_name:
-                flows[flow_state.config.target] = flow_state.config.flow_type
+                flows[flow_state.config.target] = "->"
+            elif flow_state.config.target == team_name:
+                flows[flow_state.config.source] = "<-"
         return flows
+
+    def get_repelled_teams(self, team_name: str) -> Set[str]:
+        """Get all teams that repel the given team"""
+        logger.debug(f"Getting repelled teams for: {team_name}")
+        repelled = set()
+        for repelled_key in self.state.repelled_teams:
+            team1, team2 = repelled_key.split(":")
+            if team1 == team_name:
+                repelled.add(team2)
+            elif team2 == team_name:
+                repelled.add(team1)
+        return repelled
+
+    def is_flow_active(self, source_team: str, target_team: str) -> bool:
+        """Check if a flow exists and is active between teams"""
+        flow_id = f"{source_team}_to_{target_team}"
+        flow_state = self.state.active_flows.get(flow_id)
+        return bool(flow_state and flow_state.active)
+
+    @handle_flow_errors
+    @flow(name="transfer_information")
+    async def transfer_information(
+        self,
+        source_team: str,
+        target_team: str,
+        content: Any,
+        adhesive_type: Optional[AdhesiveType] = None
+    ) -> None:
+        """Transfer information between teams based on flow"""
+        flow_id = f"{source_team}_to_{target_team}"
+        logger.info(f"Transferring information from {source_team} to {target_team} (flow_id: {flow_id})")
+
+        # Validate teams are registered
+        validate_team_registered(source_team, self.state.registered_teams, "transfer_information")
+        validate_team_registered(target_team, self.state.registered_teams, "transfer_information")
+
+        # Get flow state
+        flow_state = self.state.active_flows.get(flow_id)
+        if not flow_state or not flow_state.active:
+            log_error(
+                "Transfer Failed",
+                f"No active flow between {source_team} and {target_team}",
+                "transfer_information",
+                {
+                    "field": self.config.name,
+                    "flow_id": flow_id,
+                    "active_flows": len(self.state.active_flows)
+                }
+            )
+            raise FlowStateError(f"No active flow between {source_team} and {target_team}")
+
+        # Check protection mechanisms
+        if flow_id in self._circuit_breakers:
+            breaker = self._circuit_breakers[flow_id]
+            if not breaker.can_execute():
+                log_error(
+                    "Circuit Breaker Blocked Transfer",
+                    "Circuit breaker is open",
+                    "transfer_information",
+                    {
+                        "field": self.config.name,
+                        "flow_id": flow_id,
+                        "error_count": breaker.error_count,
+                        "last_error": str(breaker.last_error)
+                    }
+                )
+                raise ProtectionMechanismError("Circuit breaker is open")
+
+        if flow_id in self._rate_limiters:
+            limiter = self._rate_limiters[flow_id]
+            if not limiter.can_process():
+                log_error(
+                    "Rate Limit Blocked Transfer",
+                    "Rate limit exceeded",
+                    "transfer_information",
+                    {
+                        "field": self.config.name,
+                        "flow_id": flow_id,
+                        "current_rate": limiter.current_rate,
+                        "max_rate": limiter.max_requests
+                    }
+                )
+                raise ProtectionMechanismError("Rate limit exceeded")
+            limiter.record_request()
+
+        # Transfer based on flow type
+        if flow_state.config.flow_type == "->":
+            logger.info(f"Pushing information to {target_team}")
+            await self.process_team_flow(source_team, target_team, content, "->")
+        elif flow_state.config.flow_type == "<-":
+            logger.info(f"Pulling information from {source_team}")
+            await self.process_team_flow(target_team, source_team, content, "<-")
+        elif flow_state.config.flow_type == "><":
+            logger.info(f"Bidirectional transfer between {source_team} and {target_team}")
+            await self.process_team_flow(source_team, target_team, content, "><")
+
+        # Update flow state
+        flow_state.message_count += 1
+        flow_state.last_active = datetime.now()
+
+        # Update health metrics
+        if flow_id in self._health_monitors:
+            health = self._health_monitors[flow_id]
+            health.last_check = datetime.now()
+            health.throughput = flow_state.message_count / max(
+                (datetime.now() - flow_state.last_active).total_seconds(), 1
+            )
+
+        log_flow_event(
+            "Information Transfer Complete",
+            FlowLogContext(
+                flow_id=flow_id,
+                source_team=source_team,
+                target_team=target_team,
+                flow_type=flow_state.config.flow_type,
+                metadata={
+                    "field": self.config.name,
+                    "message_count": flow_state.message_count,
+                    "adhesive_type": adhesive_type.value if adhesive_type else None
+                }
+            )
+        )
 
     def __str__(self) -> str:
         """String representation of the magnetic field"""
@@ -1284,6 +1558,7 @@ class MagneticField(BaseModel):
         )
 
     @handle_flow_errors
+    @flow(name="share_team_results")
     async def share_team_results(
         self,
         source_team: str,
@@ -1415,6 +1690,7 @@ class MagneticField(BaseModel):
         )
 
     @handle_flow_errors
+    @flow(name="enable_field_pull")
     async def enable_field_pull(self, source_field: 'MagneticField') -> bool:
         """Enable pulling from another field"""
         flow_id = f"{self.name}_from_{source_field.name}"
@@ -1487,6 +1763,7 @@ class MagneticField(BaseModel):
             return False
             
     @handle_flow_errors
+    @flow(name="enable_pull")
     async def enable_pull(self, target_team: str, source_team: str) -> bool:
         """Enable one-way pull flow from source team to target team"""
         flow_id = f"{target_team}_from_{source_team}"
@@ -1553,6 +1830,7 @@ class MagneticField(BaseModel):
             return False
 
     @handle_flow_errors
+    @flow(name="register_pattern")
     async def register_pattern(self, pattern: FlowPattern) -> None:
         """Register a new flow pattern"""
         if pattern.name in self._active_patterns:
@@ -1607,6 +1885,7 @@ class MagneticField(BaseModel):
         )
         
     @handle_flow_errors
+    @flow(name="advance_pattern")
     async def advance_pattern_phase(self, pattern_name: str) -> bool:
         """Advance a pattern to its next phase"""
         if pattern_name not in self._active_patterns:
