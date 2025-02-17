@@ -91,6 +91,56 @@ class ValidationError(GlueError):
             metadata=metadata
         )
 
+class FlowValidationError(GlueError):
+    """Flow validation error"""
+    def __init__(
+        self,
+        message: str,
+        flow_id: str,
+        validation_errors: List[str],
+        metadata: Optional[Dict[str, Any]] = None
+    ):
+        metadata = metadata or {}
+        metadata.update({
+            "flow_id": flow_id,
+            "validation_errors": validation_errors
+        })
+        
+        super().__init__(
+            message=message,
+            severity=ErrorSeverity.ERROR,
+            category=ErrorCategory.VALIDATION,
+            component="flow",
+            source=f"flow_{flow_id}",
+            metadata=metadata
+        )
+
+class FlowStateError(GlueError):
+    """Flow state error"""
+    def __init__(
+        self,
+        message: str,
+        flow_id: str,
+        current_state: str,
+        expected_state: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ):
+        metadata = metadata or {}
+        metadata.update({
+            "flow_id": flow_id,
+            "current_state": current_state,
+            "expected_state": expected_state
+        })
+        
+        super().__init__(
+            message=message,
+            severity=ErrorSeverity.ERROR,
+            category=ErrorCategory.FLOW,
+            component="flow",
+            source=f"flow_{flow_id}",
+            metadata=metadata
+        )
+
 class FlowError(GlueError):
     """Flow-related errors"""
     def __init__(

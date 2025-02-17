@@ -1,6 +1,6 @@
 """Web search tool implementation"""
 
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, ClassVar
 from pydantic import BaseModel, Field
 from prefect import task, flow
 from smolagents.tools import Tool, AUTHORIZED_TYPES
@@ -88,14 +88,16 @@ class WebSearchTool(BaseTool):
             )
         return "\n\n".join(formatted_results)
 
-    @flow(
+    # Annotate Prefect flow as ClassVar
+    forward: ClassVar[Any] = flow(
         name="web_search_flow",
         description="Execute web search with retries and validation",
         retries=3,
         retry_delay_seconds=1,
         persist_result=True,
         version="1.0.0"
-    )
+    )(lambda self, query, num_results=3: self.forward(query, num_results))
+
     async def forward(self, query: str, num_results: int = 3) -> str:
         """Execute web search as a Prefect flow"""
         try:

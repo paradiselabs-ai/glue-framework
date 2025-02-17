@@ -20,7 +20,7 @@ import re
 import importlib.util
 import traceback
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type, Tuple, Union
+from typing import Any, Dict, List, Optional, Type, Tuple, Union, ClassVar
 from dataclasses import dataclass
 
 from smolagents.tools import Tool, AUTHORIZED_TYPES
@@ -184,7 +184,7 @@ class CodeInterpreterTool(BaseTool):
         # Initialize configuration from tool_specific_config
         config = self.config.tool_specific_config
         self.enable_security_checks = config["enable_security_checks"]
-        self.enable_co s = config["enable_code_analysis"]
+        self.enable_code_analysis = config["enable_code_analysis"]
         self.enable_error_suggestions = config["enable_error_suggestions"]
         self.max_memory_mb = config["max_memory_mb"]
         self.max_execution_time = config["max_execution_time"]
@@ -378,14 +378,16 @@ class CodeInterpreterTool(BaseTool):
         
         return result
 
-    @flow(
+    # Annotate Prefect flow as ClassVar
+    forward: ClassVar[Any] = flow(
         name="code_interpreter_flow",
         description="Execute code with validation, analysis, and error handling",
         retries=3,
         retry_delay_seconds=1,
         persist_result=True,
         version="1.0.0"
-    )
+    )(lambda self, code, language=None, timeout=None: self.forward(code, language, timeout))
+
     async def forward(
         self,
         code: str,

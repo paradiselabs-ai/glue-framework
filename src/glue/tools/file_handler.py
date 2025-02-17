@@ -1,6 +1,6 @@
 """File Handler Tool Implementation"""
 
-from typing import Any, Dict, List, Optional, Union, Tuple, Literal
+from typing import Any, Dict, List, Optional, Union, Tuple, Literal, ClassVar
 import os
 import json
 import yaml
@@ -431,14 +431,17 @@ class FileHandlerTool(BaseTool):
             
         return result
 
-    @flow(
+    # Annotate Prefect flow as ClassVar
+    # Annotate Prefect flow as ClassVar
+    forward: ClassVar[Any] = flow(
         name="file_handler_flow",
         description="Execute file operations with validation and retries",
         retries=3,
         retry_delay_seconds=1,
         persist_result=True,
         version="1.0.0"
-    )
+    )(lambda self, action, path, content=None: self.forward(action, path, content))
+
     async def forward(self, action: str, path: str, content: Optional[str] = None) -> str:
         """Execute file operation as a Prefect flow"""
         try:
