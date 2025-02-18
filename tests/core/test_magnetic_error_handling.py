@@ -6,7 +6,6 @@ from typing import Dict, Set, Any, Optional, List
 from pydantic import BaseModel, Field, ValidationError
 from glue.core.team import Team
 from glue.core.model import Model
-from glue.core.types import AdhesiveType
 from glue.magnetic.field import MagneticField
 from glue.magnetic.rules import MagneticRules
 
@@ -84,51 +83,50 @@ async def test_flow_validation_errors():
         )
 
 @pytest.mark.asyncio
-async def test_adhesive_compatibility_errors(test_teams):
-    """Test error handling for adhesive incompatibility"""
+async def test_flow_overload_handling(test_teams):
+    """Test handling of flow overload conditions"""
+    field = MagneticField(name="test_field")
     team_a = test_teams["team_a"]
     team_b = test_teams["team_b"]
     
-    # Attempt communication between incompatible teams
-    flow_error = FlowError(
-        flow_id="team_a_to_team_b",
-        error_type="adhesive_incompatibility",
-        message="No compatible adhesives found between teams",
-        context={
-            "source_adhesives": {AdhesiveType.GLUE},
-            "target_adhesives": set()
-        }
+    # Register teams
+    await field.add_team(team_a)
+    await field.add_team(team_b)
+    
+    # Set up flow
+    flow_id = f"{team_a.name}_to_{team_b.name}"
+    await field.set_team_flow(team_a.name, team_b.name, "->")
+    
+    # Get initial health metrics
+    status = field.debug.protection_status.get(flow_id, {})
+    health = status.get("health", {})
+    
+    # Verify initial state
+    assert health.get("error_rate", 0.0) == 0.0
+    assert health.get("throughput", 1.0) == 1.0
+    
+    # Simulate overload
+    if flow_id in field._health_monitors:
+        monitor = field._health_monitors[flow_id]
+        monitor.error_rate = 0.06  # Above 5% threshold
+        monitor.throughput = 0.5   # Reduced throughput
+        
+    # Update debug info
+    field.debug.update_protection_status(
+        flow_id,
+        field._circuit_breakers.get(flow_id),
+        field._rate_limiters.get(flow_id),
+        field._retry_strategies.get(flow_id),
+        field._health_monitors.get(flow_id)
     )
     
-    assert flow_error.error_type == "adhesive_incompatibility"
-    assert not bool(flow_error.context["target_adhesives"])
-    assert flow_error.recoverable  # Should be recoverable through adhesive negotiation
-
-@pytest.mark.asyncio
-async def test_flow_overload_handling():
-    """Test handling of flow overload conditions"""
-    # Create flow metrics
-    metrics = FlowMetrics = BaseModel.create_model(
-        "FlowMetrics",
-        flow_id=(str, ...),
-        message_count=(int, ...),
-        error_count=(int, ...),
-        last_error=(Optional[datetime], None)
-    )
+    # Get updated health metrics
+    status = field.debug.protection_status.get(flow_id, {})
+    health = status.get("health", {})
     
-    flow_metrics = metrics(
-        flow_id="test_flow",
-        message_count=1000,  # High message count
-        error_count=50,      # High error count
-        last_error=datetime.now()
-    )
-    
-    # Test overload detection
-    def is_overloaded(metrics: FlowMetrics) -> bool:
-        error_rate = metrics.error_count / max(metrics.message_count, 1)
-        return error_rate > 0.05  # 5% error threshold
-    
-    assert is_overloaded(flow_metrics)
+    # Verify overload state
+    assert health.get("error_rate", 0.0) > 0.05  # Above 5% threshold
+    assert health.get("throughput", 1.0) < 1.0    # Reduced throughput
 
 @pytest.mark.asyncio
 async def test_recovery_action_validation():
@@ -163,150 +161,185 @@ async def test_recovery_action_validation():
     assert action.retry_count == 1
 
 @pytest.mark.asyncio
-async def test_flow_circuit_breaker():
+async def test_flow_circuit_breaker(test_teams):
     """Test circuit breaker pattern for flow protection"""
-    class CircuitBreaker(BaseModel):
-        """Circuit breaker for flow protection"""
-        flow_id: str = Field(..., description="Flow identifier")
-        error_threshold: int = Field(default=5)
-        reset_timeout: int = Field(default=60)  # seconds
-        error_count: int = Field(default=0)
-        last_error: Optional[datetime] = Field(default=None)
-        state: str = Field(default="closed")  # closed, open, half-open
-        
-        def record_error(self):
-            self.error_count += 1
-            self.last_error = datetime.now()
-            if self.error_count >= self.error_threshold:
-                self.state = "open"
-        
-        def can_execute(self) -> bool:
-            if self.state == "closed":
-                return True
-            if self.state == "open":
-                # Check if enough time has passed to try half-open
-                if self.last_error:
-                    seconds_since_error = (
-                        datetime.now() - self.last_error
-                    ).total_seconds()
-                    if seconds_since_error >= self.reset_timeout:
-                        self.state = "half-open"
-                        return True
-            return False
+    field = MagneticField(name="test_field")
+    team_a = test_teams["team_a"]
+    team_b = test_teams["team_b"]
     
-    breaker = CircuitBreaker(
-        flow_id="test_flow",
-        error_threshold=3,
-        reset_timeout=30
-    )
+    # Register teams
+    await field.add_team(team_a)
+    await field.add_team(team_b)
     
-    # Test circuit breaker behavior
-    assert breaker.can_execute()  # Should start closed
+    # Set up flow
+    flow_id = f"{team_a.name}_to_{team_b.name}"
+    await field.set_team_flow(team_a.name, team_b.name, "->")
     
-    # Simulate errors
+    # Get initial protection status
+    status = field.debug.protection_status.get(flow_id, {})
+    circuit_breaker = status.get("circuit_breaker", {})
+    
+    # Verify initial state
+    assert not circuit_breaker.get("is_open", False)
+    assert circuit_breaker.get("error_count", 0) == 0
+    
+    # Simulate errors by updating protection status
     for _ in range(3):
-        breaker.record_error()
+        field.debug.update_protection_status(
+            flow_id,
+            field._circuit_breakers.get(flow_id),
+            field._rate_limiters.get(flow_id),
+            field._retry_strategies.get(flow_id),
+            field._health_monitors.get(flow_id)
+        )
+        if flow_id in field._circuit_breakers:
+            field._circuit_breakers[flow_id].record_error()
     
-    assert not breaker.can_execute()  # Should be open
-    assert breaker.state == "open"
+    # Get updated status
+    status = field.debug.protection_status.get(flow_id, {})
+    circuit_breaker = status.get("circuit_breaker", {})
+    
+    # Verify breaker is open
+    assert circuit_breaker.get("is_open", False)
+    assert circuit_breaker.get("error_count", 0) >= 3
 
 @pytest.mark.asyncio
-async def test_flow_degradation_handling():
+async def test_flow_degradation_handling(test_teams):
     """Test handling of flow performance degradation"""
-    class FlowHealth(BaseModel):
-        """Model for flow health monitoring"""
-        flow_id: str = Field(..., description="Flow identifier")
-        latency: float = Field(default=0.0)
-        error_rate: float = Field(default=0.0)
-        throughput: float = Field(default=1.0)
-        
-        def calculate_health_score(self) -> float:
-            latency_score = max(0, 1 - self.latency)
-            error_score = 1 - self.error_rate
-            throughput_score = min(1, self.throughput)
-            return (latency_score + error_score + throughput_score) / 3
-        
-        def is_healthy(self) -> bool:
-            return self.calculate_health_score() >= 0.7
+    field = MagneticField(name="test_field")
+    team_a = test_teams["team_a"]
+    team_b = test_teams["team_b"]
     
-    # Test degraded flow
-    degraded_flow = FlowHealth(
-        flow_id="test_flow",
-        latency=0.8,      # High latency
-        error_rate=0.15,  # High error rate
-        throughput=0.5    # Low throughput
+    # Register teams
+    await field.add_team(team_a)
+    await field.add_team(team_b)
+    
+    # Set up flow
+    flow_id = f"{team_a.name}_to_{team_b.name}"
+    await field.set_team_flow(team_a.name, team_b.name, "->")
+    
+    # Get initial health metrics
+    status = field.debug.protection_status.get(flow_id, {})
+    health = status.get("health", {})
+    
+    # Verify initial health
+    assert health.get("latency", 0.0) == 0.0
+    assert health.get("error_rate", 0.0) == 0.0
+    assert health.get("throughput", 1.0) == 1.0
+    
+    # Simulate degradation
+    if flow_id in field._health_monitors:
+        monitor = field._health_monitors[flow_id]
+        monitor.latency = 0.8
+        monitor.error_rate = 0.15
+        monitor.throughput = 0.5
+        
+    # Update debug info
+    field.debug.update_protection_status(
+        flow_id,
+        field._circuit_breakers.get(flow_id),
+        field._rate_limiters.get(flow_id),
+        field._retry_strategies.get(flow_id),
+        field._health_monitors.get(flow_id)
     )
     
-    assert not degraded_flow.is_healthy()
-    assert degraded_flow.calculate_health_score() < 0.7
+    # Get updated health metrics
+    status = field.debug.protection_status.get(flow_id, {})
+    health = status.get("health", {})
+    
+    # Verify degraded state
+    assert health.get("latency", 0.0) >= 0.8
+    assert health.get("error_rate", 0.0) >= 0.15
+    assert health.get("throughput", 1.0) <= 0.5
 
 @pytest.mark.asyncio
-async def test_flow_retry_backoff():
+async def test_flow_retry_backoff(test_teams):
     """Test exponential backoff for flow retries"""
-    class RetryStrategy(BaseModel):
-        """Model for retry strategy"""
-        initial_delay: float = Field(default=1.0)
-        max_delay: float = Field(default=60.0)
-        multiplier: float = Field(default=2.0)
-        jitter: float = Field(default=0.1)
-        
-        def get_delay(self, attempt: int) -> float:
-            delay = min(
-                self.initial_delay * (self.multiplier ** attempt),
-                self.max_delay
-            )
-            # Add jitter
-            import random
-            jitter_amount = delay * self.jitter
-            return delay + random.uniform(-jitter_amount, jitter_amount)
+    field = MagneticField(name="test_field")
+    team_a = test_teams["team_a"]
+    team_b = test_teams["team_b"]
     
-    strategy = RetryStrategy()
+    # Register teams
+    await field.add_team(team_a)
+    await field.add_team(team_b)
     
-    # Test backoff progression
-    delays = [strategy.get_delay(i) for i in range(5)]
+    # Set up flow
+    flow_id = f"{team_a.name}_to_{team_b.name}"
+    await field.set_team_flow(team_a.name, team_b.name, "->")
     
-    # Verify exponential growth
-    for i in range(1, len(delays)):
-        assert delays[i] > delays[i-1]
+    # Get initial retry strategy status
+    status = field.debug.protection_status.get(flow_id, {})
+    retry_strategy = status.get("retry_strategy", {})
     
-    # Verify max delay
-    assert all(d <= strategy.max_delay * (1 + strategy.jitter) for d in delays)
-
-@pytest.mark.asyncio
-async def test_flow_rate_limiting():
-    """Test rate limiting for flow protection"""
-    class RateLimiter(BaseModel):
-        """Model for flow rate limiting"""
-        flow_id: str = Field(..., description="Flow identifier")
-        max_requests: int = Field(..., description="Maximum requests per window")
-        window_seconds: int = Field(..., description="Time window in seconds")
-        current_count: int = Field(default=0)
-        window_start: datetime = Field(default_factory=datetime.now)
-        
-        def can_process(self) -> bool:
-            now = datetime.now()
-            window_elapsed = (now - self.window_start).total_seconds()
+    # Verify initial state
+    assert retry_strategy.get("current_retries", 0) == 0
+    assert retry_strategy.get("max_retries", 0) > 0
+    assert retry_strategy.get("backoff_factor", 0) > 0
+    
+    # Simulate retries
+    if flow_id in field._retry_strategies:
+        strategy = field._retry_strategies[flow_id]
+        for _ in range(3):
+            strategy.current_retries += 1
             
-            if window_elapsed >= self.window_seconds:
-                self.current_count = 0
-                self.window_start = now
-            
-            return self.current_count < self.max_requests
-        
-        def record_request(self):
-            self.current_count += 1
-    
-    limiter = RateLimiter(
-        flow_id="test_flow",
-        max_requests=100,
-        window_seconds=60
+    # Update debug info
+    field.debug.update_protection_status(
+        flow_id,
+        field._circuit_breakers.get(flow_id),
+        field._rate_limiters.get(flow_id),
+        field._retry_strategies.get(flow_id),
+        field._health_monitors.get(flow_id)
     )
     
-    # Test rate limiting
-    assert limiter.can_process()
+    # Get updated status
+    status = field.debug.protection_status.get(flow_id, {})
+    retry_strategy = status.get("retry_strategy", {})
     
-    # Simulate burst of requests
-    for _ in range(100):
-        limiter.record_request()
+    # Verify retry progression
+    assert retry_strategy.get("current_retries", 0) >= 3
+    assert retry_strategy.get("current_retries", 0) <= retry_strategy.get("max_retries", 0)
+
+@pytest.mark.asyncio
+async def test_flow_rate_limiting(test_teams):
+    """Test rate limiting for flow protection"""
+    field = MagneticField(name="test_field")
+    team_a = test_teams["team_a"]
+    team_b = test_teams["team_b"]
     
-    assert not limiter.can_process()  # Should be limited
+    # Register teams
+    await field.add_team(team_a)
+    await field.add_team(team_b)
+    
+    # Set up flow
+    flow_id = f"{team_a.name}_to_{team_b.name}"
+    await field.set_team_flow(team_a.name, team_b.name, "->")
+    
+    # Get initial rate limiter status
+    status = field.debug.protection_status.get(flow_id, {})
+    rate_limiter = status.get("rate_limiter", {})
+    
+    # Verify initial state
+    assert rate_limiter.get("current_rate", 0) == 0
+    assert rate_limiter.get("max_requests", 0) > 0
+    
+    # Simulate requests
+    if flow_id in field._rate_limiters:
+        limiter = field._rate_limiters[flow_id]
+        for _ in range(100):
+            limiter.record_request()
+            
+    # Update debug info
+    field.debug.update_protection_status(
+        flow_id,
+        field._circuit_breakers.get(flow_id),
+        field._rate_limiters.get(flow_id),
+        field._retry_strategies.get(flow_id),
+        field._health_monitors.get(flow_id)
+    )
+    
+    # Get updated status
+    status = field.debug.protection_status.get(flow_id, {})
+    rate_limiter = status.get("rate_limiter", {})
+    
+    # Verify rate limit exceeded
+    assert rate_limiter.get("current_rate", 0) >= rate_limiter.get("max_requests", 0)

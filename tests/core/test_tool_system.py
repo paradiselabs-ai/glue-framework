@@ -6,19 +6,18 @@ import asyncio
 from datetime import datetime
 from typing import Optional
 
+from loguru import logger
 from glue.core.types import AdhesiveType, ToolResult
 from glue.tools.base import BaseTool, ToolConfig, ToolData
 from glue.tools.executor import SmolAgentsToolExecutor, ToolIntent
-from glue.core.logger import get_logger
 
 # Test tool implementation
 class TestTool(BaseTool):
     def __init__(self, name: str = "test_tool", description: str = "Test tool"):
         super().__init__(name=name, description=description)
-        self.logger = get_logger(name)
         
     async def forward(self, input_data: str, **params) -> str:
-        self.logger.debug(f"Test tool executing with input: {input_data}, params: {params}")
+        logger.debug(f"[{self.name}] Executing with input: {input_data}, params: {params}")
         return f"Test result: {input_data}"
 
 from glue.core.team import Team, TeamRole
@@ -126,37 +125,98 @@ async def test_adhesive_binding_behavior(executor, configured_team):
     assert len(configured_team.shared_results) == 1  # Still 1 from before
 
 @pytest.mark.asyncio
-async def test_logging_functionality(executor, tmp_path):
+async def test_logging_functionality(executor, configured_team):
     """Test logging functionality"""
-    log_path = Path.home() / ".glue" / "logs" / "tools.log"
-    assert log_path.exists(), "Tool log file should exist"
-
+    from loguru import logger
+    import io
+    import sys
+    
+    # Capture loguru output
+    string_io = io.StringIO()
+    logger.remove()
+    logger.add(string_io, format="{message}")
+    
     # Execute tool and check logs
     await executor.execute(
         'Use test_tool with input "log test" using VELCRO binding'
     )
-
+    
     # Verify log content
-    log_content = log_path.read_text()
-    assert "test_tool" in log_content
-    assert "log test" in log_content
-    assert "VELCRO" in log_content
+    log_output = string_io.getvalue()
+    assert "test_tool" in log_output
+    assert "log test" in log_output
+    assert "VELCRO" in log_output
+    
+    # Verify debug info
+    debug_info = configured_team.debug.get_tool_debug_info()
+    assert "test_tool" in debug_info.get("executed_tools", {})
+    assert debug_info["executed_tools"]["test_tool"].get("success_count", 0) > 0
+    assert debug_info["executed_tools"]["test_tool"].get("last_adhesive") == "VELCRO"
+    
+    # Cleanup
+    logger.remove()
+    logger.add(sys.stderr, format="{message}")
 
 @pytest.mark.asyncio
-async def test_error_handling_and_logging(executor):
+async def test_error_handling_and_logging(executor, configured_team):
     """Test error handling and error logging"""
-    # Try to use non-existent tool
-    result = await executor.execute(
-        'Use nonexistent_tool with input "test" using TAPE binding'
-    )
-    assert isinstance(result, str)
-    assert "not available" in result
-
-    # Check error in logs
-    log_path = Path.home() / ".glue" / "logs" / "tools.log"
-    log_content = log_path.read_text()
-    assert "nonexistent_tool" in log_content
-    assert "warning" in log_content.lower()
+    from loguru import logger
+    import io
+    import sys
+    import traceback
+    
+    # Capture loguru output
+    string_io = io.StringIO()
+    logger.remove()
+    logger.add(string_io, format="{message}")
+    
+    try:
+        # Try to use non-existent tool
+        result = await executor.execute(
+            'Use nonexistent_tool with input "test" using TAPE binding'
+        )
+        
+        # Verify error handling
+        assert isinstance(result, str)
+        assert "not available" in result
+        
+        # Verify debug info
+        debug_info = configured_team.debug.get_tool_debug_info()
+        assert "nonexistent_tool" in debug_info.get("failed_tools", {})
+        assert debug_info["failed_tools"]["nonexistent_tool"].get("error_count", 0) > 0
+        
+        # Simulate error with stack trace
+        try:
+            raise ValueError("Test error for stack trace")
+        except Exception as e:
+            from glue.core.logger import log_error
+            log_error(
+                error_type="ToolExecutionError",
+                message="Failed to execute tool",
+                component="tool",
+                metadata={
+                    "tool_name": "nonexistent_tool",
+                    "adhesive": "TAPE",
+                    "team": configured_team.name
+                },
+                severity="error",
+                stack_trace=traceback.format_exc(),
+                error_code="TOOL_001"
+            )
+        
+        # Verify enhanced error logging
+        log_output = string_io.getvalue()
+        assert "ToolExecutionError [TOOL_001]" in log_output
+        assert "Failed to execute tool" in log_output
+        assert "Stack trace" in log_output
+        assert "ValueError: Test error" in log_output
+        assert "nonexistent_tool" in log_output
+        assert "TAPE" in log_output
+        
+    finally:
+        # Cleanup
+        logger.remove()
+        logger.add(sys.stderr, format="{message}")
 
 @pytest.mark.asyncio
 async def test_tool_config_validation():

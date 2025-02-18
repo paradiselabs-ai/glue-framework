@@ -47,9 +47,23 @@ def setup_logging(
     development: bool = False
 ):
     """
-    Backward compatibility wrapper for setup_enhanced_logging.
-    Redirects to enhanced logging setup with appropriate defaults.
+    DEPRECATED: Use setup_enhanced_logging directly for better control and features.
+    
+    Example:
+        from glue.core.logger import setup_enhanced_logging
+        setup_enhanced_logging(
+            log_dir="logs",
+            level="DEBUG" if development else "INFO",
+            format="your_format_string"
+        )
     """
+    warnings.warn(
+        "setup_logging is deprecated. Use setup_enhanced_logging directly for better control and features. "
+        "Example: setup_enhanced_logging(log_dir='logs', level='DEBUG' if development else 'INFO')",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    
     if development:
         level = "DEBUG"
     
@@ -59,11 +73,23 @@ def setup_logging(
         log_dir="logs" if log_file else None
     )
 
+import warnings
+
 def get_logger(name: str) -> logger:
     """
-    Backward compatibility wrapper for get_enhanced_logger.
-    Automatically determines component from name.
+    DEPRECATED: Use loguru.logger directly with bind() for context.
+    
+    Example:
+        from loguru import logger
+        logger.bind(name="my_component", component="system").debug("message")
     """
+    warnings.warn(
+        "get_logger is deprecated. Use loguru.logger directly with bind() for context. "
+        "Example: logger.bind(name='my_component', component='system').debug('message')",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    
     # Map common name prefixes to components
     component_map = {
         "flow": "flow",
@@ -210,28 +236,74 @@ def log_tool_event(context: ToolLogContext, message: str, level: str = "INFO") -
         **context_dict
     )
 
+class ErrorLogContext(LogContext):
+    """Context for error logging"""
+    error_type: str
+    component: str
+    message: str
+    stack_trace: Optional[str] = None
+    error_code: Optional[str] = None
+    severity: str = Field(default="error", pattern="^(debug|info|warning|error|critical)$")
+    additional_data: Dict[str, Any] = Field(default_factory=dict)
+
 def log_error(
     error_type: str,
     message: str,
     component: str,
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None,
+    severity: str = "error",
+    stack_trace: Optional[str] = None,
+    error_code: Optional[str] = None
 ) -> None:
-    """Log an error with structured context"""
-    logger_instance = get_enhanced_logger("error", component)
+    """
+    Log an error with structured context and validation
     
-    context_dict = {
-        "context": "error",
-        "error_type": error_type,
-        "component": component
-    }
-    
-    if metadata:
-        context_dict.update(metadata)
-    
-    logger_instance.error(
-        f"{error_type}: {message}",
-        **context_dict
-    )
+    Args:
+        error_type: Type/category of the error
+        message: Error message
+        component: Component where error occurred
+        metadata: Additional contextual data
+        severity: Error severity (debug/info/warning/error/critical)
+        stack_trace: Optional stack trace
+        error_code: Optional error code
+    """
+    try:
+        context = ErrorLogContext(
+            component=component,
+            action="error",
+            error_type=error_type,
+            message=message,
+            severity=severity,
+            stack_trace=stack_trace,
+            error_code=error_code,
+            additional_data=metadata or {},
+            metadata={}  # Base context metadata
+        )
+        
+        logger_instance = logger.bind(
+            context="error",
+            error_type=context.error_type,
+            component=context.component,
+            severity=context.severity,
+            error_code=context.error_code,
+            **context.additional_data
+        )
+        
+        log_func = getattr(logger_instance, context.severity)
+        log_message = f"{context.error_type}"
+        if context.error_code:
+            log_message += f" [{context.error_code}]"
+        log_message += f": {context.message}"
+        
+        log_func(log_message)
+        
+        if context.stack_trace:
+            logger_instance.debug(f"Stack trace:\n{context.stack_trace}")
+            
+    except Exception as e:
+        # Fallback error logging if validation fails
+        logger.error(f"Error logging failed: {str(e)}")
+        logger.error(f"Original error - {error_type}: {message}")
 
 # Initialize enhanced logging with default settings
 setup_enhanced_logging()

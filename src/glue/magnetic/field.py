@@ -1,5 +1,6 @@
 """GLUE Magnetic Field System"""
 
+from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional, Type, Callable, Any, Set, TYPE_CHECKING, ClassVar
 from collections import defaultdict
@@ -12,6 +13,9 @@ from ..core.pydantic_models import (
     ModelState, TeamContext, ToolResult, MagneticFlow, PrefectTaskConfig
 )
 
+if TYPE_CHECKING:
+    from ..core.context import ContextState
+    from ..core.workflow import Workflow
 
 from ..core.errors import (
     GlueError,
@@ -34,9 +38,6 @@ from ..core.logger import (
 from ..core.debug import DebugEndpoints
 from .rules import RuleSet
 
-if TYPE_CHECKING:
-    from ..core.context import ContextState
-
 # ==================== Models ====================
 from .models import (
     FlowConfig,
@@ -56,15 +57,6 @@ from .models import (
     RetryStrategy,
     FlowHealth
 )
-
-class _DebugInfo(BaseModel):
-    """Debug information for magnetic field"""
-    active_flows: Dict[str, bool] = Field(default_factory=dict)
-    flow_metrics: Dict[str, FlowMetrics] = Field(default_factory=dict)
-    pattern_states: Dict[str, PatternState] = Field(default_factory=dict)
-    
-    class Config:
-        arbitrary_types_allowed = True
 
 class FlowPattern(BaseModel):
     """Model for magnetic flow patterns"""
@@ -86,6 +78,81 @@ class PatternState(BaseModel):
 
     class Config:
         arbitrary_types_allowed = True
+
+class _DebugInfo(BaseModel):
+    """Debug information for magnetic field"""
+    active_flows: Dict[str, bool] = Field(default_factory=dict, description="Currently active flows")
+    flow_metrics: Dict[str, FlowMetrics] = Field(default_factory=dict, description="Metrics for each flow")
+    pattern_states: Dict[str, PatternState] = Field(default_factory=dict, description="States of active patterns")
+    protection_status: Dict[str, Dict[str, Any]] = Field(default_factory=dict, description="Status of protection mechanisms")
+    
+    class Config:
+        arbitrary_types_allowed = True
+        
+    @field_validator("flow_metrics")
+    @classmethod
+    def validate_flow_metrics(cls, v: Dict[str, FlowMetrics]) -> Dict[str, FlowMetrics]:
+        """Validate flow metrics"""
+        return {k: v if isinstance(v, FlowMetrics) else FlowMetrics(**v) for k, v in v.items()}
+        
+    @field_validator("pattern_states")
+    @classmethod
+    def validate_pattern_states(cls, v: Dict[str, PatternState]) -> Dict[str, PatternState]:
+        """Validate pattern states"""
+        return {k: v if isinstance(v, PatternState) else PatternState(**v) for k, v in v.items()}
+        
+    def update_protection_status(
+        self,
+        flow_id: str,
+        circuit_breaker: Optional[CircuitBreaker] = None,
+        rate_limiter: Optional[RateLimiter] = None,
+        retry_strategy: Optional[RetryStrategy] = None,
+        health_monitor: Optional[FlowHealth] = None
+    ) -> None:
+        """Update protection mechanism status for a flow"""
+        status = {}
+        if circuit_breaker:
+            status["circuit_breaker"] = {
+                "is_open": not circuit_breaker.can_execute(),
+                "error_count": circuit_breaker.error_count,
+                "last_error": str(circuit_breaker.last_error) if circuit_breaker.last_error else None
+            }
+        if rate_limiter:
+            status["rate_limiter"] = {
+                "current_rate": rate_limiter.current_rate,
+                "max_requests": rate_limiter.max_requests,
+                "window_seconds": rate_limiter.window_seconds
+            }
+        if retry_strategy:
+            status["retry_strategy"] = {
+                "max_retries": retry_strategy.max_retries,
+                "current_retries": retry_strategy.current_retries,
+                "backoff_factor": retry_strategy.backoff_factor
+            }
+        if health_monitor:
+            status["health"] = {
+                "latency": health_monitor.latency,
+                "error_rate": health_monitor.error_rate,
+                "throughput": health_monitor.throughput,
+                "last_check": health_monitor.last_check.isoformat() if health_monitor.last_check else None
+            }
+        if status:
+            self.protection_status[flow_id] = status
+            
+    def get_flow_debug_info(self, flow_id: str) -> Dict[str, Any]:
+        """Get comprehensive debug information for a specific flow"""
+        return {
+            "active": self.active_flows.get(flow_id, False),
+            "metrics": self.flow_metrics.get(flow_id),
+            "protection": self.protection_status.get(flow_id, {}),
+            "pattern": next(
+                (
+                    pattern for pattern in self.pattern_states.values()
+                    if flow_id in pattern.active_flows
+                ),
+                None
+            )
+        }
 
 # ==================== Main Class ====================
 class MagneticField(BaseModel):
@@ -112,8 +179,8 @@ class MagneticField(BaseModel):
     state: FieldState = Field(..., description="Field state")
     
     # Parent relationship
-    parent: Optional['MagneticField'] = Field(default=None, description="Parent field")
-    workflow: Optional['Workflow'] = Field(default=None, description="Associated workflow")
+    parent: Optional["MagneticField"] = Field(default=None, description="Parent field")
+    workflow: Optional["Workflow"] = Field(default=None, description="Associated workflow")
     
     # Protection mechanisms
     circuit_breakers: Dict[str, CircuitBreaker] = Field(
@@ -158,24 +225,27 @@ class MagneticField(BaseModel):
     remove_team: ClassVar[Callable] = task()
     
     # Class-level field registry
-    _fields: ClassVar[Dict[str, 'MagneticField']] = {}
+    _fields: ClassVar[Dict[str, "MagneticField"]] = {}
+    
+    # Debug information
+    debug: _DebugInfo = Field(default_factory=_DebugInfo)
     
     @classmethod
-    def get_field(cls, name: str) -> Optional['MagneticField']:
+    def get_field(cls, name: str) -> Optional["MagneticField"]:
         """Get a magnetic field by name"""
         return cls._fields.get(name)
         
     name: str
-    workflow: Optional['Workflow'] = None
+    workflow: Optional["Workflow"] = None
     
     def __init__(
         self,
         name: str,
-        parent: Optional['MagneticField'] = None,
+        parent: Optional["MagneticField"] = None,
         is_pull_team: bool = False,
         rules: Optional[List[Dict[str, Any]]] = None
     ):
-        self.name = name
+        super().__init__(name=name)
         """Initialize a magnetic field with Pydantic models for validation"""
         # Set up logging
         logger.add(f"magnetic_field_{name}_{{time}}.log", rotation="10 MB")
@@ -225,11 +295,38 @@ class MagneticField(BaseModel):
     # ==================== Debug Methods ====================
     def get_debug_info(self) -> FieldDebugInfo:
         """Get debug information for this field"""
+        # Update protection status for all flows
+        for flow_id in self.state.active_flows:
+            self.debug.update_protection_status(
+                flow_id,
+                self._circuit_breakers.get(flow_id),
+                self._rate_limiters.get(flow_id),
+                self._retry_strategies.get(flow_id),
+                self._health_monitors.get(flow_id)
+            )
+            
+        # Update flow metrics
+        for flow_id, metrics in self._metrics.items():
+            self.debug.flow_metrics[flow_id] = metrics
+            
+        # Update pattern states
+        for pattern_name, pattern_state in self._active_patterns.items():
+            self.debug.pattern_states[pattern_name] = pattern_state
+            
         return DebugEndpoints.get_field_debug_info(self)
         
     def get_flow_debug_info(self, flow_id: str) -> Optional[FlowDebugInfo]:
         """Get debug information for a specific flow"""
-        return DebugEndpoints.get_flow_debug_info(self, flow_id)
+        # Update protection status for specific flow
+        self.debug.update_protection_status(
+            flow_id,
+            self._circuit_breakers.get(flow_id),
+            self._rate_limiters.get(flow_id),
+            self._retry_strategies.get(flow_id),
+            self._health_monitors.get(flow_id)
+        )
+        
+        return self.debug.get_flow_debug_info(flow_id)
         
     def get_flow_metrics(self, flow_id: str) -> Dict[str, float]:
         """Get metrics for a specific flow"""

@@ -241,6 +241,76 @@ class ModelError(GlueError):
             metadata=metadata
         )
 
+class TeamRegistrationError(GlueError):
+    """Team registration error"""
+    def __init__(
+        self,
+        message: str,
+        team_name: str,
+        severity: ErrorSeverity = ErrorSeverity.ERROR,
+        metadata: Optional[Dict[str, Any]] = None
+    ):
+        metadata = metadata or {}
+        metadata["team_name"] = team_name
+        
+        super().__init__(
+            message=message,
+            severity=severity,
+            category=ErrorCategory.TEAM,
+            component="team",
+            source=f"team_{team_name}",
+            metadata=metadata
+        )
+
+class ProtectionMechanismError(GlueError):
+    """Protection mechanism error (circuit breaker, rate limiter, etc.)"""
+    def __init__(
+        self,
+        message: str,
+        mechanism: str,
+        flow_id: Optional[str] = None,
+        severity: ErrorSeverity = ErrorSeverity.ERROR,
+        metadata: Optional[Dict[str, Any]] = None
+    ):
+        metadata = metadata or {}
+        metadata.update({
+            "mechanism": mechanism,
+            "flow_id": flow_id
+        })
+        
+        super().__init__(
+            message=message,
+            severity=severity,
+            category=ErrorCategory.FLOW,
+            component="protection",
+            source=f"protection_{mechanism}",
+            metadata=metadata
+        )
+
+class PatternValidationError(GlueError):
+    """Pattern validation error"""
+    def __init__(
+        self,
+        message: str,
+        pattern_name: str,
+        validation_errors: List[str],
+        metadata: Optional[Dict[str, Any]] = None
+    ):
+        metadata = metadata or {}
+        metadata.update({
+            "pattern_name": pattern_name,
+            "validation_errors": validation_errors
+        })
+        
+        super().__init__(
+            message=message,
+            severity=ErrorSeverity.ERROR,
+            category=ErrorCategory.VALIDATION,
+            component="pattern",
+            source=f"pattern_{pattern_name}",
+            metadata=metadata
+        )
+
 class MagneticError(GlueError):
     """Magnetic field-related errors"""
     def __init__(
@@ -286,6 +356,55 @@ class ConfigurationError(GlueError):
             source=f"config_{config_section}",
             metadata=metadata
         )
+
+def validate_flow_type(flow_type: str, source: str) -> None:
+    """Validate flow type"""
+    valid_types = ["->", "<-", "><", "<>"]
+    if flow_type not in valid_types:
+        raise FlowValidationError(
+            message=f"Invalid flow type: {flow_type}",
+            flow_id=f"validation_{source}",
+            validation_errors=[f"Flow type must be one of {valid_types}"]
+        )
+
+def validate_team_registered(team_name: str, registered_teams: set, source: str) -> None:
+    """Validate team is registered"""
+    if team_name not in registered_teams:
+        raise TeamRegistrationError(
+            message=f"Team {team_name} not registered",
+            team_name=team_name
+        )
+
+def handle_flow_errors(func):
+    """Decorator for handling flow-related errors"""
+    from functools import wraps
+    import traceback
+    
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except GlueError as e:
+            # Already logged in constructor
+            raise
+        except Exception as e:
+            # Get stack trace
+            stack_trace = traceback.format_exc()
+            
+            # Create flow error with stack trace
+            raise FlowError(
+                message=str(e),
+                flow_id=func.__name__,
+                source_team="system",
+                target_team="system",
+                metadata={
+                    "args": str(args),
+                    "kwargs": str(kwargs),
+                    "stack_trace": stack_trace
+                }
+            ) from e
+    
+    return wrapper
 
 def error_handler(func):
     """Decorator for handling errors with proper context"""
