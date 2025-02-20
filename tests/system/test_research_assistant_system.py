@@ -5,8 +5,8 @@ import os
 from datetime import datetime
 
 from glue.magnetic.field import MagneticField
-from glue.core.team_pydantic import Team, TeamRole
-from glue.core.model_pydantic import Model
+from glue.core.team import Team, TeamRole
+from glue.core.model import Model
 from glue.core.pydantic_models import (
     ModelConfig, TeamContext, ToolResult, SmolAgentsTool,
     PrefectTaskConfig

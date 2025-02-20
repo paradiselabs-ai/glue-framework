@@ -26,7 +26,6 @@ from .providers.base import BaseProvider
 from .providers.openrouter import OpenRouterProvider
 
 from .magnetic.field import MagneticField
-from .magnetic.rules import InteractionPattern
 
 __version__ = "0.1.0"
 
@@ -57,6 +56,5 @@ __all__ = [
     "OpenRouterProvider",
     
     # Magnetic
-    "MagneticField",
-    "InteractionPattern"
+    "MagneticField"
 ]

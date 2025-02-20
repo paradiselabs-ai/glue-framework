@@ -4,7 +4,7 @@ import pytest
 from datetime import datetime, timedelta
 from typing import Dict, Set
 
-from glue.core.team_pydantic import Team, TeamRole, TeamMember, TeamState
+from glue.core.team import Team, TeamRole, TeamMember, TeamState
 from glue.core.pydantic_models import (
     ModelConfig, ModelState, ToolResult, SmolAgentsTool,
     TeamContext

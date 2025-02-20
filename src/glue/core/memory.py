@@ -207,15 +207,16 @@ class MemoryManager:
         # If Mem0 is configured, store shared memory there too
         if self.mem0:
             try:
+                meta = metadata or {}
+                meta.update({
+                    "shared_from": from_model,
+                    "shared_key": key
+                })
                 await self.mem0.store(
                     content=content,
                     adhesive_type="shared",
                     user_id=to_model,  # Use recipient as user_id
-                    metadata={
-                        **metadata or {},
-                        "shared_from": from_model,
-                        "shared_key": key
-                    },
+                    metadata=meta,
                     context=context,
                     tags=tags
                 )

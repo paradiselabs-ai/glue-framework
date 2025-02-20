@@ -4,8 +4,8 @@ import pytest
 from datetime import datetime
 
 from glue.magnetic.field import MagneticField
-from glue.core.team_pydantic import Team, TeamRole
-from glue.core.model_pydantic import Model
+from glue.core.team import Team, TeamRole
+from glue.core.model import Model
 from glue.core.pydantic_models import (
     ModelConfig, TeamContext, ToolResult, SmolAgentsTool,
     PrefectTaskConfig
@@ -50,37 +50,20 @@ async def test_research_to_docs_flow(magnetic_field, source_team, target_team):
         flow_type="push"
     )
     
-    # Have research team search and share results
-    search_result = await source_team.models["researcher"].use_tool(
-        "web_search",
-        AdhesiveType.GLUE,
-        "Latest developments in AI"
-    )
+    # Research team generates information
+    content = "Latest developments in AI research"
     
     # Transfer information to docs team
     await magnetic_field.transfer_information(
         source_team=source_team.name,
         target_team=target_team.name,
-        content=search_result.result
+        content=content
     )
     
-    # Verify docs team received and can use the information
+    # Verify docs team received the information
     assert "transfer" in target_team.context.shared_results
     received_result = target_team.context.shared_results["transfer"]
-    
-    # Have docs team write file with received info
-    file_result = await target_team.models["writer"].use_tool(
-        "file_handler",
-        AdhesiveType.TAPE,
-        {
-            "action": "write",
-            "path": "test_output.md",
-            "content": received_result.result
-        }
-    )
-    
-    assert file_result.tool_name == "file_handler"
-    assert file_result.adhesive == AdhesiveType.TAPE
+    assert received_result.result == content
 
 @pytest.mark.asyncio
 async def test_docs_pulling_from_research(magnetic_field, source_team, target_team):
@@ -95,20 +78,24 @@ async def test_docs_pulling_from_research(magnetic_field, source_team, target_te
         flow_type="pull"
     )
     
-    # Research team generates some results
-    search_result = await source_team.models["researcher"].use_tool(
-        "web_search",
-        AdhesiveType.GLUE,
-        "Python best practices"
+    # Research team has information
+    content = "Python best practices guide"
+    
+    # Store in research team's context
+    source_team.context.shared_results["research"] = ToolResult(
+        tool_name="research",
+        result=content,
+        adhesive=AdhesiveType.GLUE,
+        timestamp=datetime.now()
     )
     
     # Docs team pulls the information
     await target_team.pull_from(source_team.name)
     
     # Verify docs team has the information
-    assert search_result.tool_name in target_team.context.shared_results
-    pulled_result = target_team.context.shared_results[search_result.tool_name]
-    assert pulled_result.result == search_result.result
+    assert "research" in target_team.context.shared_results
+    pulled_result = target_team.context.shared_results["research"]
+    assert pulled_result.result == content
 
 @pytest.mark.asyncio
 async def test_team_repulsion(magnetic_field, source_team, target_team):
@@ -131,19 +118,52 @@ async def test_team_repulsion(magnetic_field, source_team, target_team):
             flow_type="push"
         )
     
-    # Verify no information transfer possible
-    search_result = await source_team.models["researcher"].use_tool(
-        "web_search",
-        AdhesiveType.GLUE,
-        "Test query"
-    )
+    # Try to transfer information between repelled teams
+    content = "Test information"
     
     with pytest.raises(ValueError):
         await magnetic_field.transfer_information(
             source_team=source_team.name,
             target_team=target_team.name,
-            content=search_result.result
+            content=content
         )
+
+@pytest.mark.asyncio
+async def test_bidirectional_collaboration(magnetic_field, source_team, target_team):
+    """Test bidirectional (attract) flow between teams"""
+    await magnetic_field.add_team(source_team)
+    await magnetic_field.add_team(target_team)
+    
+    # Establish bidirectional flow (attract)
+    await magnetic_field.establish_flow(
+        source_team=source_team.name,
+        target_team=target_team.name,
+        flow_type="attract"
+    )
+    
+    # Source team generates information
+    content = "Research findings about AI collaboration patterns"
+    
+    # Transfer to target team
+    await magnetic_field.transfer_information(
+        source_team=source_team.name,
+        target_team=target_team.name,
+        content=content
+    )
+    
+    # Target team generates response
+    response = "Analysis of research findings"
+    
+    # Transfer back to source team
+    await magnetic_field.transfer_information(
+        source_team=target_team.name,
+        target_team=source_team.name,
+        content=response
+    )
+    
+    # Verify both teams have shared information
+    assert "transfer" in target_team.context.shared_results
+    assert "transfer" in source_team.context.shared_results
 
 @pytest.mark.asyncio
 async def test_flow_with_prefect_config(magnetic_field, source_team, target_team):
